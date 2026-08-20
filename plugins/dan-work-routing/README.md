@@ -17,8 +17,16 @@ routing happens before the work rather than being remembered mid-task.
 - **Agents** — `explorer` (bounded questions over many files), `reviewer`
   (read-only diff review), `bulk-editor` (mechanical edits, cheapest tier).
 - **Workflows** — `explore` (fan readers over disjoint slices, one synthesis
-  barrier) and `bulk-edit` (batch a fully-specified edit across files, width
-  scaled by work per item).
+  barrier), `bulk-edit` (batch a fully-specified edit across files, width scaled
+  by work per item), and `charter-discovery` (fan probes over the places work
+  could hide, returning ranked avenues or an honest empty list).
+- **`/dan-work-routing:charter-loop`** — the entry point: discover avenues,
+  delegate each to the cheapest capable tier, read the verdict yourself, repeat
+  until discovery comes back empty.
+- **The `charters` skill** — for when units of work become objects you talk
+  about rather than just do: generated instead of assigned, cited by number,
+  carrying verdicts that outlive the session. On demand, because in an ordinary
+  session the charter is just the prompt and needs no name.
 
 ## Safety regimes live elsewhere
 
