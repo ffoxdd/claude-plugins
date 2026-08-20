@@ -46,7 +46,7 @@ def script(plugin, name):
 
 
 def read_json(path):
-    return json.loads(Path(path).read_text())
+    return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
 def environment(**overrides):
@@ -130,7 +130,7 @@ def frontmatter(path):
     plugins do, which is a bare python3 with nothing installed. Only top-level
     `key: value` lines are read, which is all an agent or command declares.
     """
-    text = Path(path).read_text()
+    text = Path(path).read_text(encoding="utf-8")
 
     if not text.startswith("---\n"):
         return {}

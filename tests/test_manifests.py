@@ -22,7 +22,7 @@ LAUNCHED_PATH = re.compile(r'\$\(dirname "\$0"\)([^"]*)"')
 
 def executed_lines(path):
     return "\n".join(
-        line for line in path.read_text().splitlines() if not line.lstrip().startswith("#")
+        line for line in path.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("#")
     )
 
 
@@ -243,12 +243,12 @@ class DocumentationTest(unittest.TestCase):
                 readme = support.plugin_root(plugin) / "README.md"
 
                 self.assertTrue(readme.is_file(), f"{plugin} has no README.md")
-                self.assertTrue(readme.read_text().startswith(f"# {plugin}"))
+                self.assertTrue(readme.read_text(encoding="utf-8").startswith(f"# {plugin}"))
 
     def test_the_root_readme_links_every_plugin(self):
         """An index that silently omits a plugin is how one ends up undiscoverable:
         installed by nobody, because no instruction anywhere names it."""
-        text = support.REPOSITORY_ROOT.joinpath("README.md").read_text()
+        text = support.REPOSITORY_ROOT.joinpath("README.md").read_text(encoding="utf-8")
 
         for plugin in support.plugin_names():
             with self.subTest(plugin=plugin):
@@ -315,11 +315,11 @@ class InjectorTest(unittest.TestCase):
         """Names the copies that drifted, since "2 != 1" does not say which file
         to fix — and fixing it means copying one over the others by hand."""
         canonical = support.script("dan-work-routing", "inject_context.py")
-        expected = canonical.read_text()
+        expected = canonical.read_text(encoding="utf-8")
 
         for path in self.injectors():
             with self.subTest(copy=str(path)):
-                self.assertEqual(path.read_text(), expected)
+                self.assertEqual(path.read_text(encoding="utf-8"), expected)
 
     def test_emits_the_shape_session_start_honours(self):
         injector = support.script("dan-work-routing", "inject_context.py")
@@ -329,7 +329,7 @@ class InjectorTest(unittest.TestCase):
         payload = json.loads(result.stdout)["hookSpecificOutput"]
 
         self.assertEqual(payload["hookEventName"], "SessionStart")
-        self.assertEqual(payload["additionalContext"], context_file.read_text())
+        self.assertEqual(payload["additionalContext"], context_file.read_text(encoding="utf-8"))
 
     def test_a_missing_context_file_is_silent_rather_than_fatal(self):
         injector = support.script("dan-work-routing", "inject_context.py")
@@ -373,7 +373,7 @@ class ComponentFrontmatterTest(unittest.TestCase):
         the pointer dangles, and the guidance it promised never arrives."""
         for plugin in support.plugin_names():
             for path in sorted((support.plugin_root(plugin) / "skills").glob("*/SKILL.md")):
-                for reference in re.findall(r"`(references/[\w./-]+\.md)`", path.read_text()):
+                for reference in re.findall(r"`(references/[\w./-]+\.md)`", path.read_text(encoding="utf-8")):
                     with self.subTest(skill=path.parent.name, reference=reference):
                         self.assertTrue((path.parent / reference).exists())
 
@@ -382,7 +382,7 @@ class ComponentFrontmatterTest(unittest.TestCase):
         so it is dead weight that reads as documentation."""
         for plugin in support.plugin_names():
             for path in sorted((support.plugin_root(plugin) / "skills").glob("*/SKILL.md")):
-                named = set(re.findall(r"`(references/[\w./-]+\.md)`", path.read_text()))
+                named = set(re.findall(r"`(references/[\w./-]+\.md)`", path.read_text(encoding="utf-8")))
 
                 for reference in sorted((path.parent / "references").glob("*.md")):
                     relative = f"references/{reference.name}"
@@ -395,7 +395,7 @@ class ComponentFrontmatterTest(unittest.TestCase):
         a shell error rather than anything that identifies the plugin as the cause."""
         for plugin in support.plugin_names():
             for path in sorted((support.plugin_root(plugin) / "skills").glob("*/SKILL.md")):
-                body = path.read_text()
+                body = path.read_text(encoding="utf-8")
 
                 for script in re.findall(r"<SKILL_DIR>/(scripts/[\w.-]+)", body):
                     with self.subTest(skill=path.parent.name, script=script):
@@ -429,7 +429,7 @@ class LauncherTest(unittest.TestCase):
 
     def test_every_launcher_names_a_file_that_exists(self):
         for plugin, launcher in self.launchers():
-            suffixes = LAUNCHED_PATH.findall(launcher.read_text())
+            suffixes = LAUNCHED_PATH.findall(launcher.read_text(encoding="utf-8"))
 
             with self.subTest(plugin=plugin, launcher=launcher.name):
                 self.assertTrue(suffixes, "names no script to run")
@@ -447,7 +447,7 @@ class LauncherTest(unittest.TestCase):
             with self.subTest(plugin=plugin, launcher=launcher.name):
                 self.assertNotIn("~/", executed_lines(launcher))
 
-                for suffix in LAUNCHED_PATH.findall(launcher.read_text()):
+                for suffix in LAUNCHED_PATH.findall(launcher.read_text(encoding="utf-8")):
                     resolved = (launcher.parent / suffix.lstrip("/")).resolve()
 
                     self.assertTrue(

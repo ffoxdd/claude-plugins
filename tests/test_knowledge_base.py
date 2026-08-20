@@ -40,7 +40,7 @@ def write_register(directory, document):
 
 def launched_path(launcher):
     """The file a bin/ launcher execs, resolved against the launcher's own directory."""
-    suffix = re.search(r'\$\(dirname "\$0"\)([^"]*)"', launcher.read_text()).group(1)
+    suffix = re.search(r'\$\(dirname "\$0"\)([^"]*)"', launcher.read_text(encoding="utf-8")).group(1)
 
     return (launcher.parent / suffix.lstrip("/")).resolve()
 
@@ -251,8 +251,8 @@ class LauncherTest(unittest.TestCase):
     def test_it_runs_the_client_under_uv_rather_than_trusting_its_shebang(self):
         """The script's own `#!/usr/bin/env -S uv run --script` needs a GNU `-S`,
         which Git Bash on Windows is not worth betting the chat adapter on."""
-        self.assertIn("exec uv run --script", self.LAUNCHER.read_text())
-        self.assertNotIn("exec python3", self.LAUNCHER.read_text())
+        self.assertIn("exec uv run --script", self.LAUNCHER.read_text(encoding="utf-8"))
+        self.assertNotIn("exec python3", self.LAUNCHER.read_text(encoding="utf-8"))
 
     def test_it_launches_the_script_this_plugin_ships(self):
         target = launched_path(self.LAUNCHER)
@@ -265,7 +265,7 @@ class BundledSlackClientTest(unittest.TestCase):
         """It ships as a uv script rather than a package, which is what lets the
         plugin provide it at all — there is no install step to ask for."""
         source = support.script(PLUGIN, "slack-client")
-        text = source.read_text()
+        text = source.read_text(encoding="utf-8")
 
         self.assertTrue(source.exists())
         self.assertIn("uv run --script", text.splitlines()[0])
@@ -274,7 +274,7 @@ class BundledSlackClientTest(unittest.TestCase):
     def test_it_carries_no_organization_specific_values(self):
         """It shipped verbatim from one machine, so this pins the property that made
         that safe rather than trusting the reading that established it."""
-        text = support.script(PLUGIN, "slack-client").read_text().lower()
+        text = support.script(PLUGIN, "slack-client").read_text(encoding="utf-8").lower()
 
         for token in ("aligned", "danfox", "alignedmarketplace"):
             with self.subTest(token=token):
@@ -335,7 +335,7 @@ class ScaffoldTest(unittest.TestCase):
 
             self.scaffold(directory)
 
-            text = gitignore.read_text()
+            text = gitignore.read_text(encoding="utf-8")
             self.assertIn("*.secret", text)
             self.assertIn("inbox/*", text)
 
@@ -553,8 +553,8 @@ class ChatAdapterTest(unittest.TestCase):
     def test_a_dense_conversation_never_reaches_the_export(self):
         self.export("--sensitive-raw-directory", str(self.raw))
 
-        self.assertNotIn("SENSITIVE-MARKER", self.output.read_text())
-        self.assertIn("NOT pulled verbatim", self.output.read_text())
+        self.assertNotIn("SENSITIVE-MARKER", self.output.read_text(encoding="utf-8"))
+        self.assertIn("NOT pulled verbatim", self.output.read_text(encoding="utf-8"))
 
     def test_its_text_goes_to_the_side_file_the_placeholder_names(self):
         self.export("--sensitive-raw-directory", str(self.raw))
@@ -562,13 +562,13 @@ class ChatAdapterTest(unittest.TestCase):
         side_files = list(self.raw.glob("*.md"))
 
         self.assertEqual(len(side_files), 1)
-        self.assertIn("SENSITIVE-MARKER", side_files[0].read_text())
-        self.assertIn(side_files[0].name, self.output.read_text())
+        self.assertIn("SENSITIVE-MARKER", side_files[0].read_text(encoding="utf-8"))
+        self.assertIn(side_files[0].name, self.output.read_text(encoding="utf-8"))
 
     def test_without_the_flag_dense_text_is_written_nowhere(self):
         result = self.export()
 
-        self.assertNotIn("SENSITIVE-MARKER", self.output.read_text())
+        self.assertNotIn("SENSITIVE-MARKER", self.output.read_text(encoding="utf-8"))
         self.assertFalse(self.raw.exists())
         self.assertIn("only to advance the watermark", result.stdout)
 
@@ -583,18 +583,18 @@ class ChatAdapterTest(unittest.TestCase):
     def test_a_private_conversation_is_marked_scrub_mandatory(self):
         self.export()
 
-        self.assertIn("scrub this section", self.output.read_text())
+        self.assertIn("scrub this section", self.output.read_text(encoding="utf-8"))
 
     def test_noise_and_bare_acknowledgements_are_dropped(self):
         self.export()
-        text = self.output.read_text()
+        text = self.output.read_text(encoding="utf-8")
 
         self.assertNotIn("thanks!", text)
         self.assertNotIn("channel_join", text)
 
     def test_wire_encoding_is_decoded_into_prose(self):
         self.export()
-        text = self.output.read_text()
+        text = self.output.read_text(encoding="utf-8")
 
         self.assertIn("<retry>", text)
         self.assertIn("the doc (https://x.test)", text)
@@ -604,7 +604,7 @@ class ChatAdapterTest(unittest.TestCase):
         """A reply does not bump its parent's timestamp, so this is the case a
         watermark alone cannot see — and the parent must not be re-reported as new."""
         self.export()
-        text = self.output.read_text()
+        text = self.output.read_text(encoding="utf-8")
 
         self.assertIn("and the follow-up", text)
         self.assertIn("thread continued", text)
