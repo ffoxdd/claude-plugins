@@ -62,7 +62,9 @@ prompt and tool schemas) paid up front whatever the outcome. The test:
 
 Scale fan-out width by work per item, not item count. Twelve agents over twelve
 substantial files is overhead as noise; twelve agents over twelve one-line
-checks is overhead as the entire bill.
+checks is overhead as the entire bill. For a fully-specified mechanical edit
+across many files, the `bulk-edit` workflow encodes this: it batches files per
+agent and holds each agent to the cheapest tier.
 
 ## Running agents you have already spawned
 

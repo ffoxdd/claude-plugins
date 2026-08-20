@@ -56,14 +56,11 @@ class MarketplaceTest(unittest.TestCase):
             with self.subTest(plugin=entry["name"]):
                 self.assertTrue(entry.get("description", "").strip())
 
-    def test_the_shelf_is_owned_by_the_organization_not_a_person(self):
-        """`owner` is the shelf, `author` is the item. The marketplace belongs to
-        the organization — that is what makes it somewhere other people add to —
-        while no plugin on it is ratified by anyone, which is what each plugin's
-        own `author` says. Collapsing the two directions both lie: an
-        organization credited as author claims a ratification nobody gave, and a
-        person named as owner makes the shelf theirs."""
-        self.assertEqual(self.marketplace["owner"]["name"], "Aligned Marketplace")
+    def test_the_shelf_and_the_items_share_one_owner(self):
+        """This marketplace is one person's preferences, so `owner` (the shelf)
+        and each plugin's `author` (the item) are the same name — a plugin
+        credited to anyone else belongs in their marketplace, not this one."""
+        self.assertEqual(self.marketplace["owner"]["name"], "Dan Fox")
 
     def test_each_description_matches_the_plugin_it_lists(self):
         """Two surfaces show one plugin's description: `/plugin` renders the

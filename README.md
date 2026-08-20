@@ -5,15 +5,14 @@ on any machine rather than living in a `CLAUDE.md` that has to be copied around.
 
 ```
 claude plugin marketplace add ffoxdd/claude-plugins
-claude plugin install dan-code-style@ffoxdd
 ```
 
 | Plugin | What it does |
 | --- | --- |
-| `dan-work-routing` | Classifies work as safety- or cost-governed, orders the cost regime, and says when a sub-agent is worth spawning. Ships the generic agents and the secret-handling rules. |
-| `dan-code-style` | Conventions for the code Claude writes and reviews. No enforcement. |
-| `dan-command-style` | Allowlist-friendly Bash, enforced by one hook. |
-| `dan-knowledge-base` | The pattern for a knowledge-base repo. Brings no sources of its own. |
+| [dan-work-routing](plugins/dan-work-routing/README.md) | Classifies work as safety- or cost-governed, orders the cost regime, and says when a sub-agent is worth spawning. Ships the generic agents, the fan-out workflows, and the secret-handling rules. Install: `/plugin install dan-work-routing@ffoxdd` |
+| [dan-code-style](plugins/dan-code-style/README.md) | Conventions for the code Claude writes and reviews. No enforcement. Install: `/plugin install dan-code-style@ffoxdd` |
+| [dan-command-style](plugins/dan-command-style/README.md) | Allowlist-friendly Bash, enforced by one hook. Install: `/plugin install dan-command-style@ffoxdd` |
+| [dan-knowledge-base](plugins/dan-knowledge-base/README.md) | The pattern for a knowledge-base repo. Brings no sources of its own. Install: `/plugin install dan-knowledge-base@ffoxdd` |
 
 ## Safety regimes live elsewhere
 
