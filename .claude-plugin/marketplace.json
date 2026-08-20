@@ -29,6 +29,11 @@
       "name": "dan-evidence-discipline",
       "source": "./plugins/dan-evidence-discipline",
       "description": "Preference \u2014 one engineer's discipline for data science and empirical work: naming the population, arm and instrument behind a number, what that number does and does not license, and what a newly-found defect invalidates. Carries the provenance that makes invalidation selective rather than all-or-nothing, and a skill for experiments you can rerun."
+    },
+    {
+      "name": "dan-secret-cache",
+      "source": "./plugins/dan-secret-cache",
+      "description": "Preference \u2014 resolve secrets through a keychain-cached wrapper rather than the manager directly, so a biometric approval costs once per secret instead of once per call. Enforced by one hook; uninstall to stop it binding."
     }
   ]
 }

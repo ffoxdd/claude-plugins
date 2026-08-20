@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/inject_context.py\" \"${CLAUDE_PLUGIN_ROOT}/context/caching.md\"",
+            "statusMessage": "loading secret-caching rules"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/deny_raw_op_read.py\"",
+            "statusMessage": "checking 1Password invocation style"
+          }
+        ]
+      }
+    ]
+  }
+}
