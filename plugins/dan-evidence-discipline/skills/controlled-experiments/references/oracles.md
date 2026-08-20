@@ -31,6 +31,36 @@ Two checks, both cheap, both before anything is measured against it:
 signals fail at chance, not beneath it. A broken oracle looks exactly like a
 real negative result, which is what makes this worth a standing rule.
 
+## Select and evaluate on disjoint samples, or the ceiling is inflated
+
+**An oracle that picks the best candidate and scores that same pick on the same
+sample reports the noise it selected on.** Taking a max over N candidates whose
+values are estimated with error biases the winner upward — the candidate that
+looks best is disproportionately the one whose error ran high. Evaluating it on
+the sample that chose it keeps the error.
+
+The fix is cross-fitting: split the sample, select on one half, evaluate on the
+other, then average both assignments. It costs nothing but arithmetic.
+
+The diagnostic, when a split is not yet built: **sweep the selection budget.** An
+unbiased estimate is flat in how much evidence the oracle used to choose; a
+selected one climbs as the budget grows and the bias shrinks. A worked case swept
+8, 16, 32 and 48 selection samples and read the value of switching to the
+oracle's pick as −1.05, −0.64, +0.46, +0.85 — monotone in the budget, and never
+significantly positive at any of them. The same-sample estimate had reported a
+ceiling more than six times the largest honest reading, and above what the
+programme had already certified as an upper bound.
+
+**Pair it with a control the bias cannot manufacture.** Best-vs-WORST needs no
+argmax to identify, so it stays measurable under cross-fitting. When the control
+still shows the structure and the argmax value collapses, the instrument is
+working and the effect was selection. When both collapse, suspect the split.
+
+This is worth stating separately from validating an oracle's labels, because the
+labels here are correct. The oracle answers exactly the right question, on data
+that is exactly what it claims to be. Only the estimator is wrong, so every check
+aimed at the label passes.
+
 ## When contamination is found, ask what it touches
 
 The instinct is to discard everything measured against the bad labels. Usually
