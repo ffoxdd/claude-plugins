@@ -22,7 +22,7 @@ log(`${files.length} files in ${batches.length} batch(es)`)
 const OUTCOME = {
   type: 'object',
   properties: {
-    edited: { type: 'array', items: { type: 'string' }, description: 'path:line locations actually changed' },
+    edited: { type: 'array', items: { type: 'string' }, description: 'absolute path:line locations actually changed, one form throughout' },
     skipped: {
       type: 'array',
       items: {

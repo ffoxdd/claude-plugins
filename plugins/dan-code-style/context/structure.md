@@ -1,13 +1,8 @@
 # Structuring code
 
-Conventions for the code Claude writes. Design defaults, held loosely — any
-of them yields when the problem at hand genuinely disagrees.
-
-One principle unifies them: **make the structure of the code coincide with the
-best explanation of the system — and let nothing vary that the explanation
-doesn't account for.** Reify what the explanation mentions (give it a name and
-a syntactic home); forbid what it doesn't (no degree of freedom without a
-name). When a case below doesn't cover something, decide from the principle.
+One of several files of conventions for the code Claude writes. Design
+defaults, held loosely — any of them yields when the problem at hand genuinely
+disagrees.
 
 ## Code structure
 Design defaults, held loosely — any of them yields when the problem at hand genuinely disagrees.
@@ -25,13 +20,3 @@ Design defaults, held loosely — any of them yields when the problem at hand ge
 - **Encapsulation and testing discipline are force multipliers — raise them together, as a ratchet.** A small surface is a small contract (fewer tests cover more) and a seam is where a fixture can stand; in return, tests against the surface pin the contract so everything behind it can be reworked safely. Test-setup pain is the diagnostic: when a scenario is hard to construct, the missing thing is almost always a boundary, not more mocks.
 - **The testing pyramid is a default, not a rule.** Deviate deliberately where the problem demands a particular test strategy, and shape end-to-end suites along how the app is actually used (its real user journeys).
 - **Lean on the test environment, not dev.** To verify a behavior, build an isolated test scenario whose fixtures construct exactly the situation in question — a dev check proves the code ran once under whatever state dev was in, and the proof evaporates; a scenario proves it repeatably and joins the suite as a regression guard. Shared dev keeps only the final integration smoke against real external systems.
-
-## Public interfaces
-- **One canonical way per concept.** Prefer minimal public interfaces. Avoid exposing multiple variants of the same method (`choose` and `choose_with_metadata`) as parallel public API — pick the richest signature as the canonical one; callers who need less use the subset. Internal performance optimizations (skipping expensive fields in hot paths, recording, logging, caching) are implementation details, not API shape; don't let them fork method signatures.
-- **Don't re-export from package init files.** Callers import from the canonical module path where the symbol is actually defined. Keep `__init__.py` (Python), `index.ts` (TypeScript when used as a barrel), `mod.rs` (Rust) empty or minimal rather than restating `from .x import Y; __all__ = ["Y"]`. Imports earn their length by documenting where things live; "go to definition" works trivially; refactoring a symbol's location doesn't leave stale re-export breadcrumbs. The exception is a published library that needs a stable public API surface independent of internal layout — but for internal or application code, always prefer canonical paths.
-
-## Code style
-- **Spaced-out, "scientific style" formatting.** Lean toward more whitespace: blank lines between logical steps, and a willingness to break a construct onto an indented new line rather than packing it tight. The general rule: **a multi-line block is surrounded by blank lines on both sides** — one before its first line and one after its last — because a block needs room to breathe to be visually processed as a block rather than as lines bleeding into their neighbors. So a single-line sibling sitting immediately above a multi-line entry gets separated from it too; only *consecutive single-line* entries pack together with no blank lines. The exception is the containing block's own opening: the first child hugs its parent (no blank line after `def foo():`, a `mapping:` key, or an opening `(`/`{`/`[`), and nothing is inserted before the container's closing token. A comment introducing a block belongs to that block, so the blank line goes above the comment, never between the comment and what it introduces.
-- **Don't add box/banner comment dividers** (e.g. a line of `#` or `-`/`=` repeated as a section rule) to new code. If a file already has them, leave existing ones alone rather than stripping them mid-task, but don't introduce the pattern in files you write.
-- **Format code for diff stability — never by alignment.** No hanging alignment (continuation lines aligned under an opening paren or an earlier token) and no vertical column alignment across neighboring lines (padded column names/types in DDL, aligned trailing comments): a one-token edit then rewrites the whole block in the diff. A continuation line is indented one step past its parent line, nothing more. A comment that would trail in an aligned column goes on its own line above instead. Applies everywhere code lives in git, SQL/DDL and config included; a code block in a rendered design document may align for readability, since nothing diffs it.
-- **YAML: block style by default; flow style only for an entry that fits on one line.** A `{…}`/`[…]` earns its compactness only when the whole entry fits within the file's line width (~100 unless the project sets tighter). The moment it would wrap, write the entry in block style — one key per line, one indent step — and never wrap *inside* a flow construct, which is the worst of both styles. In a block sequence the spaced-out rule applies: a multi-line entry gets a blank line after it before the next `-`; consecutive one-line entries pack. Comments sit on their own line above the entry they describe, never trailing — a trailing comment is what pushes the line past the limit, and a column of them is alignment.

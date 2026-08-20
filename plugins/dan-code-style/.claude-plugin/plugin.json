@@ -1,7 +1,7 @@
 {
   "name": "dan-code-style",
   "description": "Preference \u2014 one engineer's conventions for the code Claude writes and reviews: naming, structure, formatting, what not to write down, and where a published deliverable's source lives. No enforcement.",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "author": {
     "name": "Dan Fox"
   },

@@ -15,6 +15,21 @@
           },
           {
             "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/inject_context.py\" \"${CLAUDE_PLUGIN_ROOT}/context/interfaces.md\"",
+            "statusMessage": "loading conventions: public surfaces and style"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/inject_context.py\" \"${CLAUDE_PLUGIN_ROOT}/context/documenting.md\"",
+            "statusMessage": "loading conventions: documenting and formatting"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/inject_context.py\" \"${CLAUDE_PLUGIN_ROOT}/context/data.md\"",
+            "statusMessage": "loading conventions: data and schema"
+          },
+          {
+            "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/inject_context.py\" \"${CLAUDE_PLUGIN_ROOT}/context/durability.md\"",
             "statusMessage": "loading conventions: writing things that stay true"
           }
