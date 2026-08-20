@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/inject_context.py\" \"${CLAUDE_PLUGIN_ROOT}/context/style.md\"",
+            "statusMessage": "loading code conventions"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/inject_context.py\" \"${CLAUDE_PLUGIN_ROOT}/context/primer.md\"",
+            "statusMessage": "loading routing primer"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/inject_context.py\" \"${CLAUDE_PLUGIN_ROOT}/context/secrets.md\"",
+            "statusMessage": "loading secret-handling rules"
+          }
+        ]
+      }
+    ]
+  }
+}

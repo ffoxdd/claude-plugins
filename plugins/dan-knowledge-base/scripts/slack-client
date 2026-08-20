@@ -1,0 +1,334 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "playwright",
+#   "requests",
+# ]
+# ///
+#
+# Reads Slack using a session captured from a real logged-in browser tab
+# (login command), instead of a Slack-app bot token. This trades a scoped,
+# app-issued grant for the full breadth of your own Slack session — chosen
+# because issuing a bot token requires Slack workspace-admin approval to
+# create an app, which wasn't available. The captured credential is stored
+# local-only under ~/.cache and is as sensitive as your Slack login; never
+# copy it into 1Password or commit it anywhere. It also rides on Slack's
+# undocumented internal API (the same one the web client uses) rather than
+# the public Bot API, so it has no external support/compatibility guarantee.
+#
+# Only invoke this when you're actually working in a PII-handling context —
+# there's no runtime check enforcing that, it's on you.
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+import requests
+
+MENTION_PATTERN = re.compile(r"<@([UW][A-Z0-9]+)>")
+
+SESSION_FILE = Path.home() / ".cache" / "slack-client" / "session.json"
+LOGIN_URL = "https://slack.com/signin#/domain-signin"
+LOGIN_TIMEOUT_MILLISECONDS = 5 * 60 * 1000
+
+
+def load_session():
+    if not SESSION_FILE.exists():
+        raise SystemExit("no session found — run 'slack-client login' first")
+    session = json.loads(SESSION_FILE.read_text())
+    return session["token"], session["cookie"]
+
+
+def command_login(arguments):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=False)
+        context = browser.new_context()
+        page = context.new_page()
+        page.goto(LOGIN_URL)
+
+        print("complete login in the opened browser window...", file=sys.stderr)
+        page.wait_for_url("https://*.slack.com/client/*", timeout=LOGIN_TIMEOUT_MILLISECONDS)
+
+        workspace_host = page.url.split("/")[2]
+
+        local_config = page.evaluate("() => localStorage.getItem('localConfig_v2')")
+        if not local_config:
+            raise SystemExit("could not find localConfig_v2 in the logged-in page")
+        teams = json.loads(local_config)["teams"]
+        token = next(iter(teams.values()))["token"]
+
+        cookie_value = None
+        for cookie in context.cookies():
+            if cookie["name"] == "d":
+                cookie_value = cookie["value"]
+                break
+        if not cookie_value:
+            raise SystemExit("could not find the 'd' session cookie")
+
+        browser.close()
+
+    SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SESSION_FILE.write_text(
+        json.dumps({"token": token, "cookie": cookie_value, "workspace_host": workspace_host})
+    )
+    SESSION_FILE.chmod(0o600)
+    print(f"session saved for {workspace_host}", file=sys.stderr)
+
+
+def call_api(method, **params):
+    token, cookie = load_session()
+    response = requests.post(
+        f"https://slack.com/api/{method}",
+        data={"token": token, **params},
+        cookies={"d": cookie},
+    )
+    response.raise_for_status()
+    body = response.json()
+    if not body.get("ok"):
+        error = body.get("error", "unknown_error")
+        if error in ("invalid_auth", "not_authed"):
+            raise SystemExit("session expired or invalid — run 'slack-client login' again")
+        raise SystemExit(f"slack api error: {error}")
+    return body
+
+
+def resolve_user_names(user_ids, cache):
+    names = []
+    for user_id in user_ids:
+        if user_id not in cache:
+            user = call_api("users.info", user=user_id)["user"]
+            cache[user_id] = (
+                user.get("real_name")
+                or user.get("profile", {}).get("display_name")
+                or user_id
+            )
+        names.append(cache[user_id])
+    return names
+
+
+def resolve_message_users(message, user_name_cache):
+    if message.get("user"):
+        message["user_name"] = resolve_user_names([message["user"]], user_name_cache)[0]
+    text = message.get("text")
+    if text:
+        for user_id in set(MENTION_PATTERN.findall(text)):
+            name = resolve_user_names([user_id], user_name_cache)[0]
+            text = text.replace(f"<@{user_id}>", f"@{name}")
+        message["text"] = text
+    return message
+
+
+def is_lock_listed_channel(entry):
+    """True for a private channel — the lock icon in the channel list.
+
+    Workspace convention: a lock-listed channel is where PII is permitted, so
+    consumers treat these as PHI-designated. DMs and group DMs are private in
+    the API sense but carry no lock in the channel list, so they don't count.
+    """
+    if entry.get("is_im") or entry.get("is_mpim"):
+        return False
+    return bool(entry.get("is_private"))
+
+
+def describe_conversation(entry, user_name_cache):
+    if entry.get("is_im"):
+        other_user = entry.get("user")
+        return resolve_user_names([other_user], user_name_cache)[0] if other_user else "(direct message)"
+    if entry.get("is_mpim"):
+        members = call_api("conversations.members", channel=entry["id"])["members"]
+        return ", ".join(resolve_user_names(members, user_name_cache))
+    return entry.get("name", entry["id"])
+
+
+def resolve_channel_id(channel):
+    if channel[:1] in ("C", "G", "D") and channel.isupper():
+        return channel
+    cursor = None
+    while True:
+        arguments = {"limit": 200, "types": "public_channel,private_channel"}
+        if cursor:
+            arguments["cursor"] = cursor
+        response = call_api("conversations.list", **arguments)
+        for entry in response["channels"]:
+            if entry["name"] == channel.lstrip("#"):
+                return entry["id"]
+        cursor = response.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+    raise SystemExit(f"no channel found matching '{channel}'")
+
+
+def command_channels(arguments):
+    types = arguments.types
+    if types == "all":
+        types = "public_channel,private_channel,mpim,im"
+    user_name_cache = {}
+    cursor = None
+    while True:
+        list_arguments = {"limit": 200, "types": types}
+        if cursor:
+            list_arguments["cursor"] = cursor
+        response = call_api("conversations.list", **list_arguments)
+        for entry in response["channels"]:
+            print(f"{entry['id']}\t{describe_conversation(entry, user_name_cache)}")
+        cursor = response.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+
+
+def command_memberships(arguments):
+    """Every conversation the authed user is a member of, in the starred format.
+
+    `users.conversations` is membership-scoped (unlike `conversations.list`,
+    which returns all public channels regardless of membership), so this is
+    the "anything I'm involved in" listing.
+    """
+    user_name_cache = {}
+    cursor = None
+    while True:
+        list_arguments = {
+            "limit": 200,
+            "types": "public_channel,private_channel,mpim,im",
+            "exclude_archived": True,
+        }
+        if cursor:
+            list_arguments["cursor"] = cursor
+        response = call_api("users.conversations", **list_arguments)
+        for entry in response["channels"]:
+            lock = "locked" if is_lock_listed_channel(entry) else "-"
+            print(f"{entry['id']}\t{lock}\t{describe_conversation(entry, user_name_cache)}")
+        cursor = response.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+
+
+def command_starred(arguments):
+    user_name_cache = {}
+    cursor = None
+    while True:
+        list_arguments = {"limit": 100}
+        if cursor:
+            list_arguments["cursor"] = cursor
+        response = call_api("stars.list", **list_arguments)
+        for item in response.get("items", []):
+            if item.get("type") in ("channel", "group", "mpim", "im"):
+                channel_id = item.get("channel")
+                if not channel_id:
+                    continue
+                entry = call_api("conversations.info", channel=channel_id)["channel"]
+                lock = "locked" if is_lock_listed_channel(entry) else "-"
+                print(f"{channel_id}\t{lock}\t{describe_conversation(entry, user_name_cache)}")
+        cursor = response.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+
+
+def command_history(arguments):
+    channel_id = resolve_channel_id(arguments.channel)
+    history_arguments = {"channel": channel_id, "limit": arguments.limit}
+    if arguments.oldest:
+        history_arguments["oldest"] = arguments.oldest
+    response = call_api("conversations.history", **history_arguments)
+    user_name_cache = {}
+    for message in response["messages"]:
+        if arguments.resolve:
+            resolve_message_users(message, user_name_cache)
+        print(json.dumps(message))
+
+
+def command_replies(arguments):
+    channel_id = resolve_channel_id(arguments.channel)
+    response = call_api(
+        "conversations.replies",
+        channel=channel_id,
+        ts=arguments.thread_ts,
+        limit=arguments.limit,
+    )
+    user_name_cache = {}
+    for message in response["messages"]:
+        if arguments.resolve:
+            resolve_message_users(message, user_name_cache)
+        print(json.dumps(message))
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="slack-client",
+        description="Read-only Slack access via a captured browser session. "
+        "Only use this when working in a PII-handling context.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser("login", help="capture a session by logging in via a real browser")
+
+    channels_parser = subparsers.add_parser(
+        "channels", help="list conversations visible to your session"
+    )
+    channels_parser.add_argument(
+        "--types",
+        default="public_channel,private_channel",
+        help="comma-separated conversation types "
+        "(public_channel,private_channel,mpim,im) or 'all'; "
+        "requesting mpim/im resolves member display names",
+    )
+
+    subparsers.add_parser(
+        "starred", help="list your starred channels/conversations (id and name)"
+    )
+
+    subparsers.add_parser(
+        "memberships",
+        help="list every conversation you are a member of (id, lock, name)",
+    )
+
+    history_parser = subparsers.add_parser(
+        "history", help="fetch recent messages from a channel"
+    )
+    history_parser.add_argument("channel", help="channel name (without #) or ID")
+    history_parser.add_argument("--limit", type=int, default=20)
+    history_parser.add_argument(
+        "--oldest",
+        default=None,
+        help="only return messages at or after this Slack ts (for incremental pulls)",
+    )
+    history_parser.add_argument(
+        "--resolve",
+        action="store_true",
+        help="resolve author + @mention user IDs to display names",
+    )
+
+    replies_parser = subparsers.add_parser(
+        "replies", help="fetch the replies in a thread"
+    )
+    replies_parser.add_argument("channel", help="channel name (without #) or ID")
+    replies_parser.add_argument("thread_ts", help="ts of the thread's parent message")
+    replies_parser.add_argument("--limit", type=int, default=200)
+    replies_parser.add_argument(
+        "--resolve",
+        action="store_true",
+        help="resolve author + @mention user IDs to display names",
+    )
+
+    arguments = parser.parse_args()
+
+    if arguments.command == "login":
+        command_login(arguments)
+    elif arguments.command == "channels":
+        command_channels(arguments)
+    elif arguments.command == "starred":
+        command_starred(arguments)
+    elif arguments.command == "memberships":
+        command_memberships(arguments)
+    elif arguments.command == "history":
+        command_history(arguments)
+    elif arguments.command == "replies":
+        command_replies(arguments)
+
+
+if __name__ == "__main__":
+    main()

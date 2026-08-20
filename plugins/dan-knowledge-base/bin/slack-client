@@ -1,0 +1,13 @@
+#!/bin/sh
+# The chat adapter's entry point on PATH, for the one command a person types by hand:
+# `slack-client login`.
+#
+# Claude Code puts every installed plugin's bin/ directory on PATH, so shipping this
+# file is the whole of "put slack-client on PATH" — nothing written into $HOME, and
+# nothing to re-point when the version-stamped plugin root changes.
+#
+# The interpreter is named here rather than left to the script's own
+# `#!/usr/bin/env -S uv run --script` shebang: `-S` is a GNU extension, and Git Bash on
+# Windows is not a platform to bet the chat adapter on. The dependencies stay inline in
+# the script (PEP 723), which is what lets this plugin ship it with no install step.
+exec uv run --script "$(dirname "$0")/../scripts/slack-client" "$@"

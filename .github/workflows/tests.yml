@@ -1,0 +1,35 @@
+# With auto-update on, `main` is the release channel: whatever lands here
+# reaches everyone's next session with nobody choosing the moment. So the suite
+# is the release gate rather than a convenience, and it runs on all three
+# platforms the plugins claim to support — on Windows through Git Bash, which is
+# where the "every script is python3" claim either holds or doesn't.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  suite:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # Full history: one test asserts that a plugin's last content edit is no
+      # newer than its last version bump, and a shallow clone cannot see that.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Run the suite
+        shell: bash
+        run: python3 -m unittest discover -s tests -v

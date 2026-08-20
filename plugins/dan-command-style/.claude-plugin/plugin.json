@@ -1,0 +1,11 @@
+{
+  "name": "dan-command-style",
+  "description": "Preference — one convention for how Claude invokes commands: allowlist-friendly Bash. Enforced by one hook; uninstall to stop it binding.",
+  "version": "0.3.1",
+  "author": {
+    "name": "Dan Fox"
+  },
+  "keywords": [
+    "preference"
+  ]
+}

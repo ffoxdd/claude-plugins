@@ -1,0 +1,55 @@
+{
+  "layout": {
+    "inbox": "inbox",
+    "processed": "inbox/processed",
+    "notes": "notes",
+    "watermarks": "notes/.sync-state"
+  },
+
+  "sources": {
+    "email": {
+      "adapter": "email",
+      "feeds": ["notes/meetings", "notes/team/log.md"],
+      "watermark": {"format": "iso-8601", "boundary": "exclusive"},
+      "ledger": "notes/.delivery-ledger",
+      "ledger_retention_days": 180,
+      "graph": {
+        "client_id": "<the mail MCP server's own client id>",
+        "tenant_id": "<your tenant id>",
+        "credential_cache": "~/.config/ms-365-mcp-server/msal-token-cache.json"
+      },
+      "senders": [
+        {
+          "match": "domain",
+          "value": "fathom.video",
+          "observed": "no-reply@fathom.video",
+          "body_ends_at": "[FATHOM]"
+        }
+      ],
+      "shape_signatures": ["ask fathom", "view meeting", "shared a recap"]
+    },
+
+    "chat": {
+      "adapter": "chat",
+      "feeds": ["notes/"],
+      "watermark": {"format": "epoch-seconds", "boundary": "inclusive"},
+      "dense_conversations": ["#billing-ops", "#eligibility"],
+      "history_limit": 1000,
+      "replies_limit": 200
+    },
+
+    "task-board": {
+      "adapter": null,
+      "feeds": ["notes/delivery/board.md"],
+      "watermark": {"format": "epoch-milliseconds", "boundary": "exclusive"},
+      "scope_control": {"container": "<a container known to be empty>", "expected_items": 0}
+    },
+
+    "design-boards": {
+      "adapter": null,
+      "reactive": true,
+      "feeds": ["notes/design"],
+      "known_documents": {"Sprint Planning": "<stable-file-key>"}
+    }
+  }
+}
