@@ -1,11 +1,12 @@
 {
   "name": "dan-work-routing",
   "description": "Classify work before doing it: a safety constraint governs where one applies, cost governs everything else, never a blend. Carries the cost ordering, when to spawn a sub-agent, and how to handle secrets.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": {
     "name": "Dan Fox"
   },
   "keywords": [
     "preference"
-  ]
+  ],
+  "workflows": "./workflows/"
 }

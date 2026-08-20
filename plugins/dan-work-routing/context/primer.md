@@ -47,7 +47,11 @@ prompt and tool schemas) paid up front whatever the outcome. The test:
 > session from loading?
 
 - **Searching or exploring many files** — spawn. It reads fifty files and
-  returns a paragraph; this session never sees the fifty.
+  returns a paragraph; this session never sees the fifty. When the reading
+  partitions by directory or subsystem, use the `explore` workflow rather than
+  hand-rolling the fan-out: it fixes the reader tier, the disjoint slicing, and
+  the synthesis barrier, so those decisions are made once in a script instead of
+  re-derived each session.
 - **Work needing context already in this window** — don't. You would pay to
   re-transmit what is already here, then pay again for the result.
 - **Context that partitions cleanly** — each agent reading a different slice is
