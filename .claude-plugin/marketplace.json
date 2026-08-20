@@ -13,27 +13,22 @@
     {
       "name": "dan-code-style",
       "source": "./plugins/dan-code-style",
-      "description": "Preference \u2014 one engineer's conventions for the code Claude writes and reviews: naming, structure, formatting, what not to write down, and where a published deliverable's source lives. No enforcement."
+      "description": "Preference — one engineer's conventions for the code Claude writes and reviews: naming, structure, formatting, what not to write down, and where a published deliverable's source lives. No enforcement."
     },
     {
       "name": "dan-command-style",
       "source": "./plugins/dan-command-style",
-      "description": "Preference \u2014 one convention for how Claude invokes commands: allowlist-friendly Bash. Enforced by one hook; uninstall to stop it binding."
+      "description": "Preference — one convention for how Claude invokes commands: allowlist-friendly Bash. Enforced by one hook; uninstall to stop it binding."
     },
     {
       "name": "dan-knowledge-base",
       "source": "./plugins/dan-knowledge-base",
-      "description": "Preference \u2014 the pattern for a knowledge-base repo: raw intake never committed, distilled notes committed, watermarks per live source. Carries the intake lifecycle, the note types that decide how each file is updated, and the trap classes a new source hides. Brings no sources of its own \u2014 those belong to the repo, and keeping one at all is a declinable way to work."
+      "description": "Preference — the pattern for a knowledge-base repo: raw intake never committed, distilled notes committed, watermarks per live source. Carries the intake lifecycle, the note types that decide how each file is updated, and the trap classes a new source hides. Brings no sources of its own — those belong to the repo, and keeping one at all is a declinable way to work."
     },
     {
       "name": "dan-evidence-discipline",
       "source": "./plugins/dan-evidence-discipline",
-      "description": "Preference \u2014 one engineer's discipline for data science and empirical work: naming the population, arm and instrument behind a number, what that number does and does not license, and what a newly-found defect invalidates. Carries the provenance that makes invalidation selective rather than all-or-nothing, and a skill for experiments you can rerun."
-    },
-    {
-      "name": "dan-secret-cache",
-      "source": "./plugins/dan-secret-cache",
-      "description": "Preference \u2014 resolve secrets through a keychain-cached wrapper rather than the manager directly, so a biometric approval costs once per secret instead of once per call. Enforced by one hook; uninstall to stop it binding."
+      "description": "Preference — one engineer's discipline for data science and empirical work: naming the population, arm and instrument behind a number, what that number does and does not license, and what a newly-found defect invalidates. Carries the provenance that makes invalidation selective rather than all-or-nothing, and a skill for experiments you can rerun."
     }
   ]
 }
