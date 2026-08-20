@@ -14,6 +14,16 @@ the regime, how to tell, and what the procedure is — and that definition wins
 over anything here. Where nothing establishes one, every kind of work is
 cost-governed.
 
+## What never enters the decision
+
+- **Never invoke time, lateness, or "fatigue" as a factor.** Do not mention the
+  hour, how long a session has run, or any human-fatigue framing; an agent does
+  not tire. Never decide to stop, defer, checkpoint, or de-scope on the basis of
+  an imagined fatigue or time concern. Continuing or stopping rests on real
+  factors only: correctness, verified evidence, risk to production, or an
+  explicit instruction. When a risky change needs care, take the care — never
+  use "it's late" as a proxy for "be careful."
+
 ## The cost regime
 
 This is the default, and it governs more than data questions: writing code,
