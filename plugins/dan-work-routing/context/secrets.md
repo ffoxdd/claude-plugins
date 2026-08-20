@@ -26,3 +26,13 @@ of a password — so the discipline is simply never to materialize one.
   field layout are known, carry them for the rest of the session and write the
   reference down where the work lives, rather than re-fetching to re-read one
   field.
+
+- **A resolution you cannot see may be costing someone an approval.** A secrets
+  manager gated on biometrics raises its prompt on the desktop, not in the
+  terminal: the command simply takes longer and then succeeds, so a session
+  reads its own exit status as evidence that resolving was free. It is not.
+  Treat every resolve as though it interrupts a person — resolve once and carry
+  the value for the rest of the work rather than re-resolving per call, and when
+  a run needs several, say so first rather than spending their attention a
+  prompt at a time without mentioning it.
+
