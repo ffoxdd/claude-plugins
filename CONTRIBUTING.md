@@ -40,7 +40,7 @@ a first name, pick something unambiguous and put it in both fields.
 The prefix is more than a label on the install screen. A plugin's name is the
 namespace for everything inside it, so it is what a person types
 (`/dan-code-style:principled`) and what they read in their settings
-(`dan-code-style@aligned`). Seeing whose rules you are running, at the moment
+(`dan-code-style@ffoxdd`). Seeing whose rules you are running, at the moment
 you run them, is the point.
 
 One thing the prefix cannot cover: **installing at `--scope project` writes to a
