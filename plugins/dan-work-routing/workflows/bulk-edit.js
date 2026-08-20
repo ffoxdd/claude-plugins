@@ -47,7 +47,7 @@ const outcomes = await pipeline(
   (batch, _, index) => agent(
     `Edit specification:\n${edit}\n\nApply it to exactly these files, and stay inside them:\n` +
     batch.map(file => `- ${file}`).join('\n'),
-    { label: `edit:batch-${index + 1}`, phase: 'Edit', agentType: 'bulk-editor', schema: OUTCOME },
+    { label: `edit:batch-${index + 1}`, phase: 'Edit', agentType: 'dan-work-routing:bulk-editor', schema: OUTCOME },
   ),
 )
 
