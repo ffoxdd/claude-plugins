@@ -24,6 +24,11 @@
       "name": "dan-knowledge-base",
       "source": "./plugins/dan-knowledge-base",
       "description": "Preference \u2014 the pattern for a knowledge-base repo: raw intake never committed, distilled notes committed, watermarks per live source. Carries the intake lifecycle, the note types that decide how each file is updated, and the trap classes a new source hides. Brings no sources of its own \u2014 those belong to the repo, and keeping one at all is a declinable way to work."
+    },
+    {
+      "name": "dan-evidence-discipline",
+      "source": "./plugins/dan-evidence-discipline",
+      "description": "Preference \u2014 one engineer's discipline for data science and empirical work: naming the population, arm and instrument behind a number, what that number does and does not license, and what a newly-found defect invalidates. Carries the provenance that makes invalidation selective rather than all-or-nothing, and a skill for experiments you can rerun."
     }
   ]
 }

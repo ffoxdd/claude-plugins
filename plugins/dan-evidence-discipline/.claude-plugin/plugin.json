@@ -1,0 +1,11 @@
+{
+  "name": "dan-evidence-discipline",
+  "description": "Preference — one engineer's discipline for data science and empirical work: naming the population, arm and instrument behind a number, what that number does and does not license, and what a newly-found defect invalidates. Carries the provenance that makes invalidation selective rather than all-or-nothing, and a skill for experiments you can rerun.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Dan Fox"
+  },
+  "keywords": [
+    "preference"
+  ]
+}
