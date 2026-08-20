@@ -5,8 +5,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/inject_context.py\" \"${CLAUDE_PLUGIN_ROOT}/context/style.md\"",
-            "statusMessage": "loading code conventions"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/inject_context.py\" \"${CLAUDE_PLUGIN_ROOT}/context/naming.md\"",
+            "statusMessage": "loading conventions: naming things"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/inject_context.py\" \"${CLAUDE_PLUGIN_ROOT}/context/structure.md\"",
+            "statusMessage": "loading conventions: structuring code"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/inject_context.py\" \"${CLAUDE_PLUGIN_ROOT}/context/durability.md\"",
+            "statusMessage": "loading conventions: writing things that stay true"
           }
         ]
       }
