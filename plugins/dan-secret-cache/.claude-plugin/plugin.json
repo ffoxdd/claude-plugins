@@ -1,7 +1,7 @@
 {
   "name": "dan-secret-cache",
   "description": "Preference \u2014 resolve secrets through a keychain-cached wrapper rather than the manager directly, so a biometric approval costs once per secret instead of once per call. Enforced by one hook; uninstall to stop it binding.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "Dan Fox"
   },

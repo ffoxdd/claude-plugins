@@ -30,6 +30,18 @@ so uninstalling the plugin stops the convention rather than stranding you.
   *same* item up twice: carry its reference and field layout for the rest of the session, and
   write it down where the work lives. `get-secret --list` says what is already cached and
   prompts for nothing.
+- **Two dialogs can ask, and they are fixed in different places.** The manager's biometric prompt
+  comes from its desktop app, and is the one the cache removes; Claude Code's permission prompt
+  comes from `permissions.allow` in `~/.claude/settings.json`, and no amount of caching touches
+  it. A command can be silent at one layer and still prompt at the other, so when approvals
+  persist, establish which layer is asking before changing anything — the answer decides which
+  file to edit. A `get-secret` call made *inside* an already-allowlisted command is a subprocess
+  and raises neither.
+- **Resolving a secret is worth leaving un-allowlisted.** `Bash(get-secret --list)` and
+  `Bash(get-secret --invalidate *)` are safe to allow, since neither can print a secret value. A
+  bare `get-secret <reference>` is not: its output *is* the secret, so an allowlisted call would
+  drop it into the transcript unprompted. Widening to `Bash(get-secret *)` gives that up — the
+  prompt is what keeps the rule below from resting on good intentions alone.
 - **Never echo a resolved value** into the conversation, a command line, or a file. Reference
   it and let it resolve at runtime — `export TOKEN="$(get-secret 'op://…')"`, never a literal.
   Materializing it copies it into the transcript, scrollback, shell history, and `ps`.
