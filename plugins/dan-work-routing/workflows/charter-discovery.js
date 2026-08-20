@@ -1,7 +1,7 @@
 export const meta = {
   name: 'charter-discovery',
   description: 'Find the candidate charters in a programme by fanning probes over independent places work could be hiding',
-  whenToUse: 'When an open-ended loop needs its next unit of work discovered rather than assigned, and the search partitions into independent probes. Pass {programme, probes: [{name, instructions}]}. Returns ranked avenues, or an empty list, which is the loop\'s termination signal.',
+  whenToUse: 'NOT the default way to discover charters — most discovery is running an instrument (a grep, a script, a ledger read) and costs nothing. Reach for this only when the spawn test passes: probing is expensive enough that reading it here would cost more than a sub-agent, AND the probes partition cleanly. Pass {programme, probes: [{name, instructions}]}. Returns ranked avenues, or an empty list, which is the loop\'s termination signal.',
   phases: [
     { title: 'Probe', detail: 'one probe per place work could hide, cheapest capable tier' },
     { title: 'Judge', detail: 'drop topics, keep avenues, rank by what a negative would settle' },
@@ -14,8 +14,16 @@ export const meta = {
 // have to be re-entrant. So this returns the candidate list and stops. Picking,
 // executing and recording stay where the judgment and the queue are.
 //
-// The primer's spawn test applies unchanged: each probe reads its own place and
-// returns candidates, so the session pays for a list rather than for the search.
+// Fanning out is NOT a property of discovery — it is a routing decision, and it
+// belongs to the caller. Much discovery is one instrument returning a list, which
+// costs a tool call and no agents at all; spawning probes for that pays overhead
+// to search ground the session could have read directly.
+//
+// So the primer's spawn test decides whether this script is the right shape:
+// probes must each read ground this session would otherwise load, and must
+// partition — overlapping probes re-read the same files N times, which the primer
+// routes to serial instead. A single probe is a legitimate degenerate case; it is
+// still a script's job only if the search is worth an agent at all.
 const { programme, probes } = args
 
 // `falsifier` is required, and that is the whole filter. An avenue is a step whose

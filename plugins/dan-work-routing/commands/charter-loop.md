@@ -18,11 +18,17 @@ well-written charter is not.
 
 ## The cycle
 
-1. **Discover.** Run the `charter-discovery` workflow with probes over the places
-   work could hide in this scope. Probes must be independent; overlapping ones
-   re-read the same ground and buy nothing. Prefer probes that search the
+1. **Discover.** Find the avenues in this scope. Prefer searches over the
    COMPLEMENT of what is known — code that never names the concept, caveats whose
    stated expiry has passed, ledger rows still open.
+
+   How to run that search is a routing decision, so make it rather than assuming
+   one. Often it is a single instrument — a grep, a script, a ledger read — and
+   costs a tool call with no agents at all. Use the `charter-discovery` workflow
+   when the spawn test passes: probing is expensive enough that reading it here
+   would cost more than a sub-agent, and the probes partition cleanly. Reaching
+   for the workflow by default pays overhead to search ground you could have read
+   directly.
 
 2. **Pick one.** Take the top-ranked avenue. Do not batch several into one
    charter: a unit with two questions cannot come back negative on one of them.

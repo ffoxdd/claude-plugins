@@ -83,16 +83,22 @@ A discovery pass returns candidates, not defects. Something can be silent about
 a concept because it genuinely does not depend on it. The instrument narrows
 where to look; the judgment stays a judgment.
 
-When the search partitions into independent probes, the `charter-discovery`
-workflow encodes this pass: one probe per place work could hide, a judge that
-drops topics and ranks what survives, and an empty list returned plainly when
-there is nothing — which is the loop's termination signal rather than a failure
-to find one.
+**Whether discovery fans out is a routing decision, not a property of
+discovery.** Most of it is running an instrument — a grep, a script, a ledger
+read — which costs a tool call and no agents at all. Spawning probes for that
+pays overhead to search ground you could have read directly.
 
-Discovery is a workflow; the loop is not. Executing a charter can mean hours
-behind a job queue and a verdict that needs judging, so a script would either
-block on the first long job or have to be re-entrant. Fan out the search, then
-come back and decide.
+Apply the primer's spawn test as you would anywhere: probes earn agents when
+each reads ground this session would otherwise load, and when they partition.
+Where that holds, the `charter-discovery` workflow encodes the pass — one probe
+per place work could hide, a judge that drops topics and ranks what survives,
+and an empty list returned plainly when there is nothing, which is the loop's
+termination signal rather than a failure to find one. Where it does not, run the
+instrument and read the list.
+
+The LOOP is not a workflow either way. Executing a charter can mean hours behind
+a job queue and a verdict that needs judging, so a script would block on the
+first long job or have to be re-entrant.
 
 ## What counts as an avenue
 
