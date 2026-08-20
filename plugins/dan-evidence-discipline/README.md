@@ -11,29 +11,31 @@ Install:
 
 ## What it carries
 
-Three context files load at session start, because these rules bind at the
-moment a number is about to be misread — which is exactly when nobody thinks to
-go looking for guidance.
+Four skills, all loaded on demand. They used to load at session start, on the
+argument that these rules bind exactly when nobody thinks to go looking for
+them. That argument was wrong about the cost: this is a plugin for empirical
+work, and most sessions are not, so the always-on version spent tokens in every
+web-app session for content that did not apply there. On-demand is the honest
+scope — the descriptions carry enough to pull the right one in when a number is
+actually in play.
 
-**`context/measuring.md`** — producing a number worth trusting. One principle
+**`measuring`** — producing a number worth trusting. One principle
 generates the file: a number is a property of (object, arm, population,
 instrument), never of the programme. Naming each of the four, validating an
 instrument before believing it, matching a metric's resolution to the contrast a
 decision actually makes, and why structural correctness never moves a baseline.
 
-**`context/claims.md`** — what a number licenses. The inferences that look valid
+**`interpreting-results`** — what a number licenses. The inferences that look valid
 and are not: reading an ablation as a ceiling, reporting a null without checking
 the change reached the system, treating results measured under a defect as
 worthless rather than as non-transferable, and reading a mechanism off a
 difference that never cleared noise.
 
-**`context/provenance.md`** — what a result rests on and when it dies. Recording
+**`result-provenance`** — what a result rests on and when it dies. Recording
 enough that a defect can be invalidated *selectively*, why exact traceability is
 unreachable (identity is not structure, and the dependency graph has cycles
 across time), and the entity-intersection rule that stands in for the structure
 you cannot record.
-
-## The skill
 
 **`controlled-experiments`** covers the half that depends on owning the
 data-generating process: pairing against a pinned reference, measuring a

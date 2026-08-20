@@ -1,3 +1,8 @@
+---
+name: interpreting-results
+description: What a measurement licenses and what it does not, which is where most wasted work lives: why an ablation measures what the CURRENT rule extracts rather than what a better one could win, why a flat reading is not automatically a null, when a result transfers to another population, and what a joint measurement can and cannot settle. Use when reading an experiment, arguing from a number, or deciding whether a negative result closes a line.
+---
+
 # What a number licenses
 
 A measurement supports some claims and not others, and the gap between the two

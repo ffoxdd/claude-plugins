@@ -1,3 +1,8 @@
+---
+name: result-provenance
+description: What a result rests on and when it dies: recording enough about a fitted constant, corpus or generated artifact that a newly-found defect invalidates selectively instead of all-or-nothing. Covers identity versus causal structure, why a version number cannot express "downstream of a defect in my own producer", and entity tags as the cheap stand-in. Use when a defect turns up under existing results, when deciding what to re-measure, or when designing what an artifact records about itself.
+---
+
 # What a result rests on, and when it dies
 
 Results accumulate, and yesterday's measurement becomes today's assumption. A

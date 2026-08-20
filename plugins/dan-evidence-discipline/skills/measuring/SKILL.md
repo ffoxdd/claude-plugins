@@ -1,3 +1,8 @@
+---
+name: measuring
+description: Producing a number worth trusting: a number is a property of (object, arm, population, instrument) and never of the program, plus the design defaults that follow — naming the denominator, pinning the reference, cancelling the structure you are not measuring, and checking that an arm moved the thing at all before reporting a null. Use when designing a measurement, choosing what to compare against, or deciding whether a number means what it appears to.
+---
+
 # Producing a number worth trusting
 
 How to measure, for empirical work of any kind — an experiment, a model
