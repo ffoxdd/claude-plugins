@@ -55,8 +55,16 @@ const landed = outcomes.filter(Boolean)
 const skipped = landed.flatMap(outcome => outcome.skipped)
 if (skipped.length) log(`${skipped.length} file(s) skipped — see result for reasons`)
 
+// A batch that threw takes its files with it, so say so rather than returning a
+// short list that reads as a complete one.
+const lost = batches.filter((_, index) => !outcomes[index])
+if (lost.length) {
+  log(`${lost.length} batch(es) failed — ${lost.flat().length} file(s) NOT edited`)
+}
+
 return {
   edited: landed.flatMap(outcome => outcome.edited),
   skipped,
-  batchesLost: outcomes.length - landed.length,
+  batchesLost: lost.length,
+  filesNotAttempted: lost.flat(),
 }
