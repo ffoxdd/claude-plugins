@@ -31,3 +31,11 @@ propose the refactor path smallest-first. The pass measures against the
 unifying principle in `context/checkable-explanation.md` — the structure of
 the code coincides with the best explanation of the system, and nothing varies
 that the explanation doesn't account for.
+
+`path-independence` is an agent for the one rule a person cannot reliably keep
+while making the change: text describes its subject, never the route that
+reached it. It reads a diff — code comments, docs, PR and issue text, review
+comments — for stated history and for the harder shape, a contrastive
+reassurance that only lands for someone who saw the old state. It runs at a
+cheap tier on purpose, because a check narrow enough to run on everything is
+worth more than one good enough to run occasionally.

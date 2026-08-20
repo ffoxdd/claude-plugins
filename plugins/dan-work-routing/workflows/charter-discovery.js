@@ -14,16 +14,14 @@ export const meta = {
 // have to be re-entrant. So this returns the candidate list and stops. Picking,
 // executing and recording stay where the judgment and the queue are.
 //
-// Fanning out is NOT a property of discovery — it is a routing decision, and it
-// belongs to the caller. Much discovery is one instrument returning a list, which
-// costs a tool call and no agents at all; spawning probes for that pays overhead
-// to search ground the session could have read directly.
-//
-// So the primer's spawn test decides whether this script is the right shape:
-// probes must each read ground this session would otherwise load, and must
+// This script is one shape discovery can take, and the caller decides whether it
+// is the right one. The primer's spawn test is the decision: probes earn agents
+// when each reads ground the session would otherwise load, and when they
 // partition — overlapping probes re-read the same files N times, which the primer
-// routes to serial instead. A single probe is a legitimate degenerate case; it is
-// still a script's job only if the search is worth an agent at all.
+// routes to serial instead. Where a single instrument answers the question, it
+// costs a tool call and no agents, and that is the cheaper shape.
+//
+// A single probe is a legitimate degenerate case, still subject to the same test.
 const { programme, probes } = args
 
 // `falsifier` is required, and that is the whole filter. An avenue is a step whose

@@ -11,13 +11,9 @@ Install:
 
 ## What it carries
 
-Four skills, all loaded on demand. They used to load at session start, on the
-argument that these rules bind exactly when nobody thinks to go looking for
-them. That argument was wrong about the cost: this is a plugin for empirical
-work, and most sessions are not, so the always-on version spent tokens in every
-web-app session for content that did not apply there. On-demand is the honest
-scope — the descriptions carry enough to pull the right one in when a number is
-actually in play.
+Four skills, all loaded on demand. Empirical work is a fraction of what a
+session does, so these carry a standing cost of their descriptions alone and
+pull in their bodies when a number is actually in play.
 
 **`measuring`** — producing a number worth trusting. One principle
 generates the file: a number is a property of (object, arm, population,

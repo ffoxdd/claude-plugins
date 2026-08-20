@@ -1,7 +1,7 @@
 {
   "name": "dan-evidence-discipline",
   "description": "Preference \u2014 one engineer's discipline for data science and empirical work: naming the population, arm and instrument behind a number, what that number does and does not license, and what a newly-found defect invalidates. Carries the provenance that makes invalidation selective rather than all-or-nothing, and a skill for experiments you can rerun.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": {
     "name": "Dan Fox"
   },
