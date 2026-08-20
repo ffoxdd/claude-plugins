@@ -33,7 +33,7 @@ def main(argv):
         return 0
 
     try:
-        text = Path(argv[0]).read_text()
+        text = Path(argv[0]).read_text(encoding="utf-8")
 
     except OSError:
         return 0

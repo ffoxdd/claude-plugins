@@ -1,7 +1,7 @@
 {
   "name": "dan-knowledge-base",
-  "description": "Preference — the pattern for a knowledge-base repo: raw intake never committed, distilled notes committed, watermarks per live source. Carries the intake lifecycle, the note types that decide how each file is updated, and the trap classes a new source hides. Brings no sources of its own — those belong to the repo, and keeping one at all is a declinable way to work.",
-  "version": "0.3.0",
+  "description": "Preference \u2014 the pattern for a knowledge-base repo: raw intake never committed, distilled notes committed, watermarks per live source. Carries the intake lifecycle, the note types that decide how each file is updated, and the trap classes a new source hides. Brings no sources of its own \u2014 those belong to the repo, and keeping one at all is a declinable way to work.",
+  "version": "0.3.1",
   "author": {
     "name": "Dan Fox"
   },

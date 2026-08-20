@@ -63,7 +63,7 @@ def load(start=None):
         )
 
     try:
-        text = Path(path).read_text()
+        text = Path(path).read_text(encoding="utf-8")
 
     except OSError as error:
         raise ConfigurationError(f"Cannot read {path}: {error}") from error

@@ -109,7 +109,7 @@ def plan(root):
 
 def exists(target, detail):
     if detail["kind"] == "gitignore":
-        return target.is_file() and GITIGNORE_SENTINEL in target.read_text()
+        return target.is_file() and GITIGNORE_SENTINEL in target.read_text(encoding="utf-8")
 
     return target.exists()
 
@@ -126,18 +126,18 @@ def apply_one(target, detail):
     if kind == "gitignore":
         # Append rather than replace: a repo that already has a gitignore has
         # rules worth more than this one.
-        existing = target.read_text() if target.is_file() else ""
+        existing = target.read_text(encoding="utf-8") if target.is_file() else ""
         separator = "" if not existing or existing.endswith("\n\n") else "\n"
-        target.write_text(existing + separator + GITIGNORE_RULES)
+        target.write_text(existing + separator + GITIGNORE_RULES, encoding="utf-8")
 
     elif kind == "empty":
         target.touch()
 
     elif kind == "text":
-        target.write_text(detail["body"])
+        target.write_text(detail["body"], encoding="utf-8")
 
     elif kind == "json":
-        target.write_text(json.dumps(detail["body"], indent=2) + "\n")
+        target.write_text(json.dumps(detail["body"], indent=2) + "\n", encoding="utf-8")
 
 
 def display(root, target):

@@ -134,7 +134,7 @@ def read_file_cache(path):
     if not path.exists():
         return None
 
-    return path.read_text().strip() or None
+    return path.read_text(encoding="utf-8").strip() or None
 
 
 def keychain_names(graph):
@@ -417,7 +417,7 @@ def read_ledger(path):
         return {}
 
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
 
     except (OSError, json.JSONDecodeError) as error:
         print(f"email_sweep: ignoring unreadable ledger at {path}: {error}", file=sys.stderr)
@@ -562,7 +562,8 @@ def main(argv=None):
             indent=2,
             sort_keys=True,
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
 
     print(arguments.output)
