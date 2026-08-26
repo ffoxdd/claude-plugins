@@ -16,6 +16,11 @@
       "description": "Preference — one engineer's conventions for the code Claude writes and reviews: naming, structure, formatting, what not to write down, and where a published deliverable's source lives. No enforcement."
     },
     {
+      "name": "dan-commit-style",
+      "source": "./plugins/dan-commit-style",
+      "description": "Preference — one shape for a branch's history: themed commits sized by the revert lens, fewer and larger over many and pure, each green on its own. One skill, loaded when committing or reshaping history. No enforcement."
+    },
+    {
       "name": "dan-command-style",
       "source": "./plugins/dan-command-style",
       "description": "Preference — one convention for how Claude invokes commands: allowlist-friendly Bash. Enforced by one hook; uninstall to stop it binding."

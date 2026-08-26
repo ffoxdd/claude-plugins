@@ -11,6 +11,7 @@ claude plugin marketplace add ffoxdd/claude-plugins
 | --- | --- |
 | [dan-work-routing](plugins/dan-work-routing/README.md) | Classifies work as safety- or cost-governed, orders the cost regime, and says when a sub-agent is worth spawning. Ships the generic agents, the fan-out workflows, and the secret-handling rules. Install: `/plugin install dan-work-routing@ffoxdd` |
 | [dan-code-style](plugins/dan-code-style/README.md) | Conventions for the code Claude writes and reviews. No enforcement. Install: `/plugin install dan-code-style@ffoxdd` |
+| [dan-commit-style](plugins/dan-commit-style/README.md) | Themed commits: each one a revert-coherent theme, green on its own, fewer and larger over many and pure. No enforcement. Install: `/plugin install dan-commit-style@ffoxdd` |
 | [dan-command-style](plugins/dan-command-style/README.md) | Allowlist-friendly Bash, enforced by one hook. Install: `/plugin install dan-command-style@ffoxdd` |
 | [dan-knowledge-base](plugins/dan-knowledge-base/README.md) | The pattern for a knowledge-base repo. Brings no sources of its own. Install: `/plugin install dan-knowledge-base@ffoxdd` |
 | [dan-project-defaults](plugins/dan-project-defaults/README.md) | What to pick when a project has not already decided: the ecosystem's canonical layout and tooling, a `docs/` folder, lint and format in the build. Scaffolds nothing. Install: `/plugin install dan-project-defaults@ffoxdd` |

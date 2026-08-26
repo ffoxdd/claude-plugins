@@ -1,0 +1,11 @@
+{
+  "name": "dan-commit-style",
+  "description": "Preference — one shape for a branch's history: themed commits sized by the revert lens, fewer and larger over many and pure, each green on its own. One skill, loaded when committing or reshaping history. No enforcement.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Dan Fox"
+  },
+  "keywords": [
+    "preference"
+  ]
+}
