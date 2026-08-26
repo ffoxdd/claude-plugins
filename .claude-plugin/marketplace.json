@@ -29,6 +29,11 @@
       "name": "dan-evidence-discipline",
       "source": "./plugins/dan-evidence-discipline",
       "description": "Preference — one engineer's discipline for data science and empirical work: naming the population, arm and instrument behind a number, what that number does and does not license, and what a newly-found defect invalidates. Carries the provenance that makes invalidation selective rather than all-or-nothing, and a skill for experiments you can rerun."
+    },
+    {
+      "name": "dan-project-defaults",
+      "source": "./plugins/dan-project-defaults",
+      "description": "Preference — what one engineer picks when a project has not already decided: the ecosystem's canonical layout, libraries and tooling, a docs/ folder written for people and agents alike, lint and format in the build, and the conventions a greenfield schema follows. Guidance only; it scaffolds nothing."
     }
   ]
 }

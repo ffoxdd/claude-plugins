@@ -13,6 +13,7 @@ claude plugin marketplace add ffoxdd/claude-plugins
 | [dan-code-style](plugins/dan-code-style/README.md) | Conventions for the code Claude writes and reviews. No enforcement. Install: `/plugin install dan-code-style@ffoxdd` |
 | [dan-command-style](plugins/dan-command-style/README.md) | Allowlist-friendly Bash, enforced by one hook. Install: `/plugin install dan-command-style@ffoxdd` |
 | [dan-knowledge-base](plugins/dan-knowledge-base/README.md) | The pattern for a knowledge-base repo. Brings no sources of its own. Install: `/plugin install dan-knowledge-base@ffoxdd` |
+| [dan-project-defaults](plugins/dan-project-defaults/README.md) | What to pick when a project has not already decided: the ecosystem's canonical layout and tooling, a `docs/` folder, lint and format in the build. Scaffolds nothing. Install: `/plugin install dan-project-defaults@ffoxdd` |
 | [dan-evidence-discipline](plugins/dan-evidence-discipline/README.md) | Measuring, and knowing what the measurement is worth: denominators, what a number licenses, and what a defect invalidates. Install: `/plugin install dan-evidence-discipline@ffoxdd` |
 
 ## Safety regimes live elsewhere
