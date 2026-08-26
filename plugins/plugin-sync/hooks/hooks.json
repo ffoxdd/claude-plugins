@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/plugin_sync.py\"",
+            "statusMessage": "checking the plugin shelf for drift"
+          }
+        ]
+      }
+    ]
+  }
+}

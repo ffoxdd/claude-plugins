@@ -13,17 +13,20 @@ The name says whose a plugin is, and every plugin here is somebody's:
 otherwise. It takes **your name as a prefix** (`dan-code-style`). Add one
 whenever you like, with nobody's approval. Two people can each keep a code style
 here and neither becomes the default, which is the whole reason the prefix
-exists. **Every plugin currently on this shelf is one of these**, including the
-one carrying a member-data rule that follows from an obligation rather than from
-taste — because the workflow around that rule is still one person's, and the
-prefix describes the plugin rather than its strongest sentence.
+exists. **Every plugin here that carries an opinion is one of these**, including
+the one carrying a member-data rule that follows from an obligation rather than
+from taste — because the workflow around that rule is still one person's, and
+the prefix describes the plugin rather than its strongest sentence.
 
-**Mechanism** — encodes something the organization has agreed is not declinable.
-It takes a **bare name**, and the bare name is the claim: not that the author
-feels strongly, but that the content is not a matter of taste and the people it
-binds have accepted it. Nothing here claims one today. If you want to, get the
-agreement first and expect to be asked for it — and if a reader can defensibly
-choose otherwise, it was a preference, and renaming it is the fix.
+**Mechanism** — takes a **bare name**, and the bare name is the claim: not that
+the author feels strongly, but that there is no defensible other opinion to
+hold. Two shapes qualify. A rule the organization has agreed is not declinable —
+get that agreement first and expect to be asked for it. Or infrastructure with
+no taste in it at all, which is what `plugin-sync`, the only one on the shelf
+today, is: repairing a plugin that no longer loads is not a position anyone
+takes, and its bare name is load-bearing besides, since an anchor everyone
+installs cannot be one person's. If a reader can defensibly choose otherwise, it
+was a preference, and renaming it is the fix.
 
 Declare which kind in `plugin.json`, alongside your name:
 
@@ -119,3 +122,15 @@ The name is the install key, so a rename is an uninstall plus a fresh install
 for everyone who had it — and any repository carrying the old name in
 `.claude/settings.json` silently stops enabling it. A version bump does not
 carry a rename. Do it early, or not at all, and say so in the commit message.
+
+What the old install does is nothing: it stays on the shelf, stops loading, and
+says so nowhere but `/plugin`. `plugin-sync` is what finds it afterwards, by
+noticing that a marketplace no longer lists a name someone has installed. So a
+rename here is survivable rather than seamless, and the commit message is what
+tells it apart from a retirement.
+
+**`plugin-sync` itself is never renamed.** It is the fixed point the rest of
+this section depends on: rename it and the copy people already have becomes an
+orphan, leaving the tool that repairs orphans as the one nobody can repair. That
+is also why it holds the shelf's only bare name — an anchor everyone is expected
+to install cannot be one person's, and a prefix would say it was.
