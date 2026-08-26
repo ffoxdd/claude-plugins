@@ -1,0 +1,11 @@
+{
+  "name": "dan-project-defaults",
+  "description": "Preference — what one engineer picks when a project has not already decided: the ecosystem's canonical layout, libraries and tooling, a docs/ folder written for people and agents alike, lint and format in the build, and the conventions a greenfield schema follows. Guidance only; it scaffolds nothing.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Dan Fox"
+  },
+  "keywords": [
+    "preference"
+  ]
+}
