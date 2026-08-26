@@ -15,8 +15,8 @@ something they wanted.
    and one whose manifest does not is reported under `unreadable` and excluded
    from every judgement below.
 
-2. **Stop early when it is clean.** Empty `orphans`, `missing`, and
-   `duplicates` means there is nothing to do. Say so in one line and stop —
+2. **Stop early when it is clean.** Empty `orphans`, `missing`, `duplicates`,
+   and `unsatisfied` means there is nothing to do. Say so in one line and stop —
    do not offer to update anything. Versions are auto-update's business, and a
    plugin merely behind is not drift.
 
@@ -42,6 +42,12 @@ something they wanted.
    - orphan, replaced: `claude plugin uninstall <old-id> -s <scope> -y` then
      `claude plugin install <new-name>@<marketplace> -s <scope>`
    - orphan, retired: the uninstall alone
+   - unsatisfied: `claude plugin update <requires>@<marketplace>` — the fix is
+     to update the **dependency**, not the plugin that reported it, and saying
+     so matters because the listing blames the dependent. If the dependency is
+     not installed at all, install it. Where the range excludes a version
+     already installed, the dependent is the one pinned too far back and
+     updating it is what widens the range.
    - missing and installable: `claude plugin install <id> -s <scope>`
    - missing and not installable: a leftover `enabledPlugins` key with no
      install behind it. Offer to remove the key from `~/.claude/settings.json`;

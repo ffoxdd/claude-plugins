@@ -29,13 +29,19 @@ class ThrowawayHome:
         self.installed = {}
         self.enabled = {}
 
-    def offering(self, marketplace, names):
+    def offering(self, marketplace, names, dependencies=None):
         location = self.root / "marketplaces" / marketplace
         (location / ".claude-plugin").mkdir(parents=True)
 
+        entries = [{"name": name} for name in names]
+
+        for entry in entries:
+            if dependencies and entry["name"] in dependencies:
+                entry["dependencies"] = dependencies[entry["name"]]
+
         self.write(
             location / ".claude-plugin" / "marketplace.json",
-            {"name": marketplace, "plugins": [{"name": name} for name in names]},
+            {"name": marketplace, "plugins": entries},
         )
 
         self.marketplaces[marketplace] = {"installLocation": str(location)}
@@ -54,8 +60,8 @@ class ThrowawayHome:
 
         return self
 
-    def install(self, identifier, scope="user"):
-        self.installed[identifier] = [{"scope": scope, "version": "1.0.0"}]
+    def install(self, identifier, scope="user", version="1.0.0"):
+        self.installed[identifier] = [{"scope": scope, "version": version}]
 
         return self
 
@@ -309,6 +315,107 @@ class DuplicateTest(SurveyTest):
         )
 
         self.assertEqual(survey["orphans"], [])
+
+
+class UnsatisfiedDependencyTest(SurveyTest):
+    """Installed, still listed, and not loading — because something else moved.
+
+    Moving one plugin's pin is enough to cause this, and the plugin that stops
+    loading is the dependent rather than the one that moved. Nothing about the
+    dependent changed, so it reads as healthy everywhere except the listing.
+    """
+
+    def shelf(self, requirement, installed_version):
+        return (
+            self.home.offering(
+                "aligned",
+                ["dan-phi-routing", "dan-work-routing"],
+                dependencies={
+                    "dan-phi-routing": [
+                        {"name": "dan-work-routing", "version": requirement}
+                    ]
+                },
+            )
+            .install("dan-phi-routing@aligned")
+            .install("dan-work-routing@aligned", version=installed_version)
+        )
+
+    def test_a_dependency_below_the_declared_range_is_reported(self):
+        survey = self.shelf("~1.5.0", "1.3.3").survey()
+
+        self.assertEqual(
+            survey["unsatisfied"],
+            [
+                {
+                    "identifier": "dan-phi-routing@aligned",
+                    "requires": "dan-work-routing",
+                    "wanted": "~1.5.0",
+                    "installed": "1.3.3",
+                }
+            ],
+        )
+
+    def test_an_unsatisfied_dependent_is_not_counted_healthy(self):
+        survey = self.shelf("~1.5.0", "1.3.3").survey()
+
+        self.assertEqual(survey["healthy"], 1)
+
+    def test_a_satisfied_dependency_is_silent(self):
+        survey = self.shelf("~1.5.0", "1.5.2").survey()
+
+        self.assertEqual(survey["unsatisfied"], [])
+        self.assertEqual(survey["healthy"], 2)
+
+    def test_a_tilde_range_excludes_the_next_minor(self):
+        survey = self.shelf("~1.5.0", "1.6.0").survey()
+
+        self.assertEqual(len(survey["unsatisfied"]), 1)
+
+    def test_a_caret_range_allows_the_next_minor(self):
+        survey = self.shelf("^1.5.0", "1.6.0").survey()
+
+        self.assertEqual(survey["unsatisfied"], [])
+
+    def test_a_version_suffix_does_not_defeat_the_comparison(self):
+        """`plugin update` stamps a resolved commit onto the version it installs."""
+        survey = self.shelf("~1.5.0", "1.5.0-611ad90cbea7").survey()
+
+        self.assertEqual(survey["unsatisfied"], [])
+
+    def test_a_dependency_that_is_not_installed_at_all_is_reported(self):
+        survey = (
+            self.home.offering(
+                "aligned",
+                ["dan-phi-routing"],
+                dependencies={
+                    "dan-phi-routing": [
+                        {"name": "dan-work-routing", "version": "~1.5.0"}
+                    ]
+                },
+            )
+            .install("dan-phi-routing@aligned")
+            .survey()
+        )
+
+        self.assertIsNone(survey["unsatisfied"][0]["installed"])
+
+    def test_a_range_the_survey_cannot_model_yields_no_finding(self):
+        """Guessing here would name a working plugin broken, so an unmodelled
+        range is treated the same as an unreadable marketplace."""
+        for requirement in (">=1.5.0 <2", "^0.4.0", "latest"):
+            with self.subTest(requirement=requirement):
+                self.setUp()
+
+                survey = self.shelf(requirement, "1.3.3").survey()
+
+                self.assertEqual(survey["unsatisfied"], [])
+
+    def test_the_note_names_the_dependency_rather_than_the_dependent(self):
+        notes = self.shelf("~1.5.0", "1.3.3").notes()
+        message = json.loads(notes)["systemMessage"]
+
+        self.assertIn("dan-phi-routing@aligned requires dan-work-routing", message)
+        self.assertIn("until dan-work-routing is updated", message)
 
 
 class ResilienceTest(SurveyTest):

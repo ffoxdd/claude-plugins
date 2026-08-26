@@ -17,6 +17,10 @@ The three drifts, and why they are the whole list:
 - **duplicate** — one name installed from two marketplaces at once. Both copies
   load, so their context is injected twice and their hooks registered twice,
   with the doubled listing as the only sign.
+- **unsatisfied** — installed and still listed, but the dependency its
+  marketplace declares is absent or at a version outside the declared range.
+  Moving a plugin's pin is enough to cause it, and the plugin that stops loading
+  is the dependent rather than the one that moved.
 
 A version behind is not on the list. Auto-update ships versions; this repairs
 breakage, and a healthy install is left exactly alone.
@@ -28,6 +32,7 @@ uninstalling their whole shelf.
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -61,15 +66,17 @@ def survey_drift(claude_directory):
     }
 
     orphans = find_orphans(judgable, offerings)
+    unsatisfied = find_unsatisfied(installed, offerings)
 
     return {
         "orphans": orphans,
         "missing": find_missing(enabled, installed, offerings),
         "duplicates": find_duplicates(installed),
+        "unsatisfied": unsatisfied,
         "unreadable": sorted(
             set(record["marketplace"] for record in installed.values()) - set(offerings)
         ),
-        "healthy": len(installed) - len(orphans),
+        "healthy": len(installed) - len(orphans) - len(unsatisfied),
     }
 
 
@@ -124,8 +131,114 @@ def find_duplicates(installed):
     ]
 
 
+def find_unsatisfied(installed, offerings):
+    """Installed plugins whose declared dependency is absent or out of range.
+
+    The plugin that stops loading is the dependent, not the one that moved, so
+    the finding names both and the version each side is at. A range written in
+    syntax `satisfies` does not model yields no finding — the same rule the
+    unreadable marketplaces follow, since a guess here would name a working
+    plugin as broken.
+    """
+    by_name = {record["name"]: record for record in installed.values()}
+
+    findings = []
+
+    for record in sorted(installed.values(), key=lambda record: record["identifier"]):
+        entry = offerings.get(record["marketplace"], {}).get(record["name"], {})
+
+        for requirement in entry.get("dependencies", []):
+            finding = unmet(record, requirement, by_name)
+
+            if finding:
+                findings.append(finding)
+
+    return findings
+
+
+def unmet(record, requirement, by_name):
+    name = requirement.get("name")
+
+    if not name:
+        return None
+
+    wanted = requirement.get("version", "")
+    present = by_name.get(name)
+
+    if present is None:
+        return {
+            "identifier": record["identifier"],
+            "requires": name,
+            "wanted": wanted,
+            "installed": None,
+        }
+
+    if satisfies(present["version"], wanted) is False:
+        return {
+            "identifier": record["identifier"],
+            "requires": name,
+            "wanted": wanted,
+            "installed": present["version"],
+        }
+
+    return None
+
+
+def satisfies(version, requirement):
+    """Whether an installed version meets a dependency range.
+
+    None means the range is written in syntax this does not model, which is
+    reported as nothing rather than as a failure. `^0.x` is deliberately among
+    them: the major-zero carve-out differs between resolvers, and the cost of
+    being wrong is telling someone a working plugin is broken.
+    """
+    installed = parse_version(version)
+
+    if installed is None:
+        return None
+
+    requirement = requirement.strip()
+
+    if not requirement or requirement == "*":
+        return True
+
+    if requirement[0].isdigit():
+        wanted = parse_version(requirement)
+
+        return None if wanted is None else installed == wanted
+
+    if requirement[0] not in "~^":
+        return None
+
+    wanted = parse_version(requirement[1:])
+
+    if wanted is None or (requirement[0] == "^" and wanted[0] == 0):
+        return None
+
+    if installed < wanted:
+        return False
+
+    if requirement[0] == "~":
+        return installed[:2] == wanted[:2]
+
+    return installed[0] == wanted[0]
+
+
+def parse_version(text):
+    core = re.split(r"[-+]", text.strip(), maxsplit=1)[0]
+    parts = core.split(".")
+
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        return None
+
+    return tuple(int(part) for part in parts)
+
+
 def read_offerings(claude_directory):
-    """Each readable marketplace's set of offered plugin names.
+    """Each readable marketplace's offered plugins, by name.
+
+    The whole entry rather than the name alone, since the dependencies a plugin
+    must satisfy are declared there.
 
     A marketplace is omitted rather than recorded empty when its clone is absent,
     its manifest will not parse, or it lists nothing — the three ways a read can
@@ -143,14 +256,14 @@ def read_offerings(claude_directory):
             continue
 
         manifest = read_json(Path(location) / ".claude-plugin" / "marketplace.json")
-        names = {
-            plugin["name"]
+        entries = {
+            plugin["name"]: plugin
             for plugin in (manifest or {}).get("plugins", [])
             if isinstance(plugin, dict) and plugin.get("name")
         }
 
-        if names:
-            offerings[marketplace] = names
+        if entries:
+            offerings[marketplace] = entries
 
     return offerings
 
@@ -221,6 +334,19 @@ def notes_for(survey):
                 f"{record['identifier']} is enabled in settings, but the "
                 f"'{record['marketplace']}' marketplace does not offer it and nothing "
                 "is installed under that name — a leftover key."
+            )
+
+    for record in survey["unsatisfied"]:
+        if record["installed"] is None:
+            notes.append(
+                f"{record['identifier']} requires {record['requires']} "
+                f"{record['wanted']}, which is not installed. It will not load."
+            )
+        else:
+            notes.append(
+                f"{record['identifier']} requires {record['requires']} "
+                f"{record['wanted']}, but {record['installed']} is installed. "
+                f"It will not load until {record['requires']} is updated."
             )
 
     for record in survey["duplicates"]:

@@ -15,7 +15,7 @@ claude plugin marketplace add ffoxdd/claude-plugins
 | [dan-knowledge-base](plugins/dan-knowledge-base/README.md) | The pattern for a knowledge-base repo. Brings no sources of its own. Install: `/plugin install dan-knowledge-base@ffoxdd` |
 | [dan-project-defaults](plugins/dan-project-defaults/README.md) | What to pick when a project has not already decided: the ecosystem's canonical layout and tooling, a `docs/` folder, lint and format in the build. Scaffolds nothing. Install: `/plugin install dan-project-defaults@ffoxdd` |
 | [dan-evidence-discipline](plugins/dan-evidence-discipline/README.md) | Measuring, and knowing what the measurement is worth: denominators, what a number licenses, and what a defect invalidates. Install: `/plugin install dan-evidence-discipline@ffoxdd` |
-| [plugin-sync](plugins/plugin-sync/README.md) | Repairs a plugin its marketplace no longer lists, one enabled but never installed, and one installed twice. Leaves healthy installs alone. Install: `/plugin install plugin-sync@ffoxdd` |
+| [plugin-sync](plugins/plugin-sync/README.md) | Repairs a plugin its marketplace no longer lists, one enabled but never installed, one installed twice, and one held back by an unsatisfiable dependency. Leaves healthy installs alone. Install: `/plugin install plugin-sync@ffoxdd` |
 
 ## Safety regimes live elsewhere
 

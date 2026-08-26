@@ -10,13 +10,14 @@ request.
 
 ## What counts as drift
 
-Three states, and the list is closed:
+Four states, and the list is closed:
 
 | | what it is | what it looks like |
 |---|---|---|
 | **orphan** | installed, but its marketplace no longer lists it | fails to load, silently |
 | **missing** | enabled in settings, never installed | the plugin is simply not there |
 | **duplicate** | one name installed from two marketplaces | context injected twice, hooks registered twice |
+| **unsatisfied** | installed and listed, but its declared dependency is absent or out of range | fails to load, blaming a plugin that is fine |
 
 **A version behind is not drift.** Auto-update ships versions; this repairs
 breakage. An install its marketplace still lists is healthy whatever version
@@ -26,6 +27,16 @@ safe to run at every session start, and a no-op on a shelf that is fine.
 Duplicates are worth the entry because nothing else reports them. Both copies
 load, so a rule arrives twice and a hook runs twice, and the only sign is one
 name appearing under two marketplaces in a listing nobody reads closely.
+
+An unsatisfied dependency is the one drift a person causes by doing the right
+thing: move a plugin's pin forward, and any plugin declaring a range that
+excludes the new version stops loading. Nothing about the dependent changed,
+which is why it reads as healthy everywhere — and why the report names the
+dependency to update rather than the plugin that broke.
+
+A range written in syntax the survey does not model produces no finding, on the
+same rule the unreadable marketplaces follow: naming a working plugin broken
+costs more than staying quiet.
 
 ## How it behaves
 
