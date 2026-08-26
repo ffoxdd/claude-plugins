@@ -1,88 +1,68 @@
 # Routing work
 
-Before starting work, classify it: is a safety constraint in play, or is cost
-the only one? Exactly one constraint governs what follows; the other is off the
-table. These are ordered constraints, never a blend — safety does not trade
-against cost, because they never meet.
+Before starting, classify the work: does a safety constraint apply, or is cost
+the only one? Exactly one governs. They are ordered, never blended — safety does
+not trade against cost, and where it applies it is absolute.
 
-Most work is in the cost regime. A safety regime is the exception, and where it
-applies it is absolute.
+The environment establishes a safety regime, not this file. A plugin governing
+sensitive data defines what falls under the regime, how to tell, and the
+procedure, and that definition wins over anything here. Where nothing
+establishes one, every kind of work is cost-governed, which is the usual case.
 
-What establishes a safety regime is the environment, not this file. Where
-sensitive data is in reach, the plugin that governs it defines what falls under
-the regime, how to tell, and what the procedure is — and that definition wins
-over anything here. Where nothing establishes one, every kind of work is
-cost-governed.
+## Never a factor
 
-## What never enters the decision
-
-- **Never invoke time, lateness, or "fatigue" as a factor.** Do not mention the
-  hour, how long a session has run, or any human-fatigue framing; an agent does
-  not tire. Never decide to stop, defer, checkpoint, or de-scope on the basis of
-  an imagined fatigue or time concern. Continuing or stopping rests on real
-  factors only: correctness, verified evidence, risk to production, or an
-  explicit instruction. When a risky change needs care, take the care — never
-  use "it's late" as a proxy for "be careful."
+Time, lateness, or fatigue. Do not mention the hour or the session's length, and
+never stop, defer, checkpoint, or de-scope on that basis. Continuing or stopping
+rests on correctness, verified evidence, risk to production, or an explicit
+instruction. A risky change gets care because it is risky, never because "it's
+late".
 
 ## The cost regime
 
-This is the default, and it governs more than data questions: writing code,
-reading a codebase, running tests, drafting a document. Optimize in strict
-order:
+It governs everything — writing code, reading a codebase, running tests,
+drafting a document. Optimize in strict order, trading a lower priority for a
+higher one and never the reverse:
 
-1. Minimize usage of the most expensive model tier.
-2. Minimize total tokens.
-3. Minimize wall-clock time.
+1. Spend on the most expensive model tier.
+2. Total tokens.
+3. Wall-clock time.
 
-Trade a lower priority for a higher one, never the reverse. Interactive work —
-where a person is at the terminal, blocked — may promote wall time above total
-tokens. It never promotes anything above spend on the top tier.
+Interactive work, with a person blocked at the terminal, may promote wall time
+above total tokens — never above top-tier spend.
 
-Delegate to the least powerful model that will do the job. Reserve the top tier
-for design, specification, review, and triage.
-
-**Set the model explicitly on every spawned agent.** An omitted model silently
-inherits the session model, which is usually the most expensive tier available.
-Choose per task: mechanical, bounded work gets the cheapest capable tier; the
-session model only with a stated reason.
+Delegate to the least powerful model that will do the job; reserve the top tier
+for design, specification, review, and triage. **Set the model explicitly on
+every spawned agent.** An omitted model inherits the session's, usually the most
+expensive tier; the session model needs a stated reason.
 
 ## When to spawn a sub-agent
 
-Spawning is how the ordering above gets applied, so the test is a cost test.
 Spawn to avoid reading, not to go faster. A sub-agent is a context filter first
-and a parallelism primitive second — it carries fixed overhead (its own system
-prompt and tool schemas) paid up front whatever the outcome. The test:
-
-> Does the context the sub-agent loads cost less than the context it saves this
-> session from loading?
+and a parallelism primitive second, and its system prompt and tool schemas are
+paid up front whatever the outcome. The test: does the context it loads cost
+less than the context it saves this session from loading?
 
 - **Searching or exploring many files** — spawn. It reads fifty files and
-  returns a paragraph; this session never sees the fifty. When the reading
-  partitions by directory or subsystem, use the `explore` workflow rather than
-  hand-rolling the fan-out: it fixes the reader tier, the disjoint slicing, and
-  the synthesis barrier, so those decisions are made once in a script instead of
-  re-derived each session.
+  returns a paragraph. When the reading partitions by directory or subsystem,
+  use the `explore` workflow rather than hand-rolling the fan-out.
 - **Work needing context already in this window** — don't. You would pay to
-  re-transmit what is already here, then pay again for the result.
-- **Context that partitions cleanly** — each agent reading a different slice is
-  near token-neutral, so fan out and take the speedup. Leaving a free speedup on
-  the table is its own waste.
-- **Context that overlaps** — serial. N agents re-reading the same files
-  multiplies overhead to buy wall time, which inverts the ordering above.
+  re-transmit it, then pay again for the result.
+- **Context that partitions cleanly** — fan out. Each agent reading a
+  different slice is near token-neutral, so the speedup is free.
+- **Context that overlaps** — serial. N agents re-reading the same files buys
+  wall time with tokens, which inverts the ordering.
 
-Scale fan-out width by work per item, not item count. Twelve agents over twelve
-substantial files is overhead as noise; twelve agents over twelve one-line
-checks is overhead as the entire bill. For a fully-specified mechanical edit
-across many files, the `bulk-edit` workflow encodes this: it batches files per
-agent and holds each agent to the cheapest tier.
+Scale fan-out width by work per item, not item count: twelve agents over twelve
+substantial files is overhead as noise, twelve over twelve one-line checks is
+overhead as the whole bill. For a fully-specified mechanical edit across many
+files, the `bulk-edit` workflow batches files per agent at the cheapest tier.
 
-## Running agents you have already spawned
+## Agents already spawned
 
-- **Reuse warm agents.** A follow-on task in the same code area goes to the
-  existing agent as a message, not a cold respawn — the respawn pays the
-  re-reading cost a second time for context that agent already holds.
-- **Never kill in-flight work to fix its price tier.** The sunk reading cost
-  usually exceeds the remaining premium. Fix the next spawn instead.
-- **Launch, end the turn, resume on notification.** Never poll or busy-wait on
-  tracked background work. Keep interim messages to a line or two and put the
-  detail in durable records.
+- **Reuse warm agents.** A follow-on task in the same area goes to the existing
+  agent as a message, not a cold respawn that re-reads what it already holds.
+- **Never kill in-flight work to fix its tier.** The sunk reading cost usually
+  exceeds the remaining premium; fix the next spawn instead.
+- **Launch, end the turn, resume on notification.** Never poll tracked
+  background work. Interim messages are a line or two; detail goes in durable
+  records.
