@@ -91,7 +91,7 @@ const found = await parallel(probes.map(probe => () =>
     `Report what you OBSERVED, not what would be nice to have. If this probe holds ` +
     `nothing, set exhausted and return no candidates — an empty probe is a real ` +
     `finding and padding it is how a loop invents work it does not have.`,
-    { label: `probe:${probe.name}`, phase: 'Probe', schema: CANDIDATES },
+    { label: `probe:${probe.name}`, phase: 'Probe', model: 'haiku', schema: CANDIDATES },
   )
 ))
 
