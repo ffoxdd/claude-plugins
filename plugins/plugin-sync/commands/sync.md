@@ -53,9 +53,10 @@ something they wanted.
      install behind it. Offer to remove the key from `~/.claude/settings.json`;
      nothing needs uninstalling.
    - duplicate: keep the copy from the marketplace the user actually follows
-     and uninstall the other. Say which you would keep and why, and let them
-     pick — from the outside the two copies are the same plugin, and only they
-     know which marketplace they mean to track.
+     and uninstall the other, `claude plugin uninstall <id> -s <scope> -y` with
+     the scope the survey carries for that copy. Say which you would keep and
+     why, and let them pick — from the outside the two copies are the same
+     plugin, and only they know which marketplace they mean to track.
 
 6. **Run it, then say what needs a restart.** Plugin changes apply at the next
    session start, so end by saying which changes are pending until then. Re-run

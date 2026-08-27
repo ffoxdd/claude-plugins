@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Finds the three ways an installed plugin set drifts from what its marketplaces offer.
+"""Finds the four ways an installed plugin set drifts from what its marketplaces offer.
 
 Detects; never mutates. Everything here is a read of four JSON files, so it is
 cheap enough to run at every session start, and the repair it proposes stays
 behind a person's confirmation in `/plugin-sync:sync`.
 
-The three drifts, and why they are the whole list:
+The four drifts, and why they are the whole list:
 
 - **orphan** — installed, but the marketplace it came from no longer lists it.
   A plugin's identity is `name@marketplace` and nothing in the manifest format
@@ -67,17 +67,34 @@ def survey_drift(claude_directory):
 
     orphans = find_orphans(judgable, offerings)
     unsatisfied = find_unsatisfied(installed, offerings)
+    duplicates = find_duplicates(installed)
 
     return {
         "orphans": orphans,
         "missing": find_missing(enabled, installed, offerings),
-        "duplicates": find_duplicates(installed),
+        "duplicates": duplicates,
         "unsatisfied": unsatisfied,
         "unreadable": sorted(
             set(record["marketplace"] for record in installed.values()) - set(offerings)
         ),
-        "healthy": len(installed) - len(orphans) - len(unsatisfied),
+        "healthy": count_healthy(installed, orphans, unsatisfied, duplicates),
     }
+
+
+def count_healthy(installed, orphans, unsatisfied, duplicates):
+    """Installs touched by no drift. Counted as a set difference rather than by
+    subtraction so an install caught by two drifts at once — a duplicate that is
+    also an orphan — is not counted out twice, and a plugin with two unmet
+    dependencies is not counted out for each."""
+    drifting = set()
+
+    drifting.update(record["identifier"] for record in orphans)
+    drifting.update(finding["identifier"] for finding in unsatisfied)
+    drifting.update(
+        install["identifier"] for duplicate in duplicates for install in duplicate["installs"]
+    )
+
+    return len(set(installed) - drifting)
 
 
 def find_orphans(installed, offerings):
@@ -122,12 +139,18 @@ def find_duplicates(installed):
     by_name = {}
 
     for record in installed.values():
-        by_name.setdefault(record["name"], []).append(record["identifier"])
+        by_name.setdefault(record["name"], []).append(record)
 
     return [
-        {"name": name, "identifiers": sorted(identifiers)}
-        for name, identifiers in sorted(by_name.items())
-        if len(identifiers) > 1
+        {
+            "name": name,
+            "installs": sorted(
+                ({"identifier": record["identifier"], "scope": record["scope"]} for record in records),
+                key=lambda install: install["identifier"],
+            ),
+        }
+        for name, records in sorted(by_name.items())
+        if len(records) > 1
     ]
 
 
@@ -350,8 +373,9 @@ def notes_for(survey):
             )
 
     for record in survey["duplicates"]:
+        identifiers = [install["identifier"] for install in record["installs"]]
         notes.append(
-            f"{record['name']} is installed twice, as {' and '.join(record['identifiers'])}. "
+            f"{record['name']} is installed twice, as {' and '.join(identifiers)}. "
             "Both copies load, so its context is injected twice and its hooks run twice."
         )
 

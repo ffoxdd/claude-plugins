@@ -1,7 +1,7 @@
 {
   "name": "plugin-sync",
   "description": "Repairs the ways an installed plugin set drifts from what its marketplaces offer: a plugin its marketplace no longer lists, one enabled but never installed, one installed twice from two marketplaces, one whose declared dependency is absent or out of range. Reports at session start, fixes on request, and leaves a healthy install alone — shipping versions is auto-update's job.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": {
     "name": "Dan Fox"
   },

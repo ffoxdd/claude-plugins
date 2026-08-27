@@ -299,10 +299,43 @@ class DuplicateTest(SurveyTest):
             [
                 {
                     "name": "dan-work-routing",
-                    "identifiers": ["dan-work-routing@aligned", "dan-work-routing@ffoxdd"],
+                    "installs": [
+                        {"identifier": "dan-work-routing@aligned", "scope": "user"},
+                        {"identifier": "dan-work-routing@ffoxdd", "scope": "user"},
+                    ],
                 }
             ],
         )
+
+    def test_each_copy_carries_the_scope_its_removal_needs(self):
+        """The repair uninstalls one copy, and the exact command needs its scope —
+        the same reason an orphan carries one."""
+        survey = (
+            self.home.offering("ffoxdd", ["dan-work-routing"])
+            .offering("aligned", ["dan-work-routing"])
+            .install("dan-work-routing@ffoxdd", scope="user")
+            .install("dan-work-routing@aligned", scope="project")
+            .survey()
+        )
+
+        scopes = {
+            install["identifier"]: install["scope"]
+            for install in survey["duplicates"][0]["installs"]
+        }
+
+        self.assertEqual(scopes["dan-work-routing@aligned"], "project")
+        self.assertEqual(scopes["dan-work-routing@ffoxdd"], "user")
+
+    def test_both_copies_are_counted_out_of_healthy(self):
+        survey = (
+            self.home.offering("ffoxdd", ["dan-work-routing"])
+            .offering("aligned", ["dan-work-routing"])
+            .install("dan-work-routing@ffoxdd")
+            .install("dan-work-routing@aligned")
+            .survey()
+        )
+
+        self.assertEqual(survey["healthy"], 0)
 
     def test_neither_copy_is_an_orphan(self):
         """Both marketplaces list it, so the fault is the doubling, not either install."""
