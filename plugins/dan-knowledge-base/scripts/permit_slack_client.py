@@ -35,6 +35,13 @@ APPROVED_SUBCOMMANDS = ("channels", "starred", "memberships", "history", "replie
 # Shell operators shlex hands back as their own tokens.
 OPERATORS = (";", "|", "||", "&", "&&", ">", ">>", "<", "(", ")")
 
+# The two shlex does not surface as operators: a backtick is an ordinary word
+# character to it, and a bare newline is whitespace, so a second command carried
+# by either survives the operator check — a newline even smuggles a second
+# `slack-client login` past the exclusion below, since only the first subcommand
+# is inspected. Refuse both.
+SUBSTITUTION_OR_NEWLINE = ("`", "\n", "\r")
+
 REASON = (
     "A read-only slack-client call, with no way to reach a second command. "
     "Approved by the dan-knowledge-base plugin, whose installation is the grant. "
@@ -52,6 +59,9 @@ def main():
 
 
 def approves(command):
+    if any(character in command for character in SUBSTITUTION_OR_NEWLINE):
+        return False
+
     tokens = tokenize(command)
 
     if len(tokens) < 2 or tokens[0] != COMMAND:

