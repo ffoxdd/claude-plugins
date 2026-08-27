@@ -59,8 +59,9 @@ The skill's `references/configuring-sources.md` covers the contract between them
 | `email` adapter | `uv`; a mail MCP server already signed in |
 | `chat` adapter | `uv`; bundled `slack-client`; `playwright`; a captured session |
 
-Both adapters are `uv run --script` files with inline dependencies, so `uv` is
-the one prerequisite nothing here installs; `/dan-knowledge-base:setup` walks
+The `email` adapter and the bundled `slack-client` the `chat` adapter drives are
+`uv run --script` files with inline dependencies, so `uv` is the one prerequisite
+nothing here installs; `/dan-knowledge-base:setup` walks
 through it and the rest. Prerequisites are derived from the register: a
 knowledge base that declares no adapters is told nothing, and a declared source
 that is not yet working is reported once per session and recorded as skipped in

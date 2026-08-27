@@ -103,6 +103,18 @@ def declared_adapters(document):
     )
 
 
+def source_with_adapter(document, adapter):
+    """The source declaring this adapter, found by its `adapter` field rather than
+    its key — a source may carry any name, so keying on the literal `adapter` name
+    would miss a mail source declared as e.g. `meeting-recaps` and silently ignore
+    the credential_cache it set."""
+    for entry in document.get("sources", {}).values():
+        if isinstance(entry, dict) and entry.get("adapter") == adapter:
+            return entry
+
+    return {}
+
+
 def clear_superseded_links():
     """Removes the ~/.local/bin links an earlier version of this plugin installed.
 
@@ -223,7 +235,7 @@ def mail_credential_cache_present(document):
     minting a credential. The register may name where that cache lives, since the
     location moves when that server updates; the default is where current
     versions write it."""
-    configured = document.get("sources", {}).get("email", {}).get("credential_cache")
+    configured = source_with_adapter(document, "email").get("credential_cache")
 
     if configured:
         return Path(configured).expanduser().is_file()
