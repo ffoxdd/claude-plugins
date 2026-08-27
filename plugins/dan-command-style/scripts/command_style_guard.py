@@ -12,7 +12,11 @@ import json
 import re
 import sys
 
-CD_THEN_GIT = re.compile(r"(?:^|&&|;|\|)\s*cd\s[^&;|]*(?:&&|;)\s*git\b")
+# A newline separates two commands as surely as `&&` or `;`, so it bounds the
+# `cd` on both sides; leaving it out let `cd dir\ngit status` walk past. `git`
+# must end the word — `(?![\w-])` — or an unrelated binary whose name merely
+# starts `git`, like `git-secrets`, would be denied with advice meant for `git`.
+CD_THEN_GIT = re.compile(r"(?:^|&&|;|\||\n)\s*cd\s[^&;|\n]*(?:&&|;|\n)\s*git(?![\w-])")
 
 CD_THEN_GIT_REASON = (
     "Use `git -C <dir> ...` instead of `cd <dir> && git ...` — the cd triggers "

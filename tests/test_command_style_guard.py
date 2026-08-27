@@ -34,8 +34,20 @@ class DecisionTest(unittest.TestCase):
     def test_permits_the_replacement_form(self):
         self.assertIsNone(self.decision("git -C ~/Developer/dotfiles status"))
 
+    def test_denies_cd_then_git_across_a_newline(self):
+        """A bare newline joins two commands in one Bash string exactly as `&&`
+        does, and `cd` persists across it, so this is the same defeat of the
+        allowlist — the most natural way to write it by accident."""
+        self.assertEqual(self.decision("cd ~/Developer/dotfiles\ngit status"), "deny")
+
     def test_permits_cd_with_a_command_other_than_git(self):
         self.assertIsNone(self.decision("cd /tmp && ls -la"))
+
+    def test_permits_a_binary_whose_name_merely_starts_with_git(self):
+        """`git-secrets` and `git-lfs` are their own programs, not `git`; denying
+        them with advice to use `git -C` is both wrong and unactionable."""
+        self.assertIsNone(self.decision("cd /tmp && git-secrets --scan"))
+        self.assertIsNone(self.decision("cd /tmp && git-lfs install"))
 
     def test_permits_git_without_a_leading_cd(self):
         self.assertIsNone(self.decision("git status && echo done"))
