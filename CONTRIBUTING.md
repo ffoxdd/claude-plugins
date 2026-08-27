@@ -68,6 +68,8 @@ Mechanisms there are fine; that is what they are for.
    context/*.md                 text a SessionStart hook injects
    scripts/                     Python the hooks and commands run
    bin/                         commands to put on PATH
+   workflows/*.js               a Workflow script; declared by a
+                                "workflows" key in plugin.json
    ```
 
 2. Register it in `.claude-plugin/marketplace.json`: the name, a
