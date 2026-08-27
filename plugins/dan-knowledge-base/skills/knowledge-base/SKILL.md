@@ -72,7 +72,11 @@ Four rules, each preventing a silent failure.
 1. **Read the clock before you query, and make that reading the next
    watermark** — not the newest returned item's timestamp. Compact projections
    often omit timestamps, and an item modified between clock and query is then
-   re-reported next sync (cheap, visible) instead of skipped (neither).
+   re-reported next sync (cheap, visible) instead of skipped (neither). The
+   exception the shipped adapters take: a source that stamps every item with a
+   reliable time and returns them in order lets the high-water-mark of processed
+   items be the watermark — tighter and deterministic, and safer against a
+   late-indexed item than the clock, which would advance past it.
 
 2. **Establish whether the source's boundary is inclusive.** Many APIs treat a
    watermark as `>=` and re-deliver the boundary item on every sync forever.

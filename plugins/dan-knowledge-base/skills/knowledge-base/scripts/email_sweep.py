@@ -586,8 +586,11 @@ def main(argv=None):
                 f"in {earlier['intake_file']}"
             )
 
-    if candidates:
-        print(f"New watermark: {max(message['receivedDateTime'] for message, _ in candidates)}")
+    advanced = max(
+        (message["receivedDateTime"] for message, _ in candidates),
+        default=arguments.watermark,
+    )
+    print(f"New watermark: {advanced}")
 
     report_observed(candidates, senders)
 

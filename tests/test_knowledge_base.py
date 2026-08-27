@@ -517,6 +517,41 @@ class EmailAdapterInvocationTest(unittest.TestCase):
             self.assertIn("no senders", result.stderr)
 
 
+class ChatClientInvocationTest(unittest.TestCase):
+    """How the adapter reaches the bundled client. Without a client_command
+    override it runs the uv script directly, not the bin/ launcher — the launcher
+    is extensionless, and Python's subprocess execs through CreateProcess on
+    Windows, which appends only `.exe` and cannot run it, while `uv` resolves as
+    `uv.exe`."""
+
+    def invocation(self, source):
+        directory = adapter("chat_export.py").parent
+        program = (
+            f"import sys, json; sys.path.insert(0, {str(directory)!r});"
+            "import chat_export;"
+            "print(json.dumps(chat_export.Client(json.loads(sys.argv[1])).invocation))"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", program, json.dumps(source)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        return json.loads(result.stdout)
+
+    def test_the_default_runs_the_bundled_script_under_uv(self):
+        invocation = self.invocation({})
+
+        self.assertEqual(invocation[:3], ["uv", "run", "--script"])
+        self.assertEqual(
+            Path(invocation[3]).resolve(), support.script(PLUGIN, "slack-client").resolve()
+        )
+
+    def test_a_client_command_override_is_run_directly(self):
+        self.assertEqual(self.invocation({"client_command": "/tmp/stub-client"}), ["/tmp/stub-client"])
+
+
 class ChatAdapterTest(unittest.TestCase):
     """The chat adapter against a stub client, which is the only way to reach this
     logic without a workspace. What is being pinned is not the stub's content but

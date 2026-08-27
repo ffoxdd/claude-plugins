@@ -43,7 +43,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 
 import configuration
 
-DEFAULT_CLIENT_COMMAND = "slack-client"
+# The bundled client is a uv PEP-723 script; the automated path runs it through
+# `uv run --script` directly rather than the bin/ launcher. Python's subprocess
+# execs through CreateProcess on Windows, which appends only `.exe` and so cannot
+# run the extensionless shell launcher — but it resolves `uv` as `uv.exe`. The
+# launcher stays for the one command a person types by hand, `slack-client login`.
+SLACK_CLIENT_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "slack-client"
+DEFAULT_INVOCATION = ("uv", "run", "--script", str(SLACK_CLIENT_SCRIPT))
 DEFAULT_HISTORY_LIMIT = 1000
 DEFAULT_REPLIES_LIMIT = 200
 
@@ -86,23 +92,24 @@ class Client:
     """
 
     def __init__(self, source):
-        self.command = source.get("client_command", DEFAULT_CLIENT_COMMAND)
+        override = source.get("client_command")
+        self.invocation = [override] if override else list(DEFAULT_INVOCATION)
         self.history_limit = int(source.get("history_limit", DEFAULT_HISTORY_LIMIT))
         self.replies_limit = int(source.get("replies_limit", DEFAULT_REPLIES_LIMIT))
 
     def run(self, *arguments):
         try:
             completed = subprocess.run(
-                [self.command, *arguments], capture_output=True, text=True, check=False
+                [*self.invocation, *arguments], capture_output=True, text=True, check=False
             )
 
         except OSError as error:
-            raise ExportError(f"cannot run {self.command!r}: {error}") from error
+            raise ExportError(f"cannot run {self.invocation[0]!r}: {error}") from error
 
         if completed.returncode != 0:
             detail = completed.stderr.strip() or "no error output"
 
-            raise ExportError(f"{self.command} {' '.join(arguments)} failed: {detail}")
+            raise ExportError(f"{self.invocation[0]} {' '.join(arguments)} failed: {detail}")
 
         return completed.stdout
 
