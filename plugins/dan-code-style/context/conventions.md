@@ -64,8 +64,9 @@ degree of freedom without a name). Decide uncovered cases from that.
   untestable. Extract it into a named interface.
 - Composition over inheritance: shared behaviour is a module of free functions
   the types import, not a base class they extend.
-- The smallest public surface that is still correct, flexible only where
-  flexibility is needed. One canonical way per concept: no `choose` beside
+- The smallest public surface that still expresses the domain without hacks —
+  a call-site workaround means the surface is too small, not that the caller
+  should route around it. One canonical way per concept: no `choose` beside
   `choose_with_metadata` — the richest signature is the API, callers who need
   less use a subset, and optimizations (skipping expensive fields, logging,
   caching) never fork it.

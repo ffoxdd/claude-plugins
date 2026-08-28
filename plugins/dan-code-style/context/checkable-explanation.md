@@ -103,9 +103,11 @@ precisely: a human-sized step is one thought, at one altitude.
 The minimal public interface is the strict half applied at the
 module boundary. Every public symbol is a standing promise — a
 clause the explanation must carry for every caller, forever, and
-the hardest kind of clause to retract. So the surface is the most
-minimal one that can be found while remaining correct, flexible
-only where flexibility has earned its clause. Whatever stays
+the hardest kind of clause to retract. So the surface is the
+most minimal one that still expresses the domain, flexible only
+where flexibility has earned its clause — and no smaller: a
+call-site hack is a clause the surface refused to carry, the
+sign it was minimized past expressiveness. Whatever stays
 private only ever has to be explained to the file itself.
 
 ## Nothing varies without a name
