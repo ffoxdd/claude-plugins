@@ -104,11 +104,13 @@ degree of freedom without a name). Decide uncovered cases from that.
   through the surface would need heavy setup, the rule sits at the wrong
   level and wants extracting into a unit whose surface it is, not reaching
   for past the underscore.
-- A script is a CLI wrapper around an action object. The behaviour lives in a
-  class built from its dependencies with one entry method (`perform`), tested
-  the normal way under normal visibility; `main()` parses arguments,
-  constructs it, calls it, and maps the result to an exit code. Nothing in the
-  script file earns a test of its own — whatever does belongs in the object.
+- A script that wants a test wants an action object. Argument parsing and a
+  few calls need no test of their own; the moment behaviour in the script
+  file does, that behaviour moves into a class built from its dependencies
+  with one entry method (`perform`), tested the normal way under normal
+  visibility, and the script becomes the CLI wrapper — `main()` parses
+  arguments, constructs it, calls it, maps the result to an exit code.
+  Reaching into the script for a private is never the alternative.
 - The testing pyramid is a default; deviate where the problem demands, and
   shape end-to-end suites along the app's real user journeys.
 - Verify behaviour in an isolated test scenario whose fixtures build exactly

@@ -184,9 +184,10 @@ rather than habits:
   public in fact while the underscore says otherwise. The fix is
   in the surface — a public name for the claim, or the unit whose
   surface it is, extracted — never in the test's reach. A script
-  that hands its work to an action object is the same move at the
-  entry point: the CLI is the environment seam, and the object
-  behind it is the explanation the tests check.
+  whose behaviour has grown worth a test hands it to an action
+  object, the same move at the entry point: the CLI is the
+  environment seam, and the object behind it is the explanation
+  the tests check.
 
 ## "Well-tested and explainable" is one property, not two
 
