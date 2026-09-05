@@ -98,6 +98,17 @@ degree of freedom without a name). Decide uncovered cases from that.
 - Encapsulation and testing ratchet together: a small surface is a small
   contract, and tests against it pin the contract so everything behind it can
   change. Test-setup pain means a missing boundary, not more mocks.
+- Visibility binds tests too. A leading underscore means the file alone
+  explains the symbol, and nothing outside it — a test included — addresses
+  it. A rule worth its own test is worth a public name; where reaching it
+  through the surface would need heavy setup, the rule sits at the wrong
+  level and wants extracting into a unit whose surface it is, not reaching
+  for past the underscore.
+- A script is a CLI wrapper around an action object. The behaviour lives in a
+  class built from its dependencies with one entry method (`perform`), tested
+  the normal way under normal visibility; `main()` parses arguments,
+  constructs it, calls it, and maps the result to an exit code. Nothing in the
+  script file earns a test of its own — whatever does belongs in the object.
 - The testing pyramid is a default; deviate where the problem demands, and
   shape end-to-end suites along the app's real user journeys.
 - Verify behaviour in an isolated test scenario whose fixtures build exactly

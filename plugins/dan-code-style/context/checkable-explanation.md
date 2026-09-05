@@ -178,6 +178,15 @@ rather than habits:
   wiring are claims about the thing you deploy. Tests that build
   it through bespoke setup are claims about a lab replica, and the
   two drift silently apart.
+- **A test is a caller, so visibility binds it.** A private symbol
+  is explained to its file alone; a test that addresses it is a
+  second reader demanding that explanation, which makes the symbol
+  public in fact while the underscore says otherwise. The fix is
+  in the surface — a public name for the claim, or the unit whose
+  surface it is, extracted — never in the test's reach. A script
+  that hands its work to an action object is the same move at the
+  entry point: the CLI is the environment seam, and the object
+  behind it is the explanation the tests check.
 
 ## "Well-tested and explainable" is one property, not two
 
