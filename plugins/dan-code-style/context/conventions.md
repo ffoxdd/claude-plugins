@@ -82,6 +82,11 @@ degree of freedom without a name). Decide uncovered cases from that.
 - No shotgun surgery. When one conceptual change ripples across many files —
   parallel lists, duplicated constants, dense cross-references — restructure so
   it lives in one place.
+- Organize by vertical slice, not by layer: a directory holds one area of the
+  domain with everything that area needs, not one kind of thing (`models/`,
+  `services/`, `helpers/`) drawn from every area. A repo that already organizes
+  by layer keeps doing so — its existing convention outranks this preference,
+  and one slice inside a layered tree is worse than either.
 
 ## Dependencies and testing
 
