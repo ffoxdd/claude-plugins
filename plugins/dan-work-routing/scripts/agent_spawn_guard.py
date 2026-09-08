@@ -16,11 +16,17 @@ own, since hooks run in subagents too. It applies three of them, in order:
    fan-out of top-tier agents is what a usage-limit trip kills mid-flight,
    wasting every one's sunk reading. In-flight agents are read from the
    harness's own records — each subagent's `agent-<id>.meta.json` and
-   transcript under the session's `subagents/` directory — so the guard
-   keeps no ledger that could drift. An agent is in flight while its
-   transcript neither ends in a terminal stop nor has fallen silent for
-   longer than the idle window. The spawner and its ancestors are not
-   counted: a fork spawning a helper is not competing with itself.
+   transcript under the session's `subagents/` directory. An agent is in
+   flight while its transcript neither ends in a terminal stop nor has
+   fallen silent for longer than the idle window. Those records lag the
+   decision by one batch: spawns issued in one message are checked before
+   any of them exists, which is exactly the shape of a review fan-out. So
+   each approval is also written to a pending file, keyed by the call's
+   tool_use_id, and stands in for the agent until the harness writes the
+   meta carrying that same id — or expires unmatched, a spawn that never
+   happened. The file is read and written under a lock so same-batch hooks
+   see each other. The spawner and its ancestors are not counted: a fork
+   spawning a helper is not competing with itself.
 
 3. **A sub-agent spawns a bounded number of top-tier helpers.** The root
    session's spawns are the person's own choices, one at a time; a fan-out
@@ -36,7 +42,9 @@ model narrows the rigor of whatever was being delegated without anyone
 deciding to, and review is the case where that costs most.
 
 Limits are plugin options, exported as `CLAUDE_PLUGIN_OPTION_<KEY>`; the
-defaults here match the manifest's. A limit of 0 lifts that rule.
+defaults here match the manifest's. A limit of 0 lifts that rule. The
+pending file lives under `CLAUDE_PLUGIN_DATA`, the plugin's persistent
+directory, one file per session.
 
 A call the guard cannot read — malformed JSON, no tool_input, a transcript
 path that resolves to no session — passes rather than blocking on the guard's
@@ -47,6 +55,7 @@ stdout.
 import json
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -62,6 +71,14 @@ DEFAULTS = {
 }
 
 TAIL_BYTES = 65536
+
+# An approval with no matching harness record after this long was a spawn that
+# never happened — denied downstream, or failed — and stops counting.
+PENDING_SECONDS = 120
+
+LOCK_WAIT_SECONDS = 2.0
+
+LOCK_STALE_SECONDS = 10.0
 
 MODEL_REASON = (
     "Set `model` on this Agent call. The routing order is fixed: spend on the "
@@ -101,8 +118,14 @@ def main():
     if session is None:
         return
 
+    with Pending.locked(session) as pending:
+        decide(payload, tool_input, session, pending)
+
+
+def decide(payload, tool_input, session, pending):
     spawner = payload.get("agent_id") or None
-    in_flight = session.in_flight(excluding=spawner)
+    tier = spawn_tier(tool_input)
+    in_flight = session.in_flight(excluding=spawner) + pending.in_flight()
 
     width = limit("AGENT_WIDTH")
 
@@ -113,7 +136,8 @@ def main():
         )
         return
 
-    if spawn_tier(tool_input) != "top":
+    if tier != "top":
+        pending.record(payload, tool_input, tier, spawner)
         return
 
     concurrency = limit("TOP_TIER_CONCURRENCY")
@@ -131,7 +155,9 @@ def main():
 
     if spawner and budget:
         children = [
-            agent for agent in session.children_of(spawner) if agent.tier == "top"
+            agent
+            for agent in session.children_of(spawner) + pending.children_of(spawner)
+            if agent.tier == "top"
         ]
 
         if len(children) >= budget:
@@ -142,6 +168,9 @@ def main():
                 f"nobody's choice, so it is capped here. Give the remaining angle to "
                 f"`sonnet`, or fold it into a helper already running."
             )
+            return
+
+    pending.record(payload, tool_input, tier, spawner)
 
 
 def read_payload():
@@ -313,6 +342,7 @@ class Session:
     def __init__(self, directory):
         self.directory = directory
         self.agents = {agent.id: agent for agent in self.read_all()}
+        self.tool_use_ids = {agent.tool_use_id for agent in self.agents.values()}
 
     @classmethod
     def from_payload(cls, payload):
@@ -376,6 +406,7 @@ class AgentRecord:
         self.description = meta.get("description") or ""
         self.model = meta.get("model")
         self.parent = meta.get("parentAgentId")
+        self.tool_use_id = meta.get("toolUseId")
         self.transcript = transcript
 
     @classmethod
@@ -436,6 +467,188 @@ class AgentRecord:
         message = record.get("message") or {}
 
         return message.get("stop_reason") in TERMINAL_STOP_REASONS
+
+
+# ── Approvals the harness has not yet recorded ───────────────────────────────
+
+
+class PendingSpawn:
+    """An approved spawn standing in for its agent until the meta appears."""
+
+    def __init__(self, entry):
+        self.tool_use_id = entry.get("tool_use_id")
+        self.type = entry.get("type") or "agent"
+        self.description = entry.get("description") or ""
+        self.model = entry.get("model")
+        self.parent = entry.get("spawner")
+        self.at = entry.get("at") or 0
+        self.tier = entry.get("tier") or "top"
+
+    def to_entry(self):
+        return {
+            "tool_use_id": self.tool_use_id,
+            "type": self.type,
+            "description": self.description,
+            "model": self.model,
+            "spawner": self.parent,
+            "at": self.at,
+            "tier": self.tier,
+        }
+
+    def label(self):
+        model = self.model or "session model"
+        description = f"`{self.description}` " if self.description else ""
+
+        return f"{description}({self.type}, {model}, just approved)"
+
+    def live(self, session, now):
+        if self.tool_use_id and self.tool_use_id in session.tool_use_ids:
+            return False  # The harness's record has taken over.
+
+        return now - self.at <= PENDING_SECONDS
+
+
+class Pending:
+    """The guard's own approvals for one session, in one JSONL file.
+
+    Read whole and rewritten compacted under the lock, so an entry lives only
+    until its agent's meta appears or its window passes.
+    """
+
+    def __init__(self, session, path):
+        self.session = session
+        self.path = path
+        self.entries = []
+
+    @classmethod
+    def locked(cls, session):
+        return _PendingContext(session)
+
+    def load(self):
+        now = time.time()
+
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+
+        except OSError:
+            lines = []
+
+        for line in lines:
+            try:
+                entry = PendingSpawn(json.loads(line))
+
+            except ValueError:
+                continue
+
+            if entry.live(self.session, now):
+                self.entries.append(entry)
+
+    def save(self):
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(
+                "".join(json.dumps(entry.to_entry()) + "\n" for entry in self.entries),
+                encoding="utf-8",
+            )
+
+        except OSError:
+            pass
+
+    def in_flight(self):
+        return list(self.entries)
+
+    def children_of(self, spawner):
+        return [entry for entry in self.entries if entry.parent == spawner]
+
+    def record(self, payload, tool_input, tier, spawner):
+        self.entries.append(
+            PendingSpawn(
+                {
+                    "tool_use_id": payload.get("tool_use_id"),
+                    "type": tool_input.get("subagent_type") or "general-purpose",
+                    "description": tool_input.get("description") or "",
+                    "model": tool_input.get("model"),
+                    "spawner": spawner,
+                    "at": time.time(),
+                    "tier": tier,
+                }
+            )
+        )
+
+
+class _PendingContext:
+    def __init__(self, session):
+        self.session = session
+        self.path = pending_path(session)
+        self.lock = self.path.with_suffix(".lock")
+        self.held = False
+
+    def __enter__(self):
+        self.acquire()
+        self.pending = Pending(self.session, self.path)
+        self.pending.load()
+
+        return self.pending
+
+    def __exit__(self, *exception):
+        self.pending.save()
+        self.release()
+
+        return False
+
+    def acquire(self):
+        """A create-exclusive lock file, waited on briefly; a lock nobody has
+        released in LOCK_STALE_SECONDS belonged to a hook that died and is
+        broken. Failing to acquire fails open — the guard never blocks on itself."""
+        deadline = time.time() + LOCK_WAIT_SECONDS
+
+        try:
+            self.lock.parent.mkdir(parents=True, exist_ok=True)
+
+        except OSError:
+            return
+
+        while True:
+            try:
+                os.close(os.open(self.lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+                self.held = True
+                return
+
+            except FileExistsError:
+                try:
+                    if time.time() - self.lock.stat().st_mtime > LOCK_STALE_SECONDS:
+                        self.lock.unlink()
+                        continue
+
+                except OSError:
+                    continue
+
+            except OSError:
+                return
+
+            if time.time() > deadline:
+                return
+
+            time.sleep(0.02)
+
+    def release(self):
+        if not self.held:
+            return
+
+        try:
+            self.lock.unlink()
+
+        except OSError:
+            pass
+
+
+def pending_path(session):
+    base = os.environ.get("CLAUDE_PLUGIN_DATA") or os.path.join(
+        tempfile.gettempdir(), "dan-work-routing"
+    )
+    session_id = session.directory.parent.name
+
+    return Path(base) / "spawn-guard" / f"{session_id}.jsonl"
 
 
 def last_line(path):

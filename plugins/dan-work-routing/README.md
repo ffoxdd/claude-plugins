@@ -20,8 +20,10 @@ routing happens before the work rather than being remembered mid-task.
   definition declares one, `inherit` included); a top-tier spawn while
   another top-tier agent is in flight; any spawn past a width ceiling; and a
   sub-agent's top-tier helpers past a small total budget, which is what caps
-  a built-in review's fan-out. It reads the harness's own subagent records,
-  keeps no ledger, and names what is in flight in each denial. The four
+  a built-in review's fan-out. In-flight state comes from the harness's own
+  subagent records, with the guard's approvals standing in until the harness
+  records the agent, so spawns issued in one batch see each other; each
+  denial names what is in flight. The four
   limits are plugin options (`/plugin` → configure).
 - **Secret-handling rules** — never materialize a credential; reference it and
   let it resolve at runtime.

@@ -46,7 +46,8 @@ flight (the spawner and its ancestors excepted), and any spawn is denied past
 a width ceiling. A sub-agent may spawn only a few top-tier helpers in total,
 because a fan-out inside a fork is nobody's choice; the root session's spawns
 are the person's and carry no such budget. In-flight state is read from the
-harness's own subagent records, not a ledger. A denial names what is in
+harness's own subagent records, with the guard's approvals standing in until
+the harness records the agent, so spawns issued in one batch see each other. A denial names what is in
 flight; the answer is to end the turn and continue on the completion
 notification, or to pass a cheaper model where the task accepts one — never
 to re-issue the call unchanged. The limits are plugin options.

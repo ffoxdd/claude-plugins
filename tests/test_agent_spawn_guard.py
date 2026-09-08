@@ -6,9 +6,10 @@ The hook is what makes those rules hold inside skills and forks the plugin does
 not own. Its blast radius has to be exact: a fork, or a type whose definition
 already chose, must pass the model rule; a spawner must never be counted as its
 own competitor; a finished or dead agent must not hold the top-tier slot. It
-reads the harness's own subagent records rather than a ledger of its own, so
-the tests build those records — `agent-<id>.meta.json` and a transcript —
-under a throwaway session directory.
+reads the harness's own subagent records, holding its own approvals only until
+those records appear, so the tests build the records — `agent-<id>.meta.json`
+and a transcript — under a throwaway session directory, and a throwaway data
+directory for the approvals.
 """
 
 import json
@@ -58,7 +59,11 @@ class GuardCase(unittest.TestCase):
         self.subagents.mkdir(parents=True)
         self.root_transcript = self.project / f"{SESSION_ID}.jsonl"
         self.root_transcript.write_text("", encoding="utf-8")
+        # The plugin's persistent directory, where approvals wait for their agent.
+        self.data = root / "data"
+        self.data.mkdir()
         self.options = {}
+        self.calls = 0
 
     def define(self, plugin, agent, frontmatter):
         directory = self.home / "plugins" / "cache" / "shelf" / plugin / "agents"
@@ -100,10 +105,12 @@ class GuardCase(unittest.TestCase):
             stamp = time.time() - idle_seconds
             os.utime(path, (stamp, stamp))
 
-    def decide(self, tool_input, spawner=None, transcript=None):
+    def payload(self, tool_input, spawner=None, transcript=None, tool_use_id=None):
+        self.calls += 1
         payload = {
             "tool_name": "Agent",
             "tool_input": tool_input,
+            "tool_use_id": tool_use_id or f"toolu_{self.calls:04d}",
             "session_id": SESSION_ID,
             "transcript_path": str(transcript or self.root_transcript),
         }
@@ -111,11 +118,31 @@ class GuardCase(unittest.TestCase):
         if spawner:
             payload["agent_id"] = spawner
 
+        return payload
+
+    def environment(self):
         environment = {
             f"CLAUDE_PLUGIN_OPTION_{key}": str(value) for key, value in self.options.items()
         }
+        environment["CLAUDE_CONFIG_DIR"] = str(self.home)
+        environment["CLAUDE_PLUGIN_DATA"] = str(self.data)
 
-        return run(payload, CLAUDE_CONFIG_DIR=str(self.home), **environment)
+        return environment
+
+    def decide(self, tool_input, **keywords):
+        return run(self.payload(tool_input, **keywords), **self.environment())
+
+    def pending_file(self):
+        return self.data / "spawn-guard" / f"{SESSION_ID}.jsonl"
+
+    def pending_entries(self):
+        try:
+            lines = self.pending_file().read_text(encoding="utf-8").splitlines()
+
+        except OSError:
+            return []
+
+        return [json.loads(line) for line in lines if line.strip()]
 
     def decision(self, *arguments, **keywords):
         output = self.decide(*arguments, **keywords)
@@ -382,6 +409,123 @@ class NestedBudgetTest(GuardCase):
         self.options["NESTED_TOP_TIER_BUDGET"] = 3
 
         self.assertIsNone(self.decision(TOP, spawner="fork1"))
+
+
+class PendingApprovalTest(GuardCase):
+    """The harness writes an agent's record after the spawn, so two spawns in one
+    batch are each checked before either exists. The guard's own approvals
+    fill that gap, and hand over to the harness record once it appears."""
+
+    def test_an_approval_is_recorded(self):
+        self.assertIsNone(self.decision(TOP, tool_use_id="toolu_first"))
+
+        entries = self.pending_entries()
+
+        self.assertEqual([entry["tool_use_id"] for entry in entries], ["toolu_first"])
+        self.assertEqual(entries[0]["tier"], "top")
+
+    def test_a_denial_is_not_recorded(self):
+        self.record("a1")
+
+        self.assertEqual(self.decision(TOP), "deny")
+        self.assertEqual(self.pending_entries(), [])
+
+    def test_a_second_top_tier_spawn_in_the_same_batch_is_denied(self):
+        self.assertIsNone(self.decision(TOP, tool_use_id="toolu_first"))
+
+        self.assertEqual(self.decision(TOP, tool_use_id="toolu_second"), "deny")
+
+    def test_the_reason_names_the_approved_spawn(self):
+        self.decision({**TOP, "description": "review the merge slice"})
+
+        reason = self.reason(TOP)
+
+        self.assertIn("review the merge slice", reason)
+        self.assertIn("just approved", reason)
+
+    def test_a_cheap_approval_does_not_hold_the_top_tier_slot(self):
+        self.assertIsNone(self.decision(CHEAP))
+
+        self.assertIsNone(self.decision(TOP))
+
+    def test_approvals_count_toward_the_width(self):
+        self.options["AGENT_WIDTH"] = 2
+        self.decision(CHEAP)
+        self.decision(CHEAP)
+
+        self.assertEqual(self.decision(CHEAP), "deny")
+
+    def test_the_harness_record_takes_over_from_the_approval(self):
+        """Once the meta carrying the approval's tool_use_id exists, the agent's
+        real state governs — here, finished — and the approval is dropped."""
+        self.assertIsNone(self.decision(TOP, tool_use_id="toolu_first"))
+
+        meta = self.subagents / "agent-a1.meta.json"
+        self.record("a1", ended=True)
+        meta.write_text(
+            json.dumps({**json.loads(meta.read_text()), "toolUseId": "toolu_first"}),
+            encoding="utf-8",
+        )
+
+        self.assertIsNone(self.decision(TOP, tool_use_id="toolu_second"))
+        self.assertNotIn("toolu_first", [e["tool_use_id"] for e in self.pending_entries()])
+
+    def test_an_approval_expires_unmatched(self):
+        """A spawn approved here but never recorded by the harness was refused
+        downstream or failed; past its window it stops holding the slot."""
+        self.pending_file().parent.mkdir(parents=True)
+        self.pending_file().write_text(
+            json.dumps(
+                {
+                    "tool_use_id": "toolu_old",
+                    "type": "general-purpose",
+                    "model": "opus",
+                    "tier": "top",
+                    "at": time.time() - 121,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        self.assertIsNone(self.decision(TOP))
+
+    def test_approvals_count_toward_a_sub_agents_helper_budget(self):
+        self.record("fork1", agent_type="fork")
+
+        self.assertIsNone(self.decision(TOP, spawner="fork1", tool_use_id="toolu_1"))
+        # The first helper now holds the concurrency slot; lift that rule to
+        # isolate the budget.
+        self.options["TOP_TIER_CONCURRENCY"] = 0
+        self.assertIsNone(self.decision(TOP, spawner="fork1", tool_use_id="toolu_2"))
+
+        reason = self.reason(TOP, spawner="fork1", tool_use_id="toolu_3")
+
+        self.assertIn("at most 2 top-tier helpers", reason)
+
+    def test_simultaneous_hooks_admit_exactly_one_top_tier_spawn(self):
+        """Parallel tool calls run their hooks at once; the lock is what makes the
+        second see the first."""
+        import subprocess
+        import sys
+
+        processes = [
+            subprocess.Popen(
+                [sys.executable, str(GUARD)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+                env=support.environment(**self.environment()),
+            )
+            for _ in range(4)
+        ]
+        outputs = [
+            process.communicate(json.dumps(self.payload(TOP)))[0] for process in processes
+        ]
+        denials = [output for output in outputs if "deny" in output]
+
+        self.assertEqual(len(denials), 3, outputs)
+        self.assertFalse(self.pending_file().with_suffix(".lock").exists())
 
 
 class PluginAgentsTest(unittest.TestCase):
