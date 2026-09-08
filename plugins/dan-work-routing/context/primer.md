@@ -30,8 +30,10 @@ higher one and never the reverse:
 Interactive work, with a person blocked at the terminal, may promote wall time
 above total tokens — never above top-tier spend.
 
-Delegate to the least powerful model that will do the job; reserve the top tier
-for design, specification, review, and triage. **Set the model explicitly on
+Delegate to the least powerful model the task accepts — which is not the
+cheapest: checking another agent's work needs a model at least as capable as
+the one that produced it. Reserve the top tier for design, specification,
+review of top-tier work, and triage. **Set the model explicitly on
 every spawned agent.** An omitted model inherits the session's, usually the most
 expensive tier; the session model needs a stated reason. A hook enforces this:
 an Agent call with no `model` is denied unless it is a fork, which runs on the
@@ -79,12 +81,14 @@ test-only edits) or logic (runtime behavior), with the logic slices ranked by
 blast radius. Then dispatch by class. The built-in `/code-review` forks at the
 session's model and, at high effort, fans out to several finder angles and a
 verify pass, spawned with no model of their own. The spawn guard denies each of
-those and the fork chooses: scan angles to `sonnet`, verification on the
-session's model — so the fork and its verifiers are the top-tier spend, not the
-eight scans. It still goes to the slices whose blast radius justifies it, one at
-a time, with nothing else top-tier running beside it, because the fork itself
-reads the whole slice at the session's tier. Other logic slices go to the
-`reviewer` agent: one top-tier agent at high effort, one pass, no fan-out.
+those and the fork chooses per angle by the rule below: a correctness or
+verification angle over top-tier work stays on the session's model, since a
+weaker model checking a stronger one's output is not a task it accepts; a
+convention, reuse or mechanical-shape angle takes `sonnet`. It still goes to
+the slices whose blast radius justifies it, one at a time, with nothing else
+top-tier running beside it, because the fork and its correctness angles read
+the whole slice at the session's tier. Other logic slices go to the `reviewer`
+agent: one top-tier agent at high effort, one pass, no fan-out.
 Mechanical slices go to `reviewer` with a cheaper `model` passed on the call;
 prose to a path-independence pass at the cheapest tier. Diff against the upstream base (`origin/main...HEAD`), never a local
 branch that may be stale. The expensive tier still reads every line that needs
