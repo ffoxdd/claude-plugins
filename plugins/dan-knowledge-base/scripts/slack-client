@@ -257,6 +257,34 @@ def command_replies(arguments):
         print(json.dumps(message))
 
 
+def command_file(arguments):
+    """Save one file attachment, addressed by the url_private a message's `files`
+    entry carries. files.slack.com honours the session's token as a bearer plus
+    the `d` cookie, the same pair the API calls send; the bytes are written to
+    the path given and never printed, so a file of member data does not land in
+    the terminal."""
+    token, cookie = load_session()
+    response = requests.get(
+        arguments.url,
+        headers={"Authorization": f"Bearer {token}"},
+        cookies={"d": cookie},
+        timeout=60,
+    )
+    response.raise_for_status()
+    if response.headers.get("content-type", "").startswith("text/html"):
+        raise SystemExit(
+            "slack answered a web page, not the file - the url is not a files.slack.com "
+            "url_private, or the session has expired (run 'slack-client login' again)"
+        )
+    destination = Path(arguments.output)
+    destination.write_bytes(response.content)
+    print(json.dumps({
+        "path": str(destination),
+        "bytes": len(response.content),
+        "content_type": response.headers.get("content-type"),
+    }))
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="slack-client",
@@ -315,6 +343,12 @@ def main():
         help="resolve author + @mention user IDs to display names",
     )
 
+    file_parser = subparsers.add_parser(
+        "file", help="save a message's file attachment to disk (bytes are never printed)"
+    )
+    file_parser.add_argument("url", help="the attachment's url_private, from a message's files[]")
+    file_parser.add_argument("output", help="path to write the file to")
+
     arguments = parser.parse_args()
 
     if arguments.command == "login":
@@ -329,6 +363,8 @@ def main():
         command_history(arguments)
     elif arguments.command == "replies":
         command_replies(arguments)
+    elif arguments.command == "file":
+        command_file(arguments)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,9 @@ depend on someone sitting there approving it. Installing the plugin is the grant
 `login` is deliberately not approved. It opens a real browser and waits up to five
 minutes for a person to sign in, so it is the one subcommand a person runs rather
 than Claude; approving it would let an unattended sync launch a browser and hang on
-it. Everything else here reads: channels, starred, memberships, history, replies.
+it. Everything approved here reads and prints: channels, starred, memberships,
+history, replies. `file` is not approved either: it reads Slack but writes a local
+path of the caller's choosing, and where bytes land is a decision a person keeps.
 
 That split is not a safety compromise — the reads are the entire adapter, and the
 captured session they use is as sensitive as a Slack login either way. Approving
