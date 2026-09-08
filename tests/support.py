@@ -26,6 +26,8 @@ MARKETPLACE_FILE = REPOSITORY_ROOT / ".claude-plugin" / "marketplace.json"
 # query guard stand down and every denial test pass vacuously.
 CONTROLLED_VARIABLES = (
     "ANTHROPIC_API_KEY",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_PROJECT_DIR",
     "CLAUDE_PII_COVERED",
     "COVERED_ANTHROPIC_API_KEY",
     "CLAUDE_PLUGIN_OPTION_CONFIG_FILE",

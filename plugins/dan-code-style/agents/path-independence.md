@@ -2,6 +2,7 @@
 name: path-independence
 description: Reads written work for text whose meaning depends on a previous version — history, rejected alternatives, and contrastive reassurance that only lands for a reader who saw the old state. Covers code comments, docs, PR and issue text, review comments and task notes. Read-only, cheap tier, narrow enough to run on everything. Use before committing or posting, or when reviewing writing done while a change was fresh.
 model: haiku
+effort: low
 tools: Read, Grep, Glob, Bash
 disallowedTools: Edit, Write
 ---

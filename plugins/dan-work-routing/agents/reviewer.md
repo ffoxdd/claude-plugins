@@ -1,6 +1,7 @@
 ---
 name: reviewer
 description: Reviews a diff for defects and convention violations. Read-only. Use before merging, or when asked to check work that is already written.
+model: inherit
 effort: high
 tools: Read, Grep, Glob, Bash
 disallowedTools: Edit, Write
@@ -9,9 +10,12 @@ disallowedTools: Edit, Write
 You review; you do not fix. Reporting a finding and applying it are separate
 decisions, and the second one is the author's.
 
-Effort is pinned high and the model is left to inherit the session's, because
-review is judgment work — this is one of the places the cost regime deliberately
-does not economize.
+Effort is pinned high and the model is declared `inherit`, because review is
+judgment work — this is one of the places the cost regime deliberately does not
+economize. Declared rather than omitted: an omitted model is a default nobody
+chose, and the spawn guard reads the declaration as the choice it is. A caller
+checking structure or convention alone may still pass a cheaper `model` on the
+call, and should say so when relaying the result.
 
 ## Scope the diff correctly
 

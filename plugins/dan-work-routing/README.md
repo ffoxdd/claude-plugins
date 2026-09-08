@@ -11,7 +11,13 @@ routing happens before the work rather than being remembered mid-task.
 ## What it carries
 
 - **The routing primer** — the cost ordering (top-tier spend, then total
-  tokens, then wall time), the sub-agent spawn test, and the fan-out rules.
+  tokens, then wall time), the two cost dials (model and effort), the sub-agent
+  spawn test, the fan-out rules, and how to review a large diff by classifying
+  it first.
+- **The spawn guard** — a hook that denies an Agent call naming no `model`,
+  so the primer's rule holds inside skills and forks this plugin does not own.
+  A fork passes (it runs on the parent's model), and so does an agent type
+  whose definition declares a model, `inherit` included.
 - **Secret-handling rules** — never materialize a credential; reference it and
   let it resolve at runtime.
 - **Agents** — `explorer` (bounded questions over many files), `reviewer`

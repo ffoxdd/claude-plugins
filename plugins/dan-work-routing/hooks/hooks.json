@@ -15,6 +15,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agent_model_guard.py\"",
+            "statusMessage": "checking the spawn names its model"
+          }
+        ]
+      }
     ]
   }
 }
