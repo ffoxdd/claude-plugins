@@ -14,10 +14,15 @@ routing happens before the work rather than being remembered mid-task.
   tokens, then wall time), the two cost dials (model and effort), the sub-agent
   spawn test, the fan-out rules, and how to review a large diff by classifying
   it first.
-- **The spawn guard** — a hook that denies an Agent call naming no `model`,
-  so the primer's rule holds inside skills and forks this plugin does not own.
-  A fork passes (it runs on the parent's model), and so does an agent type
-  whose definition declares a model, `inherit` included.
+- **The spawn guard** — a hook on every Agent call, so the primer's spawn
+  rules hold inside skills and forks this plugin does not own. It denies a
+  call naming no `model` (a fork passes, as does an agent type whose
+  definition declares one, `inherit` included); a top-tier spawn while
+  another top-tier agent is in flight; any spawn past a width ceiling; and a
+  sub-agent's top-tier helpers past a small total budget, which is what caps
+  a built-in review's fan-out. It reads the harness's own subagent records,
+  keeps no ledger, and names what is in flight in each denial. The four
+  limits are plugin options (`/plugin` → configure).
 - **Secret-handling rules** — never materialize a credential; reference it and
   let it resolve at runtime.
 - **Agents** — `explorer` (bounded questions over many files), `reviewer`

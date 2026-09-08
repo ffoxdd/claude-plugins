@@ -22,8 +22,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agent_model_guard.py\"",
-            "statusMessage": "checking the spawn names its model"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agent_spawn_guard.py\"",
+            "statusMessage": "checking the spawn names its tier and fits the top-tier budget"
           }
         ]
       }
