@@ -90,6 +90,16 @@ class DecisionTest(unittest.TestCase):
         for tier in ("haiku", "sonnet", "fork"):
             self.assertIn(tier, reason)
 
+    def test_states_the_routing_order_in_the_reason(self):
+        """The reason is the one channel into a fan-out the plugin does not own,
+        so it carries the order itself rather than pointing at the primer."""
+        payload = json.dumps({"tool_name": "Agent", "tool_input": {"prompt": "x"}})
+        result = support.run_script(GUARD, stdin=payload, CLAUDE_CONFIG_DIR=str(self.home))
+        reason = json.loads(result.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+
+        self.assertLess(reason.index("top-tier"), reason.index("total tokens"))
+        self.assertLess(reason.index("total tokens"), reason.index("wall-clock"))
+
     def test_passes_on_input_it_cannot_read(self):
         result = support.run_script(GUARD, stdin="not json")
 

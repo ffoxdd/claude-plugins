@@ -7,8 +7,12 @@ tier — and a default nobody chose is where top-tier spend leaks. A rule that
 lives only in context is advice; this hook is what makes it hold inside skills
 and forks the plugin does not own, since hooks run in subagents too.
 
-The decision is deny, with the reason naming the tiers, which turns the call
-into a retry that states its choice. Never `updatedInput` with a default: a
+The decision is deny, with the reason stating the routing order and the tier
+each kind of work takes, which turns the call into a retry that states its
+choice. That reason is also the one channel into a built-in skill's fan-out:
+`/code-review` spawns its finder angles as `general-purpose` with no model, so
+inside its fork this guard is what asks that scanning go to a cheaper tier and
+verification stay on the session's. Never `updatedInput` with a default: a
 silently substituted cheaper model narrows the rigor of whatever was being
 delegated without anyone deciding to, and review is the case where that costs
 most.
@@ -32,12 +36,16 @@ import sys
 from pathlib import Path
 
 REASON = (
-    "Set `model` on this Agent call — the routing primer requires every spawned "
-    "agent to name its tier. Pick the least powerful model that will do the job: "
-    "`haiku` for mechanical edits and bounded searches, `sonnet` for reading and "
-    "synthesis, `opus` or the session's model for design, specification, review "
-    "and triage. A `fork` needs no model; an agent type whose definition declares "
-    "`model:` (`inherit` counts) passes as well."
+    "Set `model` on this Agent call. The routing order is fixed: spend on the "
+    "top-tier model and on high effort is minimized first, total tokens second, "
+    "wall-clock time last, and a lower priority is never bought with a higher one. "
+    "Pick the least powerful model that will do the job: `haiku` for mechanical "
+    "edits and bounded lookups; `sonnet` for reading, searching and "
+    "candidate-finding — a review's scan angles, which report candidates for "
+    "someone else to verify, belong here; the session's model (`inherit`, or name "
+    "it) only for design, specification, adjudication, and verifying a candidate "
+    "finding. A `fork` needs no model; an agent type whose definition declares "
+    "`model:` passes as well."
 )
 
 

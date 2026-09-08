@@ -77,14 +77,16 @@ agent over the commit list and file stats — into slices of paths that change f
 one reason, each marked mechanical (renames, symbol promotions, doc moves,
 test-only edits) or logic (runtime behavior), with the logic slices ranked by
 blast radius. Then dispatch by class. The built-in `/code-review` forks at the
-session's model and, at high effort, fans out to several finder agents and a
-verify pass on that same model — on a top-tier session it is the most expensive
-single action available, so it goes to the one or two slices whose blast radius
-justifies it, one at a time, with nothing else top-tier running beside it. The
-remaining logic slices go to the `reviewer` agent: one top-tier agent at high
-effort, one pass, no fan-out. Mechanical slices go to `reviewer` with a cheaper
-`model` passed on the call; prose to a path-independence pass at the cheapest
-tier. Diff against the upstream base (`origin/main...HEAD`), never a local
+session's model and, at high effort, fans out to several finder angles and a
+verify pass, spawned with no model of their own. The spawn guard denies each of
+those and the fork chooses: scan angles to `sonnet`, verification on the
+session's model — so the fork and its verifiers are the top-tier spend, not the
+eight scans. It still goes to the slices whose blast radius justifies it, one at
+a time, with nothing else top-tier running beside it, because the fork itself
+reads the whole slice at the session's tier. Other logic slices go to the
+`reviewer` agent: one top-tier agent at high effort, one pass, no fan-out.
+Mechanical slices go to `reviewer` with a cheaper `model` passed on the call;
+prose to a path-independence pass at the cheapest tier. Diff against the upstream base (`origin/main...HEAD`), never a local
 branch that may be stale. The expensive tier still reads every line that needs
 judgment; it stops paying to read the lines that do not.
 
