@@ -28,12 +28,13 @@ own, since hooks run in subagents too. It applies three of them, in order:
    see each other. The spawner and its ancestors are not counted: a fork
    spawning a helper is not competing with itself.
 
-3. **A sub-agent spawns a bounded number of top-tier helpers.** The root
-   session's spawns are the person's own choices, one at a time; a fan-out
-   inside a fork — `/code-review`'s finder angles, spawned with no model of
-   their own — is nobody's. So a spawner that is itself a subagent may create
-   only so many top-tier children in total. Beyond that, an angle takes
-   `sonnet` or folds into one already running.
+3. **A sub-agent spawns a bounded number of helpers.** The root session's
+   spawns are the person's own choices, one at a time; a fan-out inside a
+   fork — `/code-review`'s finder angles, spawned with no model of their own
+   — is nobody's, and every angle re-reads the same diff. So a spawner that
+   is itself a subagent may create only so many children in total, and fewer
+   of them top-tier. Beyond the top-tier budget an angle takes `sonnet`;
+   beyond the total, it folds into a helper already running.
 
 The decision is deny, with a reason that names what is in flight and the
 choices that remain, which turns the call into a retry that states its
@@ -67,6 +68,7 @@ DEFAULTS = {
     "TOP_TIER_CONCURRENCY": 1,
     "AGENT_WIDTH": 8,
     "NESTED_TOP_TIER_BUDGET": 2,
+    "NESTED_AGENT_BUDGET": 3,
     "IDLE_MINUTES": 30,
 }
 
@@ -135,6 +137,21 @@ def decide(payload, tool_input, session, pending):
             f"{width}: {describe(in_flight)}. {RETRY_ADVICE}"
         )
         return
+
+    total_budget = limit("NESTED_AGENT_BUDGET")
+
+    if spawner and total_budget:
+        children = session.children_of(spawner) + pending.children_of(spawner)
+
+        if len(children) >= total_budget:
+            deny(
+                f"A sub-agent may spawn at most {total_budget} helpers in total, and this "
+                f"one has spawned {len(children)}: {describe(children)}. A fan-out inside "
+                f"a fork re-reads the same material once per helper, so it is capped "
+                f"here; fold the remaining work into a helper already running, or do it "
+                f"in this agent."
+            )
+            return
 
     if tier != "top":
         pending.record(payload, tool_input, tier, spawner)

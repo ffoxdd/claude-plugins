@@ -43,9 +43,10 @@ forks and skills this plugin does not own as much as here. A call with no
 regardless, or its agent type's definition declares one. One top-tier agent
 runs at a time: a top-tier spawn is denied while another top-tier agent is in
 flight (the spawner and its ancestors excepted), and any spawn is denied past
-a width ceiling. A sub-agent may spawn only a few top-tier helpers in total,
-because a fan-out inside a fork is nobody's choice; the root session's spawns
-are the person's and carry no such budget. In-flight state is read from the
+a width ceiling. A sub-agent may spawn only a few helpers in total, and fewer
+of them top-tier, because a fan-out inside a fork is nobody's choice and every
+helper re-reads the fork's material; the root session's spawns are the
+person's and carry no such budget. In-flight state is read from the
 harness's own subagent records, with the guard's approvals standing in until
 the harness records the agent, so spawns issued in one batch see each other. A denial names what is in
 flight; the answer is to end the turn and continue on the completion
@@ -98,8 +99,8 @@ of those a stated choice and caps the fork's top-tier helpers, so the fork
 chooses per angle by the rule below: a correctness or verification angle over
 top-tier work stays on the session's model, since a weaker model checking a
 stronger one's output is not a task it accepts; a convention, reuse or
-mechanical-shape angle takes `sonnet`; angles past the budget take `sonnet`
-or fold into one already running. It still goes to the slices whose blast
+mechanical-shape angle takes `sonnet`; angles past the top-tier budget take
+`sonnet`, and past the total fold into one already running. It still goes to the slices whose blast
 radius justifies it, one at a time, with nothing else top-tier running beside
 it, because the fork and its correctness angles read the whole slice at the
 session's tier — and the guard holds that sequence. Other logic slices go to the `reviewer`

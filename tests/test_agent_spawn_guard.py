@@ -379,10 +379,9 @@ class NestedBudgetTest(GuardCase):
 
         self.assertIsNone(self.decision(CHEAP, spawner="fork1"))
 
-    def test_cheap_helpers_do_not_spend_the_budget(self):
+    def test_cheap_helpers_do_not_spend_the_top_tier_budget(self):
         self.record("angle1", parent="fork1", model="sonnet", ended=True)
         self.record("angle2", parent="fork1", model="sonnet", ended=True)
-        self.record("angle3", parent="fork1", model="sonnet", ended=True)
 
         self.assertIsNone(self.decision(TOP, spawner="fork1"))
 
@@ -409,6 +408,59 @@ class NestedBudgetTest(GuardCase):
         self.options["NESTED_TOP_TIER_BUDGET"] = 3
 
         self.assertIsNone(self.decision(TOP, spawner="fork1"))
+
+
+class NestedTotalBudgetTest(GuardCase):
+    """Every helper a fork spawns re-reads the fork's material, whatever its
+    tier, so a sub-agent's helpers are also capped in total."""
+
+    def setUp(self):
+        super().setUp()
+        self.record("fork1", agent_type="fork", description="/code-review")
+
+    def test_denies_a_fourth_helper_of_any_tier(self):
+        for index in range(3):
+            self.record(f"angle{index}", parent="fork1", model="sonnet", ended=True)
+
+        self.assertEqual(self.decision(CHEAP, spawner="fork1"), "deny")
+        self.assertIn("at most 3 helpers in total", self.reason(CHEAP, spawner="fork1"))
+
+    def test_permits_a_third(self):
+        self.record("angle1", parent="fork1", model="sonnet", ended=True)
+        self.record("angle2", parent="fork1", model="sonnet", ended=True)
+
+        self.assertIsNone(self.decision(CHEAP, spawner="fork1"))
+
+    def test_the_top_tier_budget_binds_first_within_the_total(self):
+        """Three helpers, at most two top-tier: the third top-tier is refused by
+        the tier budget while a cheap third still passes."""
+        self.options["TOP_TIER_CONCURRENCY"] = 0
+        self.record("angle1", parent="fork1", ended=True)
+        self.record("angle2", parent="fork1", ended=True)
+
+        self.assertIn("top-tier helpers", self.reason(TOP, spawner="fork1"))
+        self.assertIsNone(self.decision(CHEAP, spawner="fork1"))
+
+    def test_the_root_session_is_not_budgeted(self):
+        for index in range(5):
+            self.record(f"done{index}", model="sonnet", ended=True)
+
+        self.assertIsNone(self.decision(CHEAP))
+
+    def test_approvals_count(self):
+        self.decision(CHEAP, spawner="fork1")
+        self.decision(CHEAP, spawner="fork1")
+        self.decision(CHEAP, spawner="fork1")
+
+        self.assertEqual(self.decision(CHEAP, spawner="fork1"), "deny")
+
+    def test_the_budget_is_an_option(self):
+        for index in range(3):
+            self.record(f"angle{index}", parent="fork1", model="sonnet", ended=True)
+
+        self.options["NESTED_AGENT_BUDGET"] = 4
+
+        self.assertIsNone(self.decision(CHEAP, spawner="fork1"))
 
 
 class PendingApprovalTest(GuardCase):
@@ -550,7 +602,13 @@ class ManifestOptionsTest(unittest.TestCase):
         options = manifest["userConfig"]
         source = GUARD.read_text(encoding="utf-8")
 
-        for key in ("top_tier_concurrency", "agent_width", "nested_top_tier_budget", "idle_minutes"):
+        for key in (
+            "top_tier_concurrency",
+            "agent_width",
+            "nested_top_tier_budget",
+            "nested_agent_budget",
+            "idle_minutes",
+        ):
             with self.subTest(option=key):
                 self.assertIn(key, options)
                 self.assertEqual(options[key]["type"], "number")
