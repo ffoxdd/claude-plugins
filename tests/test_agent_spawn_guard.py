@@ -31,6 +31,10 @@ ENDED_LINE = json.dumps(
     {"type": "assistant", "message": {"role": "assistant", "stop_reason": "end_turn"}}
 )
 
+# What the harness appends after the final assistant message: bookkeeping
+# records that carry no message at all.
+ATTACHMENT_LINE = json.dumps({"type": "attachment", "attachment": {"type": "some-record"}})
+
 TOP = {"subagent_type": "general-purpose", "model": "opus", "prompt": "judge"}
 
 CHEAP = {"subagent_type": "general-purpose", "model": "sonnet", "prompt": "read"}
@@ -82,6 +86,7 @@ class GuardCase(unittest.TestCase):
         ended=False,
         idle_seconds=0,
         transcript=True,
+        trailing=(),
     ):
         meta = {"agentType": agent_type, "description": description, "spawnDepth": 1}
 
@@ -99,7 +104,8 @@ class GuardCase(unittest.TestCase):
             return
 
         path = self.subagents / f"agent-{agent_id}.jsonl"
-        path.write_text((ENDED_LINE if ended else RUNNING_LINE) + "\n", encoding="utf-8")
+        lines = [ENDED_LINE if ended else RUNNING_LINE, *trailing]
+        path.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
 
         if idle_seconds:
             stamp = time.time() - idle_seconds
@@ -259,6 +265,21 @@ class TopTierConcurrencyTest(GuardCase):
         self.record("a1", ended=True)
 
         self.assertIsNone(self.decision(TOP))
+
+    def test_a_finished_agent_followed_by_attachments_holds_no_slot(self):
+        """The harness writes attachment records after the final assistant
+        message, so the transcript's last line is never the terminal stop; the
+        newest assistant record is what says the turn ended."""
+        self.record("a1", ended=True, trailing=(ATTACHMENT_LINE, ATTACHMENT_LINE))
+
+        self.assertIsNone(self.decision(TOP))
+
+    def test_a_resumed_agent_is_in_flight_again(self):
+        """A user record newer than the terminal stop is a new prompt or a tool
+        result: the agent is running, whatever its earlier turn said."""
+        self.record("a1", ended=True, trailing=(ATTACHMENT_LINE, RUNNING_LINE))
+
+        self.assertEqual(self.decision(TOP), "deny")
 
     def test_a_silent_agent_is_taken_for_dead(self):
         """A killed agent writes no terminal line; past the idle window its

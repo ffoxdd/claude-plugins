@@ -17,8 +17,10 @@ own, since hooks run in subagents too. It applies three of them, in order:
    wasting every one's sunk reading. In-flight agents are read from the
    harness's own records — each subagent's `agent-<id>.meta.json` and
    transcript under the session's `subagents/` directory. An agent is in
-   flight while its transcript neither ends in a terminal stop nor has
-   fallen silent for longer than the idle window. Those records lag the
+   flight while its newest assistant record is not a terminal stop (the
+   harness appends attachments after the final message, so the last LINE
+   says nothing) and it has not fallen silent for longer than the idle
+   window. Those records lag the
    decision by one batch: spawns issued in one message are checked before
    any of them exists, which is exactly the shape of a review fan-out. So
    each approval is also written to a pending file, keyed by the call's
@@ -452,7 +454,7 @@ class AgentRecord:
         return f"{description}({self.type}, {model})"
 
     def running(self, idle_seconds):
-        """In flight until the transcript ends in a terminal stop, or has been
+        """In flight until the newest assistant record is a terminal stop, or the transcript has been
         silent past the idle window — a killed agent leaves no terminal line,
         and its silence is the only record of its death."""
         try:
@@ -467,23 +469,29 @@ class AgentRecord:
         return not self.ended()
 
     def ended(self):
-        line = last_line(self.transcript)
+        """Whether the agent's last turn ended. The harness appends bookkeeping
+        records - attachments, system notes - after the final assistant message,
+        so the terminal stop is the newest ASSISTANT record, not the newest line.
+        A user record newer than that assistant message is a new prompt or a
+        tool result: the agent is running again, whatever came before."""
+        for line in reversed(tail_lines(self.transcript)):
+            try:
+                record = json.loads(line)
 
-        if line is None:
-            return False
+            except ValueError:
+                continue
 
-        try:
-            record = json.loads(line)
+            kind = record.get("type")
 
-        except ValueError:
-            return False
+            if kind == "user":
+                return False
 
-        if record.get("type") != "assistant":
-            return False
+            if kind == "assistant":
+                message = record.get("message") or {}
 
-        message = record.get("message") or {}
+                return message.get("stop_reason") in TERMINAL_STOP_REASONS
 
-        return message.get("stop_reason") in TERMINAL_STOP_REASONS
+        return False
 
 
 # ── Approvals the harness has not yet recorded ───────────────────────────────
@@ -668,7 +676,9 @@ def pending_path(session):
     return Path(base) / "spawn-guard" / f"{session_id}.jsonl"
 
 
-def last_line(path):
+def tail_lines(path):
+    """The non-empty lines in the transcript's last TAIL_BYTES, oldest first;
+    empty when the file cannot be read."""
     try:
         with path.open("rb") as handle:
             handle.seek(0, os.SEEK_END)
@@ -677,11 +687,9 @@ def last_line(path):
             tail = handle.read().decode("utf-8", errors="replace")
 
     except OSError:
-        return None
+        return []
 
-    lines = [line for line in tail.splitlines() if line.strip()]
-
-    return lines[-1] if lines else None
+    return [line for line in tail.splitlines() if line.strip()]
 
 
 def deny(reason):
