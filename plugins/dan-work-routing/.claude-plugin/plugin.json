@@ -1,7 +1,7 @@
 {
   "name": "dan-work-routing",
   "description": "Classify work before doing it: a safety constraint governs where one applies, cost governs everything else, never a blend. Carries the cost ordering, when to spawn a sub-agent, and how to handle secrets.",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "author": {
     "name": "Dan Fox"
   },
@@ -43,6 +43,13 @@
       "title": "Silence before an agent counts as gone",
       "description": "Minutes without a transcript write after which a sub-agent with no terminal stop is taken for killed. 0 never expires one.",
       "default": 30,
+      "min": 0
+    },
+    "settle_seconds": {
+      "type": "number",
+      "title": "Silence before an unstamped final message counts as the end",
+      "description": "Seconds without a transcript write after which a sub-agent whose newest assistant record carries no stop reason and awaits no tool result is taken for finished. 0 waits for the idle window instead.",
+      "default": 120,
       "min": 0
     }
   }

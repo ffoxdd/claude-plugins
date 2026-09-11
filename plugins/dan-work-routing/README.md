@@ -23,7 +23,7 @@ routing happens before the work rather than being remembered mid-task.
   which is what caps a built-in review's fan-out. In-flight state comes from the harness's own
   subagent records, with the guard's approvals standing in until the harness
   records the agent, so spawns issued in one batch see each other; each
-  denial names what is in flight. The five
+  denial names what is in flight. The six
   limits are plugin options (`/plugin` → configure).
 - **Secret-handling rules** — never materialize a credential; reference it and
   let it resolve at runtime.

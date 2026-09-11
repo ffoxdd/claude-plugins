@@ -35,6 +35,27 @@ ENDED_LINE = json.dumps(
 # records that carry no message at all.
 ATTACHMENT_LINE = json.dumps({"type": "attachment", "attachment": {"type": "some-record"}})
 
+# A final message as the harness records it for some models: one record per
+# content block, none carrying a stop reason.
+RESTING_LINE = json.dumps(
+    {
+        "type": "assistant",
+        "message": {"role": "assistant", "stop_reason": None, "content": [{"type": "text", "text": "Findings."}]},
+    }
+)
+
+# A tool call awaiting its result, recorded the same way.
+TOOL_CALL_LINE = json.dumps(
+    {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "stop_reason": None,
+            "content": [{"type": "tool_use", "id": "toolu_x", "name": "Read", "input": {}}],
+        },
+    }
+)
+
 TOP = {"subagent_type": "general-purpose", "model": "opus", "prompt": "judge"}
 
 CHEAP = {"subagent_type": "general-purpose", "model": "sonnet", "prompt": "read"}
@@ -278,6 +299,33 @@ class TopTierConcurrencyTest(GuardCase):
         """A user record newer than the terminal stop is a new prompt or a tool
         result: the agent is running, whatever its earlier turn said."""
         self.record("a1", ended=True, trailing=(ATTACHMENT_LINE, RUNNING_LINE))
+
+        self.assertEqual(self.decision(TOP), "deny")
+
+    def test_a_final_message_recorded_without_a_stop_reason_frees_the_slot_once_settled(self):
+        """Some models' final message is recorded one block at a time with no
+        stop reason on any record; a newest assistant record that awaits no tool
+        result is the turn's end once the transcript has been quiet for the
+        settle window, not the idle window."""
+        self.record("a1", trailing=(RESTING_LINE, ATTACHMENT_LINE), idle_seconds=3 * 60)
+
+        self.assertIsNone(self.decision(TOP))
+
+    def test_a_final_message_recorded_without_a_stop_reason_still_counts_while_fresh(self):
+        """The same record is what a message still streaming looks like between
+        its blocks, so it holds the slot until the transcript settles."""
+        self.record("a1", trailing=(RESTING_LINE,), idle_seconds=30)
+
+        self.assertEqual(self.decision(TOP), "deny")
+
+    def test_a_tool_call_awaiting_its_result_holds_the_slot_past_the_settle_window(self):
+        self.record("a1", trailing=(TOOL_CALL_LINE,), idle_seconds=3 * 60)
+
+        self.assertEqual(self.decision(TOP), "deny")
+
+    def test_the_settle_window_is_a_plugin_option(self):
+        self.options["SETTLE_SECONDS"] = 0
+        self.record("a1", trailing=(RESTING_LINE,), idle_seconds=3 * 60)
 
         self.assertEqual(self.decision(TOP), "deny")
 

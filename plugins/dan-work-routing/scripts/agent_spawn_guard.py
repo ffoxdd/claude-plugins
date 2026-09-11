@@ -20,7 +20,13 @@ own, since hooks run in subagents too. It applies three of them, in order:
    flight while its newest assistant record is not a terminal stop (the
    harness appends attachments after the final message, so the last LINE
    says nothing) and it has not fallen silent for longer than the idle
-   window. Those records lag the
+   window. Some models' final message is recorded with no stop reason at
+   all - one record per content block, none of them terminal - so a newest
+   assistant record that awaits no tool result and carries no stop reason
+   is read as the turn's end once the transcript has been quiet for the
+   settle window, which is seconds where the idle window is minutes: a
+   message still streaming writes its next block within it, a finished one
+   never writes again. Those records lag the
    decision by one batch: spawns issued in one message are checked before
    any of them exists, which is exactly the shape of a review fan-out. So
    each approval is also written to a pending file, keyed by the call's
@@ -66,12 +72,16 @@ CHEAP_TIER_MARKERS = ("sonnet", "haiku")
 
 TERMINAL_STOP_REASONS = ("end_turn", "stop_sequence")
 
+# What the newest assistant record says of an agent's turn (AgentRecord.standing).
+ENDED, RESTING, WORKING = "ended", "resting", "working"
+
 DEFAULTS = {
     "TOP_TIER_CONCURRENCY": 1,
     "AGENT_WIDTH": 8,
     "NESTED_TOP_TIER_BUDGET": 2,
     "NESTED_AGENT_BUDGET": 3,
     "IDLE_MINUTES": 30,
+    "SETTLE_SECONDS": 120,
 }
 
 TAIL_BYTES = 65536
@@ -397,11 +407,12 @@ class Session:
         spawning a helper is not competing with itself."""
         lineage = set(self.lineage(excluding))
         idle_seconds = limit("IDLE_MINUTES") * 60
+        settle_seconds = limit("SETTLE_SECONDS")
 
         return [
             agent
             for agent in self.agents.values()
-            if agent.id not in lineage and agent.running(idle_seconds)
+            if agent.id not in lineage and agent.running(idle_seconds, settle_seconds)
         ]
 
     def children_of(self, spawner):
@@ -453,27 +464,42 @@ class AgentRecord:
 
         return f"{description}({self.type}, {model})"
 
-    def running(self, idle_seconds):
-        """In flight until the newest assistant record is a terminal stop, or the transcript has been
-        silent past the idle window — a killed agent leaves no terminal line,
-        and its silence is the only record of its death."""
+    def running(self, idle_seconds, settle_seconds=0):
+        """In flight until the newest assistant record is a terminal stop, or the
+        transcript has been silent past the idle window - a killed agent leaves
+        no terminal line, and its silence is the only record of its death - or a
+        final message recorded with no stop reason has been quiet for the settle
+        window."""
         try:
             stat = self.transcript.stat()
 
         except OSError:
             return True  # Spawned, transcript not yet written.
 
-        if idle_seconds and time.time() - stat.st_mtime > idle_seconds:
+        silent = time.time() - stat.st_mtime
+
+        if idle_seconds and silent > idle_seconds:
             return False
 
-        return not self.ended()
+        standing = self.standing()
 
-    def ended(self):
-        """Whether the agent's last turn ended. The harness appends bookkeeping
-        records - attachments, system notes - after the final assistant message,
-        so the terminal stop is the newest ASSISTANT record, not the newest line.
-        A user record newer than that assistant message is a new prompt or a
-        tool result: the agent is running again, whatever came before."""
+        if standing == ENDED:
+            return False
+
+        return not (standing == RESTING and settle_seconds and silent > settle_seconds)
+
+    def standing(self):
+        """What the newest assistant record says of the agent's turn: ENDED on a
+        terminal stop; RESTING where the record carries no stop reason and awaits
+        no tool result - the shape a finished message takes for a model whose
+        final message the harness records one block at a time, and equally the
+        shape of a text block whose message is still streaming, which is why
+        RESTING frees a slot only once the transcript has settled; WORKING
+        otherwise. The harness appends bookkeeping records - attachments, system
+        notes - after the final assistant message, so the record read is the
+        newest ASSISTANT one, not the newest line. A user record newer than it is
+        a new prompt or a tool result: the agent is running again, whatever came
+        before."""
         for line in reversed(tail_lines(self.transcript)):
             try:
                 record = json.loads(line)
@@ -484,14 +510,21 @@ class AgentRecord:
             kind = record.get("type")
 
             if kind == "user":
-                return False
+                return WORKING
 
             if kind == "assistant":
                 message = record.get("message") or {}
+                stop_reason = message.get("stop_reason")
 
-                return message.get("stop_reason") in TERMINAL_STOP_REASONS
+                if stop_reason in TERMINAL_STOP_REASONS:
+                    return ENDED
 
-        return False
+                if stop_reason is None and not awaits_tool_result(message):
+                    return RESTING
+
+                return WORKING
+
+        return WORKING
 
 
 # ── Approvals the harness has not yet recorded ───────────────────────────────
@@ -674,6 +707,17 @@ def pending_path(session):
     session_id = session.directory.parent.name
 
     return Path(base) / "spawn-guard" / f"{session_id}.jsonl"
+
+
+def awaits_tool_result(message):
+    """Whether an assistant message holds a tool call, whose result the harness
+    will write as a user record."""
+    content = message.get("content")
+
+    if not isinstance(content, list):
+        return False
+
+    return any(isinstance(block, dict) and block.get("type") == "tool_use" for block in content)
 
 
 def tail_lines(path):
