@@ -33,7 +33,10 @@ well-written charter is not.
 4. **Delegate it.** Spawn an agent at the cheapest tier that can do the work and
    **set the model explicitly** — an omitted model silently inherits this
    session's, which is the tier you are trying not to spend. Hand it the charter,
-   not the programme.
+   not the programme. Tell it how to treat a long wait: dispatch the work, commit,
+   and end its turn naming what it waits on. It must not arm a Monitor or poll,
+   because a stopped sub-agent cannot be woken by anything it armed. You hold
+   the wait and resume it with the result.
 
 5. **Read the verdict yourself.** Judge what came back and what it licenses. A
    negative is the cheap outcome, not the failed one: it removes an avenue
@@ -65,4 +68,6 @@ left here" is a result.
 Keep interim messages to a line or two — the detail belongs in the charter and
 its verdict, both of which outlive the session. If a charter's execution is long
 or queued, launch it, end the turn, and resume on notification rather than
-polling.
+polling. When the executor stops on a wait, hold that wait yourself with one
+background command that exits when the work does, then resume the executor with
+the result.

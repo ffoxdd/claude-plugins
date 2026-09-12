@@ -119,3 +119,16 @@ judgment; it stops paying to read the lines that do not.
 - **Launch, end the turn, resume on notification.** Never poll tracked
   background work. Interim messages are a line or two; detail goes in durable
   records.
+- **A sub-agent hands its waits to whoever spawned it.** Once a sub-agent ends
+  its turn, nothing it armed can wake it: its own Monitor or background command
+  notifies no one. Only a message from its parent resumes it. A Monitor whose
+  timeout expires inside a turn wakes the agent just to re-arm, and every wake
+  re-sends its whole context. So a sub-agent facing a wait longer than one tool
+  call arms nothing:
+  1. Dispatch the work somewhere that outlives the turn (a job queue, or its
+     parent's background command).
+  2. Commit what is ready.
+  3. End its turn naming what it is waiting on.
+
+  The parent holds the wait and resumes it with the result. Stopping there is
+  the correct behaviour, not stopping short.
