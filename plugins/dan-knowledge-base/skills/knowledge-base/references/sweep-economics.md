@@ -68,6 +68,30 @@ label is one you can reconstruct without trusting the manifest. If such a sweep
 has already run, confirm attribution against the source once, and stop
 delegating that source next time.
 
+## An item too large to fetch is fetched in pieces, not skipped
+
+A source that appends forever — a wiki page written into weekly for two years, a
+long-running ticket thread — eventually produces a single item whose "give me
+this whole thing" endpoint exceeds the tool-output limit. Every call fails, and
+the same call fails next sync.
+
+Treat that as the normal end state of a recurring item rather than an exception
+to route around, and **descend the item's own structure instead**. Most such
+APIs expose children separately from content: fetch the item's children with a
+small page size, identify the one section you need from the titles and
+timestamps that come back, then fetch that section's children, and so on.
+
+Three calls of a few KB each, against one that cannot complete at any size. And
+the descent gives back something the whole-item fetch cannot: **a modification
+time per child**, so you can tell which sections actually changed since the
+watermark rather than re-reading the entire item to find out. On a page where
+one week of twenty changed, that is the difference between reading a section and
+reading two years.
+
+The cost is that the newest section's position is a property of the source —
+appended at the end, or inserted at the top — and the descent has to know which.
+That is a fact about one source, so it belongs in the register, not here.
+
 ## A deterministic script beats a model for the mechanical half
 
 Where the fetch is fixed, specifiable work — pagination, deduplication,
