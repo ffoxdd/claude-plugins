@@ -88,6 +88,34 @@ degree of freedom without a name). Decide uncovered cases from that.
   by layer keeps doing so — its existing convention outranks this preference,
   and one slice inside a layered tree is worse than either.
 
+## Representable states
+
+- Make illegal states unrepresentable (Yaron Minsky). A type admits exactly the
+  values that make sense in its context and no others; a value that cannot be
+  constructed needs no check downstream, no test, and no comment saying it never
+  happens. The tools are the ordinary ones: a sum type for alternatives, a
+  required field for what is always there, a separate type for what is there
+  only sometimes.
+- An optional field claims the value genuinely sometimes exists for every value
+  of the type. When it exists for some variants and is structurally absent for
+  others, the type is two types sharing a name: split them and share the common
+  branch by composition (`Accepted | Failure` and `AcceptedWithDetail | Failure`,
+  not one result with a field half its producers never set).
+- The same rule in a database. Nullable means "sometimes absent, for every row",
+  never "present only when that other column says so". A column whose
+  nullability depends on another column's value is a subtype hiding in the
+  table: give the variant its own table keyed on the parent, or, where the
+  variants must share a row, state the dependency as a `CHECK` constraint so the
+  schema holds the rule. A rule of the form "when X is set, Y is always false"
+  never lives in documentation alone.
+- A flag argument that makes a function do two different things is the same
+  smell at the call level (Fowler's flag argument; control coupling). Two
+  behaviours are two functions with two names, and the caller says which it
+  wants by calling it.
+- Parse, don't validate (Alexis King). A check on the way in produces a value
+  whose type carries the result, so nothing downstream re-checks it; the checked
+  thing is its own type, which callers carry but cannot build.
+
 ## Dependencies and testing
 
 - Inject dependencies through interfaces. Instance variables are the injected
@@ -122,6 +150,18 @@ degree of freedom without a name). Decide uncovered cases from that.
   the situation — repeatable, and it joins the suite. A check against shared
   dev proves nothing after it runs; dev keeps only the final integration smoke
   against real external systems.
+- A test controls every source of variance, or it is not a test: the clock,
+  randomness, iteration order, the environment, the network. Time and
+  randomness are dependencies like any other, so the principled form injects
+  them (a `now` argument, a passed-in generator) and the test hands in fixed
+  values; faking a global is the fallback where the code is not yet shaped that
+  way, never the design.
+- A "now" read from the real clock inside a test is a failure scheduled for the
+  hour before a date boundary. Pin the clock at the instant most likely to break
+  the rule under test — the last hour before midnight in the rule's zone, the
+  day a DST change lands — not at whatever the runner's wall clock says.
+- Randomness in a test is seeded, and the seed is printed on failure, so a
+  failing run can be re-run exactly.
 
 ## Formatting
 
