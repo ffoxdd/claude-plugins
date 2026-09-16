@@ -73,6 +73,18 @@ repeatedly:
 The durable fix is to remove the sub-agent's need to shell out at all: give it
 file reading and editing and nothing else, and there is nothing left to deny.
 
+**Check that "and nothing else" is enforced, rather than merely written.** Naming
+a tool list is not by itself a confinement, and the flag that looks like one
+often is not: an *allow* list usually **adds** to whatever the machine's settings
+already permit, so an agent nominally holding two file tools can inherit every
+command its owner has ever allowed — and the one gating untrusted content is the
+worst place for that surplus, since a prompt injection reaches it as easily as
+the model's own judgment does. Find the launcher's *restricting* control — the
+one that replaces the tool set and ignores the settings files — and confirm the
+denial by asking the agent to do something outside its list and watching it
+fail. An agent that quietly did the extra thing is how this gets discovered
+otherwise.
+
 ## The isolated agent does the judgment half
 
 It reads and edits files, runs no commands, and returns only a confirmation —

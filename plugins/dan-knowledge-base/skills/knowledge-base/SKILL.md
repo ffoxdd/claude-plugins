@@ -211,9 +211,11 @@ Add `--source <name>` when the register calls a source something other than
 2. **An isolated agent edits the file** — replacing each record-dense section's
    placeholder with a structural-facts-only summary read from the side file that
    placeholder names, and gating the rest for stray personal data. Give it file
-   reading and editing only; it must run no commands, and
-   `references/chat-sources.md` explains why that constraint is what makes the
-   arrangement work.
+   reading and editing only; it must run no commands, and confirm that its
+   launcher *enforces* that rather than merely recording it —
+   `references/chat-sources.md` explains why the constraint is what makes the
+   arrangement work, and why an allow list is usually not the control that
+   imposes it.
 3. **This session deletes the side files**, then treats the export as ordinary
    intake.
 
