@@ -34,7 +34,10 @@ what it is.
 
 5. **Write the machine half.** Add the entry to `.knowledge-base.json`:
    `adapter`, `feeds`, `watermark` (`format` and `boundary`), `scope_control`,
-   plus whatever vocabulary the adapter needs. Copy the shape from
+   plus whatever vocabulary the adapter needs. Record the reach established in
+   step 1 as `requires` — `mcp` for a server, `commands` for a CLI — so the
+   next person to clone this repo is told what is missing rather than watching
+   the source return nothing. Copy the shape from
    `${CLAUDE_PLUGIN_ROOT}/config/example.json`. For a source that cannot be
    listed by recency, set `"reactive": true` and no watermark.
 

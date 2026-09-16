@@ -219,6 +219,39 @@ class ProvisioningSilenceTest(unittest.TestCase):
 
             self.assertIn("chat", body)
 
+    def test_a_directly_queried_source_reports_a_command_it_declares_and_lacks(self):
+        """`requires` is the only thing standing between an absent tool and a sync
+        that reports having swept a source it could not reach."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_register(directory, register(
+                board={"adapter": None, "requires": {"commands": ["definitely-not-installed"]}}
+            ))
+
+            body = json.loads(self.provision(path, home=directory).stdout)
+            body = body["hookSpecificOutput"]["additionalContext"]
+
+            self.assertIn("definitely-not-installed", body)
+            self.assertIn("board", body)
+
+    def test_a_declared_command_that_resolves_is_not_mentioned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_register(directory, register(
+                board={"adapter": None, "requires": {"commands": ["sh"]}}
+            ))
+
+            self.assertEqual(self.provision(path, home=directory).stdout.strip(), "")
+
+    def test_a_declared_mcp_server_is_left_to_setup(self):
+        """Whether a server is reachable is a property of the session, which a hook
+        in a subprocess cannot see. Reporting it here would nag about servers that
+        are working."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_register(directory, register(
+                board={"adapter": None, "requires": {"mcp": ["notion"]}}
+            ))
+
+            self.assertEqual(self.provision(path, home=directory).stdout.strip(), "")
+
     def test_a_broken_register_is_reported_when_it_is_the_named_one(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / ".knowledge-base.json"

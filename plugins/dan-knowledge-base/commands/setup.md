@@ -51,13 +51,23 @@ to confirm before moving on.
    is an **expired** credential, not a missing one — the remedy is a fresh
    sign-in. Say which of the two you are looking at.
 
-6. **Permissions.** None to add — say so and move on. A PreToolUse hook in this
+6. **What the directly-queried sources need.** For every source whose entry
+   carries `requires.mcp`, check your own tool list for that server's tools —
+   you are the only checker that can see them, which is why provisioning says
+   nothing about these. A server that is present needs no comment. One that is
+   absent means that source cannot sync at all: name it, say which notes it
+   feeds so the cost of leaving it is visible, and point them at `/mcp` to add
+   it. Do not offer to reach the source another way; a source that quietly
+   changes how it is read stops matching everything the register records about
+   it.
+
+7. **Permissions.** None to add — say so and move on. A PreToolUse hook in this
    plugin approves the reads a sync runs. Two things still prompt, both
    deliberately: `slack-client login`, and any call that chains a second
    command. A `Bash(slack-client *)` entry carried from an earlier version is
    harmless and needs no removing.
 
-7. **Re-run `provision.py`.** Silence is the confirmation. Then offer, without
+8. **Re-run `provision.py`.** Silence is the confirmation. Then offer, without
    running it unbidden, a first sync against a deliberately recent watermark so
    the initial run is small rather than a backfill of all history — started by
    asking "sync the knowledge base".

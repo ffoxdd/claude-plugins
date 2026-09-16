@@ -48,6 +48,35 @@ A source that cannot be listed by recency carries `"reactive": true` and no
 watermark, so an empty entry reads as "followed by reference" rather than as a
 watermark that has looked stale for months.
 
+## What a source needs to be reachable at all
+
+A source with `"adapter": null` is still reached through *something* — an MCP
+server, a CLI someone installed once — and nothing about the register says so
+unless it is written down. The failure that follows is the quiet one: the
+server is absent, the source returns nothing, the sync reports sweeping it, and
+the watermark advances over a window nobody read.
+
+`requires` is where the entry names it:
+
+```json
+"task-board": {
+  "adapter": null,
+  "requires": {"mcp": ["clickup"], "commands": ["clickup-cli"]}
+}
+```
+
+- **`mcp`** — server names whose tools must be present in the session. Checked
+  by `/dan-knowledge-base:setup`, which runs where the tool list is visible.
+- **`commands`** — executables that must resolve on PATH. Checked at session
+  start, because a subprocess can answer that one.
+
+Neither is checked by the sync itself, which would turn a missing prerequisite
+into a mid-run failure rather than something known before starting.
+
+Name only what the source genuinely cannot work without. A requirement that is
+merely nice to have produces a note on every session that has it, which is how
+a check earns itself a reputation for crying wolf.
+
 Everything else in an entry is the adapter's own vocabulary — sender lists for
 mail, dense-conversation names for chat — and the adapter documents it.
 

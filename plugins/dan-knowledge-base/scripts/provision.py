@@ -66,16 +66,17 @@ def main():
         return
 
     adapters = declared_adapters(document)
+    cleanups = clear_superseded_links() if adapters else []
 
-    if not adapters:
-        return
-
-    cleanups = clear_superseded_links()
-
+    # Every check below is driven by what the register declares, so a knowledge
+    # base declaring nothing produces no notes and says nothing. There is no
+    # early return on "no adapters": a source the model queries directly needs
+    # nothing from this plugin and can still need a CLI to exist.
     notes = []
     notes.extend(check_shipped_scripts(plugin_root, adapters))
     notes.extend(check_commands(adapters))
     notes.extend(check_interactive_setup(adapters, root, document))
+    notes.extend(check_declared_requirements(document))
 
     if notes:
         notes.append("run /dan-knowledge-base:setup for a guided fix.")
@@ -93,7 +94,8 @@ def report_broken_register(error):
 
 def declared_adapters(document):
     """The adapter names this knowledge base declares, ignoring sources the model
-    queries directly (adapter null) — those need nothing from this plugin."""
+    queries directly (adapter null) — those run nothing this plugin ships, and
+    name whatever they do run in `requires`."""
     return sorted(
         {
             entry.get("adapter")
@@ -194,6 +196,34 @@ def check_commands(adapters):
             if not shutil.which(command):
                 notes.append(
                     f"'{command}' is not installed, and the {adapter} adapter runs on it. "
+                    f"Until it is, skip that source and note the skip in the watermarks."
+                )
+
+    return notes
+
+
+def check_declared_requirements(document):
+    """What a source says it needs, for the sources no adapter speaks for.
+
+    A source the model queries directly still runs on something — an MCP server,
+    a CLI — and that requirement is invisible to everyone until the sync that
+    needed it returns nothing. `requires` is where the register names it.
+
+    Only `commands` are checked here. An MCP server is reachable or not as a
+    property of the *session*, which a hook running in a subprocess cannot see;
+    `/dan-knowledge-base:setup` checks those from where the tools are visible.
+    Reporting what cannot be verified would make every session nag about a
+    server that is working fine."""
+    notes = []
+
+    for name, entry in sorted(document.get("sources", {}).items()):
+        if not isinstance(entry, dict):
+            continue
+
+        for command in entry.get("requires", {}).get("commands", ()):
+            if not shutil.which(command):
+                notes.append(
+                    f"'{command}' is not installed, and the {name} source declares it. "
                     f"Until it is, skip that source and note the skip in the watermarks."
                 )
 

@@ -40,6 +40,7 @@
 
     "task-board": {
       "adapter": null,
+      "requires": {"mcp": ["<the task board's MCP server>"]},
       "feeds": ["notes/delivery/board.md"],
       "watermark": {"format": "epoch-milliseconds", "boundary": "exclusive"},
       "scope_control": {"container": "<a container known to be empty>", "expected_items": 0}
@@ -47,6 +48,7 @@
 
     "design-boards": {
       "adapter": null,
+      "requires": {"mcp": ["<the design tool's MCP server>"]},
       "reactive": true,
       "feeds": ["notes/design"],
       "known_documents": {"Sprint Planning": "<stable-file-key>"}
