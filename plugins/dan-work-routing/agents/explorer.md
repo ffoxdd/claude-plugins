@@ -1,6 +1,6 @@
 ---
 name: explorer
-description: Searches and reads across many files to answer a bounded question, returning only the conclusion. Use when answering would mean opening more files than the answer is worth — locating a definition, tracing where a pattern is used, mapping a subsystem.
+description: Searches and reads across many files to answer a bounded question, returning only the conclusion. Use when answering would mean opening more files than the answer is worth — locating a definition, tracing where a pattern is used, mapping a subsystem. Holds file tools only (Read, Grep, Glob, Bash) and no MCP tools, so a source reached through an MCP server — a wiki, a tracker, a mailbox — needs an agent that lists those tools, not this one.
 model: haiku
 effort: low
 tools: Read, Grep, Glob, Bash

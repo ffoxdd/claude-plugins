@@ -48,6 +48,17 @@ main session already holds** — not the notes, not the code, not the
 conversation. Delegate it to the least capable model that can judge
 "substantive or not" from a title and a timestamp.
 
+**And to an agent that holds the source's tools.** A source reached through an
+MCP server can be queried only by an agent whose tool list names those MCP
+tools. The routing plugin's cheap search agents hold file tools only, and one
+handed an MCP sweep reports the server as *missing* rather than its own grant —
+a plausible answer that is really a tooling fault. Define a repo-local agent
+with exactly the source's read tools, its own cheap model, and nothing else.
+The register records the same need from the other side: a source entry's
+`requires.mcp` names the servers it depends on, which is what
+`/dan-knowledge-base:setup` checks (see `configuring-sources.md`, *What a
+source needs to be reachable at all*).
+
 **Don't delegate a sweep whose answer has to name a container.** It will file
 items under the wrong one — not rarely, and not visibly. "Verify before
 recording" costs about what fetching directly would have, so the delegation
