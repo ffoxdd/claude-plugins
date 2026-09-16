@@ -23,16 +23,29 @@ from pathlib import Path
 
 CONFIG_FILENAME = ".knowledge-base.json"
 
-GITIGNORE_RULES = """
+# Each block is keyed by a sentinel line, and a block whose sentinel is already
+# present is left alone. Keying per block rather than per file is what lets a
+# knowledge base scaffolded by an earlier version pick up a rule added later:
+# one sentinel for the whole file would read the first block as proof of all of
+# them.
+GITIGNORE_BLOCKS = [
+    ("inbox/*", """
 # Raw intake stays local; only distilled notes are committed. This entry is what
 # makes pulling a source into inbox/ safe — it is not a publication decision.
 # `inbox/*` covers inbox/processed/ as well; the negation keeps the directory
 # itself tracked so a fresh clone has somewhere to put intake.
 inbox/*
 !inbox/.gitkeep
-""".lstrip()
-
-GITIGNORE_SENTINEL = "inbox/*"
+""".lstrip()),
+    ("scratch/*", """
+# Working artifacts that were only ever true of one afternoon — a scratch query,
+# a half-read export, a file staged for one sync. Ignored rather than absent, so
+# there is somewhere obvious to put them: knowledge that turns out to be durable
+# gets promoted into notes/, and whatever stays here is by that fact disposable.
+scratch/*
+!scratch/.gitkeep
+""".lstrip()),
+]
 
 WATERMARKS = """\
 # Watermarks for live sources. One line per source, updated after every sync.
@@ -48,6 +61,7 @@ REGISTER = {
     "layout": {
         "inbox": "inbox",
         "processed": "inbox/processed",
+        "scratch": "scratch",
         "notes": "notes",
         "watermarks": "notes/.sync-state",
     },
@@ -95,6 +109,7 @@ def plan(root):
         (root / ".gitignore", {"kind": "gitignore"}),
         (root / "inbox" / ".gitkeep", {"kind": "empty", "note": "keeps a gitignored inbox/ tracked"}),
         (root / "inbox" / "processed", {"kind": "directory"}),
+        (root / "scratch" / ".gitkeep", {"kind": "empty", "note": "keeps a gitignored scratch/ tracked"}),
         (root / "notes", {"kind": "directory"}),
         (root / "notes" / ".sync-state", {"kind": "text", "body": WATERMARKS}),
         (root / CONFIG_FILENAME, {"kind": "json", "body": REGISTER,
@@ -109,9 +124,16 @@ def plan(root):
 
 def exists(target, detail):
     if detail["kind"] == "gitignore":
-        return target.is_file() and GITIGNORE_SENTINEL in target.read_text(encoding="utf-8")
+        return not missing_blocks(target)
 
     return target.exists()
+
+
+def missing_blocks(target):
+    """The managed blocks whose sentinel is absent from the file."""
+    present = target.read_text(encoding="utf-8") if target.is_file() else ""
+
+    return [rules for sentinel, rules in GITIGNORE_BLOCKS if sentinel not in present]
 
 
 def apply_one(target, detail):
@@ -127,8 +149,9 @@ def apply_one(target, detail):
         # Append rather than replace: a repo that already has a gitignore has
         # rules worth more than this one.
         existing = target.read_text(encoding="utf-8") if target.is_file() else ""
+        addition = "\n".join(missing_blocks(target))
         separator = "" if not existing or existing.endswith("\n\n") else "\n"
-        target.write_text(existing + separator + GITIGNORE_RULES, encoding="utf-8")
+        target.write_text(existing + separator + addition, encoding="utf-8")
 
     elif kind == "empty":
         target.touch()
