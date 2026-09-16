@@ -1,0 +1,6 @@
+# cmd.exe is the one consumer here that cares about line endings, and it is the
+# one whose files are authored on machines that do not produce them. Checking a
+# batch file out with LF endings works until the day it grows a label or a
+# multi-line block, and then fails in a way that reads as a broken command
+# rather than a broken file.
+*.cmd text eol=crlf

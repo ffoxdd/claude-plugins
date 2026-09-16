@@ -17,12 +17,40 @@ import support
 
 PLUGIN_ROOT_REFERENCE = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}(/[^\s\"']+)")
 
-LAUNCHED_PATH = re.compile(r'\$\(dirname "\$0"\)([^"]*)"')
+POSIX_LAUNCHED_PATH = re.compile(r'\$\(dirname "\$0"\)([^"]*)"')
+WINDOWS_LAUNCHED_PATH = re.compile(r'%~dp0([^"]*)"')
+
+# A bin/ entry is a shim in one of two dialects, and each states the same things
+# differently. The executable bit is the one property that does not carry over:
+# a native Windows shell resolves a command through PATHEXT and never consults
+# it, so requiring one would fail a launcher that works where it runs.
+LAUNCHER_DIALECTS = {
+    ".cmd": {"path": WINDOWS_LAUNCHED_PATH, "comment": "rem", "executable": False},
+}
+
+POSIX_DIALECT = {"path": POSIX_LAUNCHED_PATH, "comment": "#", "executable": True}
+
+
+def dialect(launcher):
+    return LAUNCHER_DIALECTS.get(launcher.suffix, POSIX_DIALECT)
+
+
+def launched_paths(launcher):
+    """The scripts a launcher runs, as paths relative to bin/.
+
+    Separators are normalised because a Windows shim spells the same relative
+    path with backslashes, and it is the same file either way."""
+    found = dialect(launcher)["path"].findall(launcher.read_text(encoding="utf-8"))
+
+    return [suffix.replace("\\", "/").lstrip("/") for suffix in found]
 
 
 def executed_lines(path):
+    comment = dialect(path)["comment"]
+
     return "\n".join(
-        line for line in path.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("#")
+        line for line in path.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().lower().startswith(comment)
     )
 
 
@@ -410,6 +438,10 @@ class LauncherTest(unittest.TestCase):
     same silent way. A file without the executable bit is simply not a command; a
     launcher naming a script that has since moved reports `No such file` at the one
     moment someone needed it, which for the covered runner is mid-analysis.
+
+    A command a person types by hand may be shimmed twice, once per shell dialect,
+    since Git Bash and cmd.exe each read only their own. Both shims are held to the
+    same contract — see LAUNCHER_DIALECTS for the one clause that differs.
     """
 
     def launchers(self):
@@ -424,18 +456,21 @@ class LauncherTest(unittest.TestCase):
 
     def test_every_launcher_is_executable(self):
         for plugin, launcher in self.launchers():
+            if not dialect(launcher)["executable"]:
+                continue
+
             with self.subTest(plugin=plugin, launcher=launcher.name):
                 self.assertTrue(os.access(launcher, os.X_OK))
 
     def test_every_launcher_names_a_file_that_exists(self):
         for plugin, launcher in self.launchers():
-            suffixes = LAUNCHED_PATH.findall(launcher.read_text(encoding="utf-8"))
+            suffixes = launched_paths(launcher)
 
             with self.subTest(plugin=plugin, launcher=launcher.name):
                 self.assertTrue(suffixes, "names no script to run")
 
                 for suffix in suffixes:
-                    self.assertTrue((launcher.parent / suffix.lstrip("/")).exists())
+                    self.assertTrue((launcher.parent / suffix).exists())
 
     def test_no_launcher_reaches_outside_its_plugin(self):
         """A relative path from bin/ is what survives the version-stamped install
@@ -446,9 +481,10 @@ class LauncherTest(unittest.TestCase):
         for plugin, launcher in self.launchers():
             with self.subTest(plugin=plugin, launcher=launcher.name):
                 self.assertNotIn("~/", executed_lines(launcher))
+                self.assertNotIn("%USERPROFILE%", executed_lines(launcher))
 
-                for suffix in LAUNCHED_PATH.findall(launcher.read_text(encoding="utf-8")):
-                    resolved = (launcher.parent / suffix.lstrip("/")).resolve()
+                for suffix in launched_paths(launcher):
+                    resolved = (launcher.parent / suffix).resolve()
 
                     self.assertTrue(
                         resolved.is_relative_to(support.plugin_root(plugin).resolve())

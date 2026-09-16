@@ -10,4 +10,8 @@
 # `#!/usr/bin/env -S uv run --script` shebang: `-S` is a GNU extension, and Git Bash on
 # Windows is not a platform to bet the chat adapter on. The dependencies stay inline in
 # the script (PEP 723), which is what lets this plugin ship it with no install step.
+#
+# `slack-client.cmd` beside this file is the same entry point for cmd.exe and
+# PowerShell, which do not read this one. Both are shims over the same script, so
+# a change to how it is invoked belongs in both.
 exec uv run --script "$(dirname "$0")/../scripts/slack-client" "$@"
