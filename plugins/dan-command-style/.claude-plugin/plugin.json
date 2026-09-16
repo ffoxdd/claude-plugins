@@ -1,7 +1,6 @@
 {
   "name": "dan-command-style",
-  "description": "Preference — one convention for how Claude invokes commands: allowlist-friendly Bash. Enforced by one hook; uninstall to stop it binding.",
-  "version": "0.5.1",
+  "description": "Preference \u2014 one convention for how Claude invokes commands: allowlist-friendly Bash. Enforced by one hook; uninstall to stop it binding.",
   "author": {
     "name": "Dan Fox"
   },

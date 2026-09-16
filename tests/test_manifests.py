@@ -105,7 +105,10 @@ class MarketplaceTest(unittest.TestCase):
 
 
 class PluginManifestTest(unittest.TestCase):
-    def test_every_plugin_declares_a_matching_name_and_a_version(self):
+    def test_every_plugin_declares_a_matching_name(self):
+        """`version` is deliberately absent from most manifests here, so that a
+        commit is itself the update signal. Where one is declared it is the *only*
+        signal, so it has to be a version anyone can order against the last."""
         for plugin in support.plugin_names():
             with self.subTest(plugin=plugin):
                 manifest = support.read_json(
@@ -113,8 +116,10 @@ class PluginManifestTest(unittest.TestCase):
                 )
 
                 self.assertEqual(manifest["name"], plugin)
-                self.assertRegex(manifest["version"], r"^\d+\.\d+\.\d+$")
                 self.assertTrue(manifest["description"].strip())
+
+                if "version" in manifest:
+                    self.assertRegex(manifest["version"], r"^\d+\.\d+\.\d+$")
 
 
 class NamingRuleTest(unittest.TestCase):
@@ -199,20 +204,26 @@ class NamingRuleTest(unittest.TestCase):
 
 
 class VersionPropagationTest(unittest.TestCase):
-    """A plugin's `version` is what carries a change to anyone who installed it.
+    """What carries a change to anyone who installed a plugin.
 
-    Installed copies are compared by that string rather than by commit, so a
-    commit that edits a plugin without bumping it reaches the marketplace clone
-    and stops there: `plugin update` answers "already at the latest version",
+    A plugin that declares no `version` is compared by the resolved commit SHA of
+    the source it came from, so every commit is already an update and there is
+    nothing for anyone to remember. That is what the plugins here do, and it is
+    why most of them have no version at all.
+
+    Declaring one opts out of that: the string becomes the sole update signal, and
+    a commit that edits the plugin without bumping it reaches the marketplace clone
+    and stops there — `plugin update` answers "already at the latest version",
     auto-update does the same nothing, and the repository disagrees with every
-    install with no error raised anywhere. That happened twice — 480cc59 shipped
-    a README per plugin and 7db4df0 rewrote the knowledge-base workflow docs,
-    neither reaching an install — because the rule lived only in prose.
+    install with no error raised anywhere. That happened twice — 480cc59 shipped a
+    README per plugin and 7db4df0 rewrote the knowledge-base workflow docs, neither
+    reaching an install — because the rule lived only in prose.
 
-    So: the last commit touching a plugin's files must be the bump commit itself
-    or older than it. History is the subject, not the working tree, which is what
-    makes this quiet while a change is in progress and loud the moment one is
-    committed without its bump.
+    So the check applies to exactly the plugins that declare a version: the last
+    commit touching such a plugin's files must be the bump commit itself or older
+    than it. History is the subject, not the working tree, which is what makes this
+    quiet while a change is in progress and loud the moment one is committed
+    without its bump.
     """
 
     def setUp(self):
@@ -231,8 +242,13 @@ class VersionPropagationTest(unittest.TestCase):
 
         return result.stdout.strip()
 
-    def test_every_plugin_edit_was_committed_with_its_version_bump(self):
+    def test_every_versioned_plugin_edit_was_committed_with_its_version_bump(self):
         for plugin in support.plugin_names():
+            if "version" not in support.read_json(
+                support.plugin_root(plugin) / ".claude-plugin" / "plugin.json"
+            ):
+                continue  # Compared by commit, so every commit already carries it.
+
             with self.subTest(plugin=plugin):
                 manifest = f"plugins/{plugin}/.claude-plugin/plugin.json"
                 content = self.last_commit_touching(

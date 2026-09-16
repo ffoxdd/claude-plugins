@@ -58,7 +58,7 @@ Mechanisms there are fine; that is what they are for.
 1. Create `plugins/<name>/` with whichever parts you need:
 
    ```
-   .claude-plugin/plugin.json   name, description, version,
+   .claude-plugin/plugin.json   name, description,
                                 author, keywords
    README.md                    must start with `# <name>`
    commands/<command>.md        /<name>:<command>
@@ -83,18 +83,29 @@ Mechanisms there are fine; that is what they are for.
 
 4. Run the suite: `python3 -m unittest discover -s tests`.
 
-## Bump the version in the commit that changes the plugin
+## Leave `version` out of the manifest
 
-Installed copies are compared by the `version` string, not by commit. A commit
-that edits a plugin without bumping it reaches the marketplace clone and stops
-there: `plugin update` answers "already at the latest version", auto-update does
-the same nothing, and the repository disagrees with every install with no error
-raised anywhere.
+A plugin that declares no `version` is compared by the resolved commit SHA of
+the source it came from, so a commit *is* the update — there is nothing to
+remember and nothing to forget. That is what the plugins here do, and it is the
+setup Claude Code recommends for a plugin under active development.
 
-This applies to a documentation-only change as much as a behavioral one — the
-skill bodies and the READMEs *are* the product. The suite checks it against
-history, so it stays quiet while your change is in progress and fails the moment
-one is committed without its bump.
+Declaring a version opts out of that, and the opt-out is total: the string
+becomes the sole update signal, so a commit that edits the plugin without
+bumping it reaches the marketplace clone and stops there. `plugin update`
+answers "already at the latest version", auto-update does the same nothing, and
+the repository disagrees with every install with no error raised anywhere. That
+happened twice before the versions came off.
+
+Declare one only for a plugin that has to be *resolvable by version*: one that
+another plugin depends on by a semver range, since the range must be matched
+against a `{plugin-name}--v{version}` git tag rather than against the manifest.
+No plugin here is in that position, which is why none of them carry a version.
+The suite checks history for exactly the ones that do, and says nothing about
+the rest.
+
+Both surfaces must not disagree: a `version` in `marketplace.json` is silently
+overridden by one in `plugin.json`, so a stale manifest masks the entry.
 
 ## Self-containment, which the suite also checks
 
