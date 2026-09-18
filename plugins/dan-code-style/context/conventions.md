@@ -201,8 +201,13 @@ degree of freedom without a name). Decide uncovered cases from that.
   viewers soft-wrap longer lines mid-word. Move a trailing comment to its own
   line above, split wide statements, and verify after editing.
 - A PR description describes the branch's shape and what gates the merge. No
-  commit lists (the Commits tab is live) and no counts CI reports live; a
-  number appears only as a dated, won't-be-re-measured measurement.
+  commit lists (the Commits tab is live), no commit SHAs (a rebase or a fold
+  orphans every one without touching the text), and no counts CI reports live;
+  a number appears only as a dated, won't-be-re-measured measurement.
+- A reference is rot at write time when a mechanical reshuffle invalidates it
+  silently: a commit SHA, "above"/"below", a line number, an ordinal ("the
+  third case"). Name the thing instead — the commit by its subject, the
+  section by its heading, the case by what it tests.
 - A doc marked self-contained carries no cross-references; inline what it
   needs.
 
