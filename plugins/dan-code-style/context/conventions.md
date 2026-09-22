@@ -162,6 +162,18 @@ degree of freedom without a name). Decide uncovered cases from that.
   day a DST change lands — not at whatever the runner's wall clock says.
 - Randomness in a test is seeded, and the seed is printed on failure, so a
   failing run can be re-run exactly.
+- A database a test touches is a source of variance like the clock, and the
+  state it starts in is part of the test's input. Every test begins from the
+  same known state — an empty schema at head, or one fixture-built situation —
+  whatever ran before it, in this run or an earlier one, and whichever worker
+  runs it. Three strategies keep it so, chosen by what fits: a transaction
+  rolled back per test where every adapter shares one connection; a truncate
+  per test where they do not, or where a test needs commits other connections
+  can see; a drop and rebuild per run so the schema is at head from nothing.
+  A suite that migrates a persistent database forward and leaves tests to
+  isolate themselves by fresh names carries hidden input — what passes
+  depends on that machine's history, which no other machine reproduces — and
+  a test that reads the whole of anything eventually finds it.
 
 ## Formatting
 
