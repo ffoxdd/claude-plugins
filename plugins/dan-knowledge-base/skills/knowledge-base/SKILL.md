@@ -231,7 +231,13 @@ Add `--source <name>` when the register calls a source something other than
 3. **This session deletes the side files**, then treats the export as ordinary
    intake.
 
-The Notion export runs the same three steps. The one difference is the export:
+The Notion export runs the same three steps, **except when nothing changed**.
+Then the script prints `Nothing to summarize: skip the isolated agent.`, writes
+no side files, and step 2 does not run. A quiet window costs Notion API calls
+and no model tokens, covered or otherwise. The walk is a script, and only a
+changed page's text ever reaches a model.
+
+Otherwise the steps are the same. The one difference is the export:
 it holds nothing but placeholders, one per changed page, naming the page by id
 and edit time. A title can be a person's name, so every word of a page reaches
 only its side file. Its watermark is **inclusive at the minute**, because Notion

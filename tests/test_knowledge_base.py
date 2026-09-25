@@ -1055,6 +1055,16 @@ class NotionAdapterTest(unittest.TestCase):
         self.assertEqual(list(self.raw.glob("*.md")), [])
         self.assertFalse(self.output.exists())
 
+    def test_a_quiet_window_says_to_skip_the_isolated_agent(self):
+        """Nothing changed means nothing to summarize, and so no model call at all."""
+        result = self.export("--sensitive-raw-directory", str(self.raw),
+                             watermark="2026-09-30T00:00:00Z")
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("0 changed", result.stdout)
+        self.assertIn("skip the isolated agent", result.stdout)
+        self.assertEqual(list(self.raw.glob("*.md")), [])
+
     def test_nesting_past_the_limit_is_a_gap(self):
         """Below the limit a child page could hide, so an unsearched subtree must
         withhold the watermark rather than pass as searched."""

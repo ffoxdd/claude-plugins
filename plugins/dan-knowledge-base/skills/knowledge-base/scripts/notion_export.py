@@ -683,7 +683,10 @@ def main(argv=None):
     print(arguments.output)
     print(f"{len(locations)} location(s), {checked} page(s) checked, {changed} changed")
 
-    if changed and not arguments.sensitive_raw_directory:
+    if not changed:
+        print("Nothing to summarize: skip the isolated agent.")
+
+    elif not arguments.sensitive_raw_directory:
         print("Changed pages were listed only; pass --sensitive-raw-directory to have them "
               "summarized.")
 
