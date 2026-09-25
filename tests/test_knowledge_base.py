@@ -699,3 +699,381 @@ class ChatAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("nonexistent", result.stderr)
+
+
+
+def notion_page(identifier, edited, title, parent="page"):
+    return {
+        "object": "page",
+        "id": identifier,
+        "last_edited_time": edited,
+        "parent": {"type": f"{parent}_id"},
+        "properties": {
+            "Name": {"type": "title", "title": [{"plain_text": title}]},
+            "Stage": {"type": "select", "select": {"name": "PROPERTY-MARKER"}},
+        },
+    }
+
+
+def notion_block(identifier, kind, text="", has_children=False, **content):
+    return {
+        "object": "block",
+        "id": identifier,
+        "type": kind,
+        "has_children": has_children,
+        kind: {"rich_text": [{"plain_text": text}], **content},
+    }
+
+
+class StubNotion:
+    """A local stand-in for the Notion REST API, serving a fixed tree.
+
+    hub (edited after the watermark)
+      ├─ unchanged        child page, edited before it
+      ├─ changed          child page: marker text, a person-shaped title, a one-off 503
+      ├─ column_list → column → nested       found only by descending containers
+      ├─ heading_2 (toggle) → under-heading  found only by descending any block with children
+      └─ database         child database: one changed row, one old one
+
+    `broken` holds children the renderer cannot handle; tests opt into it.
+    """
+
+    WATERMARK = "2026-09-20T10:30:45Z"
+
+    PAGES = {
+        "hub": notion_page("hub", "2026-09-21T09:00:00.000Z", "Operations hub"),
+        "unchanged": notion_page("unchanged", "2026-09-01T09:00:00.000Z", "UNCHANGED-TITLE"),
+        "changed": notion_page("changed", "2026-09-22T09:00:00.000Z", "Jane PERSON-TITLE"),
+        "nested": notion_page("nested", "2026-09-20T10:30:00.000Z", "Nested page"),
+        "under-heading": notion_page("under-heading", "2026-09-24T09:00:00.000Z", "Grouped"),
+        "broken": notion_page("broken", "2026-09-24T09:00:00.000Z", "Broken"),
+    }
+
+    CHILDREN = {
+        "hub": [
+            notion_block("unchanged", "child_page", title="UNCHANGED-TITLE"),
+            notion_block("changed", "child_page", title="Jane PERSON-TITLE"),
+            notion_block("columns", "column_list", has_children=True),
+            notion_block("heading", "heading_2", "Group", has_children=True, is_toggleable=True),
+            notion_block("database", "child_database", title="Rows"),
+        ],
+        "columns": [notion_block("column", "column", has_children=True)],
+        "column": [notion_block("nested", "child_page", title="Nested page")],
+        "heading": [notion_block("under-heading", "child_page", title="Grouped")],
+        "changed": [notion_block("paragraph", "paragraph", "SENSITIVE-MARKER detail")],
+        "unchanged": [],
+        "nested": [notion_block("paragraph-2", "paragraph", "nested text")],
+        "under-heading": [],
+        "row": [notion_block("paragraph-3", "paragraph", "ROW-MARKER text")],
+        "old-row": [],
+        "broken": [{"object": "block", "id": "no-type", "has_children": False}],
+    }
+
+    ROWS = {
+        "database": [
+            notion_page("row", "2026-09-23T09:00:00.000Z", "A row", "database"),
+            notion_page("old-row", "2026-08-01T09:00:00.000Z", "An old row", "database"),
+        ],
+        "empty-database": [],
+    }
+
+    def __init__(self):
+        import http.server
+        import threading
+
+        stub = self
+        self.authorizations = []
+        self.first_request_at = None
+        self.failed_once = set()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *arguments):
+                pass
+
+            def reply(self, status, document):
+                body = json.dumps(document).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Retry-After", "0")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def once(self, key, status):
+                if key in stub.failed_once:
+                    return False
+
+                stub.failed_once.add(key)
+                self.reply(status, {"object": "error", "code": "transient"})
+
+                return True
+
+            def record(self):
+                from datetime import datetime, timezone
+
+                stub.first_request_at = stub.first_request_at or datetime.now(timezone.utc)
+                stub.authorizations.append(self.headers.get("Authorization"))
+
+            def not_found(self):
+                self.reply(404, {"object": "error", "code": "object_not_found",
+                                 "message": "LEAKY-ERROR-MESSAGE"})
+
+            def do_GET(self):
+                self.record()
+                parts = self.path.split("?")[0].strip("/").split("/")
+
+                if parts[0] == "pages" and parts[1] == "hub" and self.once("hub-429", 429):
+                    return
+
+                if parts[0] == "pages" and parts[1] in stub.PAGES:
+                    return self.reply(200, stub.PAGES[parts[1]])
+
+                if parts[0] == "blocks" and parts[1] == "changed" and self.once("changed-503", 503):
+                    return
+
+                if parts[0] == "blocks" and parts[1] in stub.CHILDREN:
+                    return self.reply(200, {"results": stub.CHILDREN[parts[1]], "has_more": False})
+
+                self.not_found()
+
+            def do_POST(self):
+                self.record()
+                length = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(length)
+                parts = self.path.strip("/").split("/")
+
+                if parts[0] == "databases" and parts[1] in stub.ROWS:
+                    return self.reply(200, {"results": stub.ROWS[parts[1]], "has_more": False})
+
+                self.not_found()
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def api_base(self):
+        return f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class NotionAdapterTest(unittest.TestCase):
+    """The notion adapter against a stub API. The properties pinned are the ones the
+    design rests on: a changed page's content, title and properties reach only its
+    side file; no output stream carries content or the token, whatever fails;
+    discovery finds pages under any block with children and in databases; and
+    anything that could hide an edit withholds the watermark."""
+
+    TOKEN = "Bearer secret-TOKEN-MARKER"
+    CONTENT = ("SENSITIVE-MARKER", "PERSON-TITLE", "ROW-MARKER", "PROPERTY-MARKER",
+               "LEAKY-ERROR-MESSAGE", "TOKEN-MARKER")
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.stub = StubNotion()
+        self.output = self.root / "export.md"
+        self.raw = self.root / "raw"
+        self.claude_config = self.root / "claude.json"
+        self.write_token(self.TOKEN)
+        self.write_source([
+            {"name": "Operations hub", "id": "hub"},
+            {"name": "Playbooks", "id": "empty-database", "kind": "database"},
+        ])
+
+    def tearDown(self):
+        self.stub.close()
+        self.directory.cleanup()
+
+    def write_token(self, value):
+        self.claude_config.write_text(json.dumps({"mcpServers": {"notion": {
+            "env": {"OPENAPI_MCP_HEADERS": json.dumps({"Authorization": value})},
+        }}}))
+
+    def write_source(self, locations):
+        self.config = write_register(self.root, register(**{"notion-covered": {
+            "adapter": "notion",
+            "api_base": self.stub.api_base,
+            "request_interval_seconds": 0,
+            "credential": {"claude_config": str(self.claude_config)},
+            "covered_locations": locations,
+        }}))
+
+    def export(self, *extra, watermark=StubNotion.WATERMARK):
+        return support.run_script(
+            adapter("notion_export.py"),
+            arguments=[watermark, str(self.output), "--source", "notion-covered", *extra],
+            KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+        )
+
+    def export_text(self):
+        return self.output.read_text(encoding="utf-8")
+
+    def assert_nothing_leaked(self, result, files=()):
+        streams = result.stdout + result.stderr + "".join(
+            path.read_text(encoding="utf-8") for path in files if path.exists()
+        )
+
+        for token in self.CONTENT:
+            with self.subTest(token=token):
+                self.assertNotIn(token, streams)
+
+    def test_a_changed_page_reaches_only_its_side_file(self):
+        self.export("--sensitive-raw-directory", str(self.raw))
+        side_file = (self.raw / "changed.md").read_text(encoding="utf-8")
+
+        for token in ("SENSITIVE-MARKER", "PERSON-TITLE", "PROPERTY-MARKER"):
+            with self.subTest(token=token):
+                self.assertNotIn(token, self.export_text())
+                self.assertIn(token, side_file)
+
+        self.assertIn(str(self.raw / "changed.md"), self.export_text())
+
+    def test_without_the_flag_nothing_of_a_page_is_written(self):
+        result = self.export()
+
+        self.assertNotIn("SENSITIVE-MARKER", self.export_text())
+        self.assertFalse(self.raw.exists())
+        self.assertIn("listed only", result.stdout)
+
+    def test_no_output_stream_carries_content_or_the_token(self):
+        result = self.export("--sensitive-raw-directory", str(self.raw))
+
+        self.assert_nothing_leaked(result, files=[self.output])
+
+    def test_the_token_is_sent_and_written_nowhere(self):
+        self.export("--sensitive-raw-directory", str(self.raw))
+        written = self.export_text() + "".join(
+            path.read_text(encoding="utf-8") for path in self.raw.glob("*.md")
+        )
+
+        self.assertEqual(set(self.stub.authorizations), {self.TOKEN})
+        self.assertNotIn("TOKEN-MARKER", written)
+
+    def test_a_token_with_a_line_break_is_refused_without_quoting_it(self):
+        """http.client quotes a bad header value in its exception, and a traceback prints it."""
+        self.write_token("Bearer secret-TOKEN\nMARKER")
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("malformed", result.stderr)
+        self.assertNotIn("TOKEN", result.stderr.replace("Notion token", ""))
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_an_unchanged_page_or_row_is_not_listed(self):
+        self.export()
+
+        self.assertNotIn("`unchanged`", self.export_text())
+        self.assertNotIn("`old-row`", self.export_text())
+
+    def test_discovery_descends_every_block_with_children(self):
+        """Containers, toggle headings, and child databases alike."""
+        self.export()
+
+        for page in ("nested", "under-heading", "row"):
+            with self.subTest(page=page):
+                self.assertIn(f"`{page}`", self.export_text())
+
+    def test_an_edit_in_the_watermarks_own_minute_is_included(self):
+        """`nested` was edited at 10:30:00 against a 10:30:45 watermark; a strict
+        comparison would skip it for good."""
+        self.export()
+
+        self.assertIn("`nested`", self.export_text())
+
+    def test_counts_include_every_row_checked_not_only_changed_ones(self):
+        result = self.export()
+
+        self.assertIn("2 location(s), 7 page(s) checked, 5 changed", result.stdout)
+
+    def test_the_watermark_is_the_clock_before_the_first_request(self):
+        from datetime import datetime
+
+        result = self.export()
+        printed = re.search(r"New watermark: (\S+)", result.stdout).group(1)
+
+        self.assertLessEqual(datetime.fromisoformat(printed.replace("Z", "+00:00")),
+                             self.stub.first_request_at)
+
+    def test_rate_limits_and_transient_errors_are_retried(self):
+        """The stub answers the hub's first fetch with a 429, and `changed`'s first
+        children fetch with a 503."""
+        result = self.export("--sensitive-raw-directory", str(self.raw))
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(self.stub.failed_once, {"hub-429", "changed-503"})
+        self.assertIn("SENSITIVE-MARKER", (self.raw / "changed.md").read_text(encoding="utf-8"))
+
+    def test_an_unreadable_location_withholds_the_watermark(self):
+        self.write_source([
+            {"name": "Operations hub", "id": "hub"},
+            {"name": "Missing", "id": "not-shared"},
+        ])
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("Missing could not be read", result.stderr)
+        self.assertIn("object_not_found", result.stderr)
+        self.assertIn("Watermark not advanced", result.stdout)
+        self.assertNotIn("New watermark", result.stdout)
+        self.assertIn("`changed`", self.export_text())
+        self.assert_nothing_leaked(result)
+
+    def test_an_unqueryable_child_database_withholds_the_watermark(self):
+        del StubNotion.ROWS["database"]
+
+        try:
+            result = self.export()
+
+        finally:
+            StubNotion.ROWS["database"] = [
+                notion_page("row", "2026-09-23T09:00:00.000Z", "A row", "database"),
+                notion_page("old-row", "2026-08-01T09:00:00.000Z", "An old row", "database"),
+            ]
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("a database could not be queried", result.stderr)
+        self.assertNotIn("New watermark", result.stdout)
+        self.assert_nothing_leaked(result)
+
+    def test_a_failure_part_way_removes_the_side_files_it_wrote(self):
+        """`broken` has a block the renderer cannot read, and it sorts after pages
+        whose side files are already written."""
+        self.write_source([{"name": "Operations hub", "id": "hub"},
+                           {"name": "Broken", "id": "broken"}])
+
+        result = self.export("--sensitive-raw-directory", str(self.raw))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("failed part-way", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(list(self.raw.glob("*.md")), [])
+        self.assertFalse(self.output.exists())
+
+    def test_a_watermark_without_a_timezone_is_refused(self):
+        result = self.export(watermark="2026-09-20")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no timezone", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_a_missing_credential_is_named_without_a_value(self):
+        self.claude_config.write_text(json.dumps({"mcpServers": {}}))
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no Notion token", result.stderr)
+
+    def test_a_source_with_no_locations_refuses_to_run(self):
+        self.write_source([])
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("covered_locations", result.stderr)

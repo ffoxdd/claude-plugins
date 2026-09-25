@@ -31,6 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import configuration
+import notion_credential
 
 # What each adapter needs beyond what this plugin ships: the shipped commands it
 # runs, so a shadowed one is caught, and the tools the plugin cannot supply at all.
@@ -43,6 +44,10 @@ ADAPTER_REQUIREMENTS = {
     "email": {
         "scripts": (),
         "commands": ("uv",),
+    },
+    "notion": {
+        "scripts": (),
+        "commands": (),
     },
 }
 
@@ -251,6 +256,15 @@ def check_interactive_setup(adapters, root, document):
             "no mail credential cache found, so the email adapter cannot authenticate: "
             "sign in through the mail MCP server once, and check the register names "
             "the right tenant."
+        )
+
+    notion_source = source_with_adapter(document, "notion")
+
+    if "notion" in adapters and not notion_credential.present(notion_source):
+        notes.append(
+            "no Notion token found in the Notion MCP server's config, so the notion adapter "
+            "cannot authenticate: add the Notion MCP server at user scope, or name the server "
+            "under the source's \"credential\" in the register."
         )
 
     return notes

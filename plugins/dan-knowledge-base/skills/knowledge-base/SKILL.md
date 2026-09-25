@@ -80,7 +80,11 @@ Four rules, each preventing a silent failure.
 
 2. **Establish whether the source's boundary is inclusive.** Many APIs treat a
    watermark as `>=` and re-deliver the boundary item on every sync forever.
-   Filter with a strict `>` yourself.
+   Filter with a strict `>` yourself. The exception is a source whose timestamps
+   are coarser than the clock: Notion stamps edits to the minute, so a strict `>`
+   against a seconds-precision watermark loses an edit made in the query's own
+   minute. There, floor the watermark to the source's granularity and compare
+   inclusively, accepting a duplicate in exchange for never missing an edit.
 
 3. **Advance the watermark even when nothing changed, and write down why.** A
    quiet source and a broken query look identical in a file of timestamps.
@@ -177,7 +181,7 @@ judgment half runs under.
 
 ## Running the shipped adapters
 
-Two adapters ship in the `scripts/` directory **beside this file**. Invoke them
+Three adapters ship in the `scripts/` directory **beside this file**. Invoke them
 by absolute path built from the directory this skill was loaded from — written
 below as `<SKILL_DIR>`. Never hardcode or remember that path: it carries a
 version that changes on every plugin update.
@@ -198,12 +202,20 @@ python3 <SKILL_DIR>/scripts/chat_export.py \
   <watermark> <output> --sensitive-raw-directory <scratch>/raw
 ```
 
-Both print the output path, then counts, then the new watermark, and send gaps
+**Notion** — the pages under record-dense locations the register lists as
+`covered_locations`, changed since the watermark:
+
+```
+python3 <SKILL_DIR>/scripts/notion_export.py \
+  <watermark> <output> --sensitive-raw-directory <scratch>/raw
+```
+
+All three print the output path, then counts, then the new watermark, and send gaps
 to stderr. No message content passes through stdout, which is what makes them
 safe to run from this session directly.
 
 Add `--source <name>` when the register calls a source something other than
-`email` or `chat`.
+`email`, `chat` or `notion`.
 
 ### The chat sequence, which is not one step
 
@@ -218,6 +230,24 @@ Add `--source <name>` when the register calls a source something other than
    imposes it.
 3. **This session deletes the side files**, then treats the export as ordinary
    intake.
+
+The Notion export runs the same three steps. The one difference is the export:
+it holds nothing but placeholders, one per changed page, naming the page by id
+and edit time. A title can be a person's name, so every word of a page reaches
+only its side file. Its watermark is **inclusive at the minute**, because Notion
+stamps edits to the minute, and a strict comparison against a seconds-precision
+clock would lose an edit made in the same minute as the query (rule 2's
+exception). **A gap withholds the watermark.** An unreadable location, a
+database that couldn't be queried, a page that couldn't be rendered, or a tree
+deeper than `max_depth` makes the run exit 3 without printing a new watermark.
+Keep the old watermark, record the gap in the watermark note, and let the next
+run re-cover the window. This is rule 3 applied correctly: the watermark advances
+when nothing *changed*, not when something went unread.
+
+The adapter covers only the listed locations. A general "what changed?" sweep
+across the rest of the workspace is still a query through the MCP server. Where a
+guard withholds sweep results from record-dense locations, **the adapter is the
+route for those results**. Leaving them withheld is not.
 
 ### When an adapter cannot run
 

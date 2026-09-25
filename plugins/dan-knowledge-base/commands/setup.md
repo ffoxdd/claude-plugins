@@ -23,7 +23,7 @@ to confirm before moving on.
    to nothing, the plugin is not installed in this session; have them check
    `/plugin` rather than adding a symlink that goes stale at the next version.
 
-3. **`uv`.** Both shipped adapters and the bundled `slack-client` are
+3. **`uv`.** The email and chat adapters and the bundled `slack-client` are
    `uv run --script` files with inline dependencies, so nothing works without
    it. Nothing here installs it; give them Astral's own installer —
    `curl -LsSf https://astral.sh/uv/install.sh | sh` on macOS and Linux,
@@ -50,6 +50,14 @@ to confirm before moving on.
    that server once and re-run the check. A cache that is present but rejected
    is an **expired** credential, not a missing one — the remedy is a fresh
    sign-in. Say which of the two you are looking at.
+
+   **The notion adapter's credential** works the same way: it borrows the Notion
+   MCP server's token from Claude Code's config, so the fix for "no Notion token"
+   is adding that server at user scope. It needs no `uv`, only `python3`. A token
+   that is present but rejected (401) means the integration was revoked or
+   rotated, so it needs a new token in the MCP server's config. A 404 on a listed
+   location means the page is not shared with that integration, and the fix is
+   in Notion's own sharing settings. Never print the token to check it.
 
 6. **What the directly-queried sources need.** For every source whose entry
    carries `requires.mcp`, check your own tool list for that server's tools —

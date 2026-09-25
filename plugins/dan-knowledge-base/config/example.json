@@ -38,6 +38,17 @@
       "replies_limit": 200
     },
 
+    "notion-records": {
+      "adapter": "notion",
+      "feeds": ["notes/"],
+      "watermark": {"format": "iso-8601", "boundary": "inclusive at the minute"},
+      "covered_locations": [
+        {"name": "<an operations hub whose pages list individuals>", "id": "<page id>"},
+        {"name": "<a database with one row per person>", "id": "<database id>", "kind": "database"}
+      ],
+      "max_depth": 4
+    },
+
     "task-board": {
       "adapter": null,
       "requires": {"mcp": ["<the task board's MCP server>"]},

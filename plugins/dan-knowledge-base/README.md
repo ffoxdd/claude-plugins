@@ -58,6 +58,7 @@ The skill's `references/configuring-sources.md` covers the contract between them
 | A source Claude queries directly | that source's own MCP server or CLI |
 | `email` adapter | `uv`; a mail MCP server already signed in |
 | `chat` adapter | `uv`; bundled `slack-client`; `playwright`; a captured session |
+| `notion` adapter | `python3`; the Notion MCP server already configured |
 
 The `email` adapter and the bundled `slack-client` the `chat` adapter drives are
 `uv run --script` files with inline dependencies, so `uv` is the one prerequisite
@@ -66,6 +67,13 @@ through it and the rest. Prerequisites are derived from the register: a
 knowledge base that declares no adapters is told nothing, and a declared source
 that is not yet working is reported once per session and recorded as skipped in
 the watermark file, so the gap stays visible in `git log`.
+
+The `notion` adapter is standard library only. It borrows the Notion MCP server's
+own token from Claude Code's config, the way the `email` adapter borrows a mail
+server's token cache, so it adds no credential and never prints the one it reads.
+It exists for **record-dense Notion locations**: pages a session must not read
+directly. It walks them over the REST API and writes the changed pages' text only
+to side files for an isolated agent.
 
 **Permissions.** A PreToolUse hook approves the read-only `slack-client` calls a
 sync runs, so installing the plugin is the grant and `permissions.allow` stays
