@@ -1055,6 +1055,17 @@ class NotionAdapterTest(unittest.TestCase):
         self.assertEqual(list(self.raw.glob("*.md")), [])
         self.assertFalse(self.output.exists())
 
+    def test_nesting_past_the_limit_is_a_gap(self):
+        """Below the limit a child page could hide, so an unsearched subtree must
+        withhold the watermark rather than pass as searched."""
+        self.write_source([{"name": "Operations hub", "id": "hub", "max_block_nesting": 1}])
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("raise max_block_nesting", result.stderr)
+        self.assertNotIn("New watermark", result.stdout)
+
     def test_a_watermark_without_a_timezone_is_refused(self):
         result = self.export(watermark="2026-09-20")
 

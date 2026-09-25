@@ -77,7 +77,10 @@ import notion_credential
 
 DEFAULT_API_BASE = "https://api.notion.com/v1"
 DEFAULT_MAX_DEPTH = 4
-MAXIMUM_BLOCK_NESTING = 8
+# Progress logs nest bullets deeply; Aligned's Provider Growth pages exceed 8.
+# Exceeding the limit is a gap, so it is set well above what real pages reach,
+# and a register can raise it further with `max_block_nesting`.
+DEFAULT_MAX_BLOCK_NESTING = 24
 PAGE_SIZE = 100
 
 EXIT_REFUSED = 1
@@ -264,10 +267,11 @@ def format_time(moment):
 class Walk:
     """One location's traversal: every page seen, and the gaps met on the way."""
 
-    def __init__(self, notion, location, max_depth, gaps):
+    def __init__(self, notion, location, max_depth, gaps, max_block_nesting=DEFAULT_MAX_BLOCK_NESTING):
         self.notion = notion
         self.location = location
         self.max_depth = max_depth
+        self.max_block_nesting = max_block_nesting
         self.gaps = gaps
         self.pages = {}
 
@@ -323,8 +327,9 @@ class Walk:
                 found.append(block)
 
             elif block.get("has_children"):
-                if nesting >= MAXIMUM_BLOCK_NESTING:
-                    self.gap(f"blocks nested deeper than {MAXIMUM_BLOCK_NESTING} were not searched")
+                if nesting >= self.max_block_nesting:
+                    self.gap(f"blocks nested deeper than {self.max_block_nesting} were not "
+                             "searched; raise max_block_nesting")
                     continue
 
                 found += self.page_blocks(block["id"], nesting + 1)
@@ -334,7 +339,8 @@ class Walk:
 
 def changed_in_location(notion, location, since, max_depth, gaps):
     """The changed pages under one location, and how many pages were checked."""
-    walk = Walk(notion, location, max_depth, gaps)
+    walk = Walk(notion, location, max_depth, gaps,
+                int(location.get("max_block_nesting", DEFAULT_MAX_BLOCK_NESTING)))
 
     if location.get("kind") == "database":
         walk.database(location["id"], 0, walk_rows=bool(location.get("walk_rows")))
@@ -469,7 +475,7 @@ def render_blocks(notion, block_id, depth=0):
             lines.append(indent + rendered.replace("\n", f"\n{indent}"))
 
         if block.get("has_children") and block["type"] not in PAGE_BLOCK_TYPES:
-            if depth >= MAXIMUM_BLOCK_NESTING:
+            if depth >= DEFAULT_MAX_BLOCK_NESTING:
                 lines.append(f"{indent}*(deeper blocks not rendered)*")
 
             else:
