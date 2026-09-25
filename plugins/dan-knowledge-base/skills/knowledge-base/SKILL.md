@@ -231,6 +231,10 @@ Add `--source <name>` when the register calls a source something other than
 3. **This session deletes the side files**, then treats the export as ordinary
    intake.
 
+When the script reports `0 conversation(s) with new messages`, it also prints
+`skip the isolated agent`. The export then holds no message text, so step 2 has
+nothing to gate and does not run.
+
 The Notion export runs the same three steps, **except when nothing changed**.
 Then the script prints `Nothing to summarize: skip the isolated agent.`, writes
 no side files, and step 2 does not run. A quiet window costs Notion API calls

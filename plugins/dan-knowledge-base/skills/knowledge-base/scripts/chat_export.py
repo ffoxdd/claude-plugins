@@ -80,6 +80,9 @@ BARE_ACKNOWLEDGEMENTS = {
 }
 
 
+QUIET_SECTION = "No new messages since the watermark."
+
+
 class ExportError(Exception):
     """A condition that should stop the export rather than write a partial file."""
 
@@ -422,7 +425,7 @@ def render_conversation(client, identifier, name, watermark, dense_names, acknow
     lines = [f"## {name} ({identifier})", ""]
 
     if not posted and not revived:
-        return lines + ["No new messages since the watermark.", ""], highest, notes
+        return lines + [QUIET_SECTION, ""], highest, notes
 
     if is_dense:
         lines += [
@@ -488,6 +491,14 @@ def build_export(client, watermark, dense_names, acknowledgements, sensitive_raw
     return "\n".join(header + body), highest, notes
 
 
+def active_conversation_count(content):
+    """Conversations whose section carries anything but the quiet line. Zero means
+    the export holds no message text, so there is nothing for the gate to read."""
+    sections = content.split("\n## ")[1:]
+
+    return sum(1 for section in sections if QUIET_SECTION not in section)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("watermark", help="timestamp; pull messages strictly newer than this")
@@ -531,8 +542,14 @@ def main(argv=None):
 
     Path(arguments.output).write_text(content, encoding="utf-8")
 
+    active = active_conversation_count(content)
+
     print(arguments.output)
+    print(f"{active} conversation(s) with new messages")
     print(f"New watermark: {highest:.6f}")
+
+    if not active:
+        print("Nothing to summarize or gate: skip the isolated agent.")
 
     if dense_names and not arguments.sensitive_raw_directory:
         print(

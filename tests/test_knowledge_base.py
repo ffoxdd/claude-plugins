@@ -677,6 +677,24 @@ class ChatAdapterTest(unittest.TestCase):
         self.assertIn("and the follow-up", text)
         self.assertIn("thread continued", text)
 
+    def test_a_quiet_window_says_to_skip_the_isolated_agent(self):
+        """With no new message anywhere, the gate has nothing to read."""
+        result = support.run_script(
+            adapter("chat_export.py"),
+            arguments=["5000.0", str(self.output), "--sensitive-raw-directory", str(self.raw)],
+            KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+        )
+
+        self.assertIn("0 conversation(s) with new messages", result.stdout)
+        self.assertIn("skip the isolated agent", result.stdout)
+        self.assertEqual(list(self.raw.glob("*.md")), [])
+
+    def test_an_active_window_does_not_say_to_skip(self):
+        result = self.export()
+
+        self.assertIn("3 conversation(s) with new messages", result.stdout)
+        self.assertNotIn("skip the isolated agent", result.stdout)
+
     def test_the_watermark_advances_to_the_newest_activity(self):
         result = self.export()
 
