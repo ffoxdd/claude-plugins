@@ -105,6 +105,10 @@ PAGE_BLOCK_TYPES = {"child_page", "child_database"}
 class ExportError(Exception):
     """A request that failed. The message names the path and a status, nothing else."""
 
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
+
 
 class Retryable(Exception):
     def __init__(self, description, wait_seconds):
@@ -184,7 +188,8 @@ class Notion:
                 raise Retryable(f"status {error.code}", retry_after_seconds(error)) from None
 
             raise ExportError(
-                f"{method} {path} returned {error.code} ({notion_error_code(error)})"
+                f"{method} {path} returned {error.code} ({notion_error_code(error)})",
+                status=error.code,
             ) from None
 
         except (urllib.error.URLError, http.client.HTTPException, OSError) as error:
@@ -217,6 +222,12 @@ class Notion:
 
     def page(self, page_id):
         return self.request("GET", f"/pages/{page_id}")
+
+    def block(self, block_id):
+        return self.request("GET", f"/blocks/{block_id}")
+
+    def database(self, database_id):
+        return self.request("GET", f"/databases/{database_id}")
 
     def children(self, block_id):
         return list(self.paginated("GET", f"/blocks/{block_id}/children"))

@@ -181,7 +181,7 @@ judgment half runs under.
 
 ## Running the shipped adapters
 
-Three adapters ship in the `scripts/` directory **beside this file**. Invoke them
+Four adapters ship in the `scripts/` directory **beside this file**. Invoke them
 by absolute path built from the directory this skill was loaded from — written
 below as `<SKILL_DIR>`. Never hardcode or remember that path: it carries a
 version that changes on every plugin update.
@@ -210,7 +210,14 @@ python3 <SKILL_DIR>/scripts/notion_export.py \
   <watermark> <output> --sensitive-raw-directory <scratch>/raw
 ```
 
-All three print the output path, then counts, then the new watermark, and send gaps
+**Notion sweep** — everything else in the workspace changed since the watermark,
+as a manifest of id, kind, edit time and title:
+
+```
+python3 <SKILL_DIR>/scripts/notion_sweep.py <watermark> <output>
+```
+
+All four print the output path, then counts, then the new watermark, and send gaps
 to stderr. No message content passes through stdout, which is what makes them
 safe to run from this session directly.
 
@@ -254,10 +261,17 @@ Keep the old watermark, record the gap in the watermark note, and let the next
 run re-cover the window. This is rule 3 applied correctly: the watermark advances
 when nothing *changed*, not when something went unread.
 
-The adapter covers only the listed locations. A general "what changed?" sweep
-across the rest of the workspace is still a query through the MCP server. Where a
-guard withholds sweep results from record-dense locations, **the adapter is the
-route for those results**. Leaving them withheld is not.
+The adapter covers only the listed locations. **The rest of the workspace is the
+sweep adapter's**, and it runs as a script for the same reason. A sweep paged
+through the MCP server shares one result stream with the record-dense locations,
+so a guard withholding their results also stalls the pagination running through
+them, and a retry after the refusal reads as a workaround. The sweep searches
+over the REST API instead and places each result by its parent chain. A result
+under a covered location is only counted, since the export adapter reads it, and
+everything else lands in the manifest for the session to fetch. It takes its
+exclusions from the covered source it names with `covered_by`, so the register
+lists them once. It shares the export's minute-inclusive watermark, and a result
+it cannot place withholds the watermark, since it might be record-dense.
 
 ### When an adapter cannot run
 

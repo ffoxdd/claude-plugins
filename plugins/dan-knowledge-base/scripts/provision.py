@@ -49,6 +49,10 @@ ADAPTER_REQUIREMENTS = {
         "scripts": (),
         "commands": (),
     },
+    "notion-sweep": {
+        "scripts": (),
+        "commands": (),
+    },
 }
 
 # Names an earlier version symlinked into ~/.local/bin. Transitional: delete this
@@ -258,14 +262,13 @@ def check_interactive_setup(adapters, root, document):
             "the right tenant."
         )
 
-    notion_source = source_with_adapter(document, "notion")
-
-    if "notion" in adapters and not notion_credential.present(notion_source):
-        notes.append(
-            "no Notion token found in the Notion MCP server's config, so the notion adapter "
-            "cannot authenticate: add the Notion MCP server at user scope, or name the server "
-            "under the source's \"credential\" in the register."
-        )
+    for adapter in ("notion", "notion-sweep"):
+        if adapter in adapters and not notion_credential.present(source_with_adapter(document, adapter)):
+            notes.append(
+                f"no Notion token found in the Notion MCP server's config, so the {adapter} "
+                "adapter cannot authenticate: add the Notion MCP server at user scope, or name "
+                "the server under the source's \"credential\" in the register."
+            )
 
     return notes
 

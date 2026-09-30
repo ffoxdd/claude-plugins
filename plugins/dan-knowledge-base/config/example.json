@@ -38,6 +38,13 @@
       "replies_limit": 200
     },
 
+    "wiki": {
+      "adapter": "notion-sweep",
+      "covered_by": "notion-records",
+      "feeds": ["notes/"],
+      "watermark": {"format": "iso-8601", "boundary": "inclusive at the minute"}
+    },
+
     "notion-records": {
       "adapter": "notion",
       "feeds": ["notes/"],

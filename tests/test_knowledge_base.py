@@ -1116,3 +1116,287 @@ class NotionAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("covered_locations", result.stderr)
+
+
+def search_item(identifier, edited, title, parent_type="workspace", parent_id=None, kind="page"):
+    parent = {"type": parent_type, parent_type: parent_id or True}
+    item = {"object": kind, "id": identifier, "last_edited_time": edited, "parent": parent}
+
+    if kind == "database":
+        item["title"] = [{"plain_text": title}]
+
+    else:
+        item["properties"] = {"Name": {"type": "title", "title": [{"plain_text": title}]}}
+
+    return item
+
+
+class StubNotionSearch:
+    """A local stand-in for Notion's search and metadata endpoints.
+
+    hub                     a covered location
+      ├─ covered-child      page, person-shaped title
+      │    └─ toggle        block → deep-covered, found only through the block
+      └─ covered-db         database → covered-row
+    private                 a page the integration cannot see (404) → unshared-child
+    forbidden               a page that refuses (403), opt-in → restricted-child
+
+    Search pages hold two results each, and page 2's cursor names a covered item —
+    the break that stalled a sweep run through the MCP server.
+    """
+
+    WATERMARK = "2026-09-20T10:30:45Z"
+
+    RESULTS = [
+        search_item("open-page", "2026-09-24T09:00:00.000Z", "Roadmap"),
+        search_item("deep-covered", "2026-09-23T12:00:00.000Z", "DEEP-PERSON-TITLE",
+                    "block_id", "toggle"),
+        search_item("covered-row", "2026-09-23T09:00:00.000Z", "ROW-TITLE",
+                    "database_id", "covered-db"),
+        search_item("covered-child", "2026-09-22T09:00:00.000Z", "Jane PERSON-TITLE",
+                    "page_id", "hub"),
+        search_item("unshared-child", "2026-09-21T09:00:00.000Z", "Team | notes",
+                    "page_id", "private"),
+        search_item("same-minute", "2026-09-20T10:30:00.000Z", "Same minute"),
+        search_item("old-page", "2026-09-01T09:00:00.000Z", "OLD-TITLE"),
+        search_item("older-page", "2026-08-01T09:00:00.000Z", "OLDER-TITLE"),
+        search_item("never-requested", "2026-07-01T09:00:00.000Z", "NEVER-TITLE"),
+    ]
+
+    RESTRICTED = search_item("restricted-child", "2026-09-21T10:00:00.000Z", "RESTRICTED-TITLE",
+                             "page_id", "forbidden")
+
+    METADATA = {
+        ("pages", "hub"): search_item("hub", "2026-09-01T09:00:00.000Z", "Operations hub"),
+        ("pages", "covered-child"): search_item("covered-child", "2026-09-22T09:00:00.000Z",
+                                                "Jane PERSON-TITLE", "page_id", "hub"),
+        ("blocks", "toggle"): {"object": "block", "id": "toggle",
+                               "parent": {"type": "page_id", "page_id": "covered-child"}},
+        ("databases", "covered-db"): search_item("covered-db", "2026-09-01T09:00:00.000Z",
+                                                 "Rows", "page_id", "hub", kind="database"),
+    }
+
+    def __init__(self, restricted=False, search_status=None):
+        import http.server
+        import threading
+
+        stub = self
+        self.results = list(self.RESULTS)
+        self.search_status = search_status
+        self.search_requests = 0
+        self.authorizations = []
+        self.first_request_at = None
+
+        if restricted:
+            self.results.insert(4, self.RESTRICTED)
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *arguments):
+                pass
+
+            def reply(self, status, document):
+                body = json.dumps(document).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def record(self):
+                from datetime import datetime, timezone
+
+                stub.first_request_at = stub.first_request_at or datetime.now(timezone.utc)
+                stub.authorizations.append(self.headers.get("Authorization"))
+
+            def do_GET(self):
+                self.record()
+                parts = tuple(self.path.split("?")[0].strip("/").split("/"))
+
+                if parts == ("pages", "forbidden"):
+                    return self.reply(403, {"object": "error", "code": "restricted_resource",
+                                            "message": "LEAKY-ERROR-MESSAGE"})
+
+                if parts in stub.METADATA:
+                    return self.reply(200, stub.METADATA[parts])
+
+                self.reply(404, {"object": "error", "code": "object_not_found",
+                                 "message": "LEAKY-ERROR-MESSAGE"})
+
+            def do_POST(self):
+                self.record()
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length) or b"{}")
+
+                if self.path.strip("/") != "search":
+                    return self.reply(404, {"object": "error", "code": "object_not_found"})
+
+                stub.search_requests += 1
+
+                if stub.search_status:
+                    return self.reply(stub.search_status, {"object": "error", "code": "unauthorized"})
+
+                start = [item["id"] for item in stub.results].index(body["start_cursor"]) \
+                    if body.get("start_cursor") else 0
+                page = stub.results[start:start + 2]
+                following = stub.results[start + 2:start + 3]
+                self.reply(200, {"results": page, "has_more": bool(following),
+                                 "next_cursor": following[0]["id"] if following else None})
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def api_base(self):
+        return f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class NotionSweepTest(unittest.TestCase):
+    """The notion-sweep adapter against a stub API. The properties pinned: nothing
+    under a covered location is written anywhere but as a count, however it is
+    nested; pagination runs through a covered item's cursor; the search stops at
+    the watermark; and a result that cannot be placed withholds the watermark
+    rather than being listed."""
+
+    TOKEN = "Bearer secret-TOKEN-MARKER"
+    COVERED = ("PERSON-TITLE", "DEEP-PERSON-TITLE", "ROW-TITLE", "`covered-child`",
+               "`deep-covered`", "`covered-row`", "LEAKY-ERROR-MESSAGE", "TOKEN-MARKER")
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.output = self.root / "sweep.md"
+        self.claude_config = self.root / "claude.json"
+        self.claude_config.write_text(json.dumps({"mcpServers": {"notion": {
+            "env": {"OPENAPI_MCP_HEADERS": json.dumps({"Authorization": self.TOKEN})},
+        }}}))
+        self.stub = None
+        self.start_stub()
+
+    def tearDown(self):
+        self.stub.close()
+        self.directory.cleanup()
+
+    def start_stub(self, **options):
+        if self.stub:
+            self.stub.close()
+
+        self.stub = StubNotionSearch(**options)
+        self.write_register({"covered_by": "notion-covered"})
+
+    def write_register(self, exclusion):
+        credential = {"claude_config": str(self.claude_config)}
+        self.config = write_register(self.root, register(
+            notion={"adapter": "notion-sweep", "api_base": self.stub.api_base,
+                    "request_interval_seconds": 0, "credential": credential, **exclusion},
+            **{"notion-covered": {"adapter": "notion",
+                                  "covered_locations": [{"name": "Operations hub", "id": "hub"}]}},
+        ))
+
+    def sweep(self, watermark=StubNotionSearch.WATERMARK):
+        return support.run_script(
+            adapter("notion_sweep.py"),
+            arguments=[watermark, str(self.output)],
+            KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+        )
+
+    def manifest(self):
+        return self.output.read_text(encoding="utf-8")
+
+    def assert_nothing_covered_leaked(self, result):
+        streams = result.stdout + result.stderr + (self.manifest() if self.output.exists() else "")
+
+        for token in self.COVERED:
+            with self.subTest(token=token):
+                self.assertNotIn(token, streams)
+
+    def test_items_outside_covered_locations_are_listed_with_titles(self):
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0)
+
+        for text in ("`open-page`", "Roadmap", "`unshared-child`", "Team \\| notes"):
+            with self.subTest(text=text):
+                self.assertIn(text, self.manifest())
+
+    def test_nothing_under_a_covered_location_is_written_but_a_count(self):
+        """Directly under it, under a block inside a page under it, and as a row of
+        a database under it."""
+        result = self.sweep()
+
+        self.assert_nothing_covered_leaked(result)
+        self.assertIn("- Operations hub: 3", self.manifest())
+        self.assertIn("3 under covered locations", result.stdout)
+
+    def test_pagination_runs_through_a_covered_items_cursor(self):
+        self.sweep()
+
+        self.assertIn("`same-minute`", self.manifest())
+
+    def test_the_search_stops_after_the_first_page_past_the_watermark(self):
+        self.sweep()
+
+        self.assertEqual(self.stub.search_requests, 4)
+        self.assertNotIn("OLD-TITLE", self.manifest())
+        self.assertNotIn("NEVER-TITLE", self.manifest())
+
+    def test_an_edit_in_the_watermarks_own_minute_is_included(self):
+        self.sweep()
+
+        self.assertIn("`same-minute`", self.manifest())
+
+    def test_the_watermark_is_the_clock_before_the_first_request(self):
+        from datetime import datetime
+
+        result = self.sweep()
+        printed = re.search(r"New watermark: (\S+)", result.stdout).group(1)
+
+        self.assertLessEqual(datetime.fromisoformat(printed.replace("Z", "+00:00")),
+                             self.stub.first_request_at)
+
+    def test_the_token_is_sent_and_written_nowhere(self):
+        result = self.sweep()
+
+        self.assertEqual(set(self.stub.authorizations), {self.TOKEN})
+        self.assertNotIn("TOKEN-MARKER", result.stdout + result.stderr + self.manifest())
+
+    def test_an_unplaceable_item_is_withheld_and_withholds_the_watermark(self):
+        self.start_stub(restricted=True)
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("restricted-child could not be placed", result.stderr)
+        self.assertNotIn("RESTRICTED-TITLE", self.manifest())
+        self.assertNotIn("New watermark", result.stdout)
+        self.assert_nothing_covered_leaked(result)
+
+    def test_an_unreadable_search_withholds_the_watermark(self):
+        self.start_stub(search_status=401)
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("a search page could not be read", result.stderr)
+        self.assertNotIn("New watermark", result.stdout)
+
+    def test_a_source_naming_no_exclusions_refuses_to_run(self):
+        self.write_register({})
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("covered_by", result.stderr)
+        self.assertEqual(self.stub.search_requests, 0)
+
+    def test_an_explicitly_empty_exclusion_list_is_accepted(self):
+        self.write_register({"covered_locations": []})
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Jane PERSON-TITLE", self.manifest())
