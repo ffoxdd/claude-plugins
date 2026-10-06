@@ -210,6 +210,12 @@ python3 <SKILL_DIR>/scripts/notion_export.py \
   <watermark> <output> --sensitive-raw-directory <scratch>/raw
 ```
 
+It finds the changed pages by search, a few requests for the whole workspace.
+Add `--walk` to visit every page under every location instead, a request per
+page and minutes on a large location, but complete where a search index can lag
+or miss an item. Run the walk about weekly as the check on the search, and say
+in the watermark note when it last ran.
+
 **Notion sweep** — everything else in the workspace changed since the watermark,
 as a manifest of id, kind, edit time and title:
 
@@ -223,6 +229,23 @@ safe to run from this session directly.
 
 Add `--source <name>` when the register calls a source something other than
 `email`, `chat` or `notion`.
+
+**Notion page changes** — for each page the sweep manifest lists, what actually
+changed, rather than the whole page:
+
+```
+python3 <SKILL_DIR>/scripts/notion_page_changes.py <page id> <watermark>
+```
+
+It prints the blocks edited since the watermark, each unchanged ancestor as one
+marked line of context, and any comment left since the watermark under the
+block it sits on, with images and files named rather than linked. A page that
+has been appended to weekly for a year comes back as its newest section. Unlike
+the adapters its stdout is content, so it reads the register and **refuses a
+page under a covered location**, or one it cannot place, before printing
+anything; those stay the `notion` adapter's. Prefer it to fetching a listed page
+through the MCP server, whose markdown carries every block the page has ever
+held and a few hundred characters of signed URL per image.
 
 ### The chat sequence, which is not one step
 
@@ -245,8 +268,8 @@ nothing to gate and does not run.
 The Notion export runs the same three steps, **except when nothing changed**.
 Then the script prints `Nothing to summarize: skip the isolated agent.`, writes
 no side files, and step 2 does not run. A quiet window costs Notion API calls
-and no model tokens, covered or otherwise. The walk is a script, and only a
-changed page's text ever reaches a model.
+and no model tokens, covered or otherwise. Finding what changed is a script,
+and only a changed page's text ever reaches a model.
 
 Otherwise the steps are the same. The one difference is the export:
 it holds nothing but placeholders, one per changed page, naming the page by id
@@ -255,8 +278,9 @@ only its side file. Its watermark is **inclusive at the minute**, because Notion
 stamps edits to the minute, and a strict comparison against a seconds-precision
 clock would lose an edit made in the same minute as the query (rule 2's
 exception). **A gap withholds the watermark.** An unreadable location, a
-database that couldn't be queried, a page that couldn't be rendered, or a tree
-deeper than `max_depth` makes the run exit 3 without printing a new watermark.
+database that couldn't be queried, a page that couldn't be rendered, a search
+result that couldn't be placed, or a walked tree deeper than `max_depth` makes
+the run exit 3 without printing a new watermark.
 Keep the old watermark, record the gap in the watermark note, and let the next
 run re-cover the window. This is rule 3 applied correctly: the watermark advances
 when nothing *changed*, not when something went unread.

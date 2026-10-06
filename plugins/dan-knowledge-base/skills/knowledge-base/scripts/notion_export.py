@@ -6,9 +6,9 @@ is for chat. Some Notion locations carry personal records as their ordinary
 content: an operations hub whose pages list individuals, a database whose rows
 each describe one. Reading one through the Notion MCP server puts that content
 straight into the session, and a guard that refuses the read leaves the
-location unread every sync. This script is the third option. It walks each
-location over Notion's REST API and writes what changed to places the session
-never reads.
+location unread every sync. This script is the third option. It finds what
+changed under each location over Notion's REST API and writes it to places the
+session never reads.
 
 Nothing sensitive reaches a session merely from running this:
 
@@ -29,14 +29,21 @@ The register lists the locations under the source's `covered_locations`:
     {"name": "Payments hub", "id": "<page id>"}                       a page tree
     {"name": "Practice playbooks", "id": "<db id>", "kind": "database"}
 
-A page location is walked as a tree: the page, every block with children below
-it (toggle headings, list items and columns included), each child page found
-there, and each child database's rows, down to `max_depth` pages deep. Notion
-does not bubble an edit up to the parent, so the whole tree is visited every
-run; only the pages that changed are rendered. A database location lists every
-row, so a quiet database still reports how many it checked. Its rows' own
-sub-pages are walked only when the location sets `"walk_rows": true`, because
-that costs a request per row.
+**Changed pages are found by search by default, and by a tree walk on request.**
+The search asks Notion for everything edited since the watermark, newest first,
+and places each result under a location by its parent chain (`notion_search.py`).
+That is a few requests for the whole workspace, whatever its size. The walk
+(`--walk`) visits every page under every location instead, because Notion does
+not bubble an edit up to the parent: a page location is walked as a tree, the
+page, every block with children below it (toggle headings, list items and
+columns included), each child page found there, and each child database's rows,
+down to `max_depth` pages deep, and a database location lists every row. Its
+rows' own sub-pages are walked only when the location sets `"walk_rows": true`,
+because that costs a request per row. The walk is one request per page, so it
+takes minutes on a large location, and it is complete in a way the search is
+not: search covers what Notion has indexed, and an index can lag or miss an
+item. Run the walk now and then as the check on the search, and record when in
+the watermark note.
 
 **The watermark is inclusive at minute granularity.** Notion stamps
 `last_edited_time` to the minute. A strict comparison against a seconds-precision
@@ -47,9 +54,10 @@ new watermark is the clock read before the first request (rule 1).
 
 **A gap withholds the watermark.** Anything that means an edit could have been
 missed — a location or child database that could not be read, a page that could
-not be rendered, a tree deeper than `max_depth` — is named on stderr, and the run
-exits 3 without printing a new watermark. The caller keeps the old one, so the
-next run re-covers the window once the gap is fixed.
+not be rendered, a tree deeper than `max_depth`, a search result that could not
+be placed — is named on stderr, and the run exits 3 without printing a new
+watermark. The caller keeps the old one, so the next run re-covers the window
+once the gap is fixed.
 
 Exit status: 0 complete; 1 refused before any request, or failed part-way; 3
 written, with gaps, watermark withheld.
@@ -59,216 +67,28 @@ which it never prints.
 """
 
 import argparse
-import http.client
-import json
 import os
 import re
 import sys
-import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import configuration
 import notion_credential
+import notion_search
+from notion_api import EXIT_GAPS, EXIT_REFUSED, ExportError, Gaps, Notion, edited_since, \
+    format_time, read_watermark
 
-DEFAULT_API_BASE = "https://api.notion.com/v1"
 DEFAULT_MAX_DEPTH = 4
 # Progress logs nest bullets deeply; Aligned's Provider Growth pages exceed 8.
 # Exceeding the limit is a gap, so it is set well above what real pages reach,
 # and a register can raise it further with `max_block_nesting`.
 DEFAULT_MAX_BLOCK_NESTING = 24
-PAGE_SIZE = 100
-
-EXIT_REFUSED = 1
-EXIT_GAPS = 3
-
-# Notion allows an average of three requests a second per integration, and a tree
-# walk issues them back to back. Pacing below that rate avoids most 429s; the
-# retry honours `Retry-After` for the rest, and backs off on a transient 5xx or
-# dropped connection the same way.
-DEFAULT_REQUEST_INTERVAL_SECONDS = 0.35
-RETRIES = 6
-RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
-
-# Pinned rather than taken from the MCP server's headers: the database query
-# endpoint this relies on moved in later API versions, and a version chosen by
-# another tool's config would change this script's behaviour underneath it.
-NOTION_VERSION = "2022-06-28"
 
 PAGE_BLOCK_TYPES = {"child_page", "child_database"}
-
-
-class ExportError(Exception):
-    """A request that failed. The message names the path and a status, nothing else."""
-
-    def __init__(self, message, status=None):
-        super().__init__(message)
-        self.status = status
-
-
-class Retryable(Exception):
-    def __init__(self, description, wait_seconds):
-        super().__init__(description)
-        self.description = description
-        self.wait_seconds = wait_seconds
-
-
-class Gaps:
-    """What this run could not cover. Any gap withholds the watermark."""
-
-    def __init__(self):
-        self.messages = []
-
-    def add(self, message):
-        self.messages.append(message)
-
-    def __bool__(self):
-        return bool(self.messages)
-
-
-class Notion:
-    """The few REST calls the export makes, over the standard library."""
-
-    def __init__(self, api_base, authorization, request_interval=DEFAULT_REQUEST_INTERVAL_SECONDS):
-        self.api_base = api_base.rstrip("/")
-        self.authorization = authorization
-        self.request_interval = request_interval
-        self.last_request = 0.0
-
-    def request(self, method, path, body=None):
-        for attempt in range(RETRIES + 1):
-            self.pace()
-
-            try:
-                return self.send(method, path, body)
-
-            except Retryable as retryable:
-                if attempt == RETRIES:
-                    raise ExportError(
-                        f"{method} {path} still failing after {RETRIES} retries "
-                        f"({retryable.description})"
-                    ) from None
-
-                time.sleep(retryable.wait_seconds * (attempt + 1))
-
-    def pace(self):
-        wait = self.last_request + self.request_interval - time.monotonic()
-
-        if wait > 0:
-            time.sleep(wait)
-
-        self.last_request = time.monotonic()
-
-    def send(self, method, path, body):
-        data = json.dumps(body).encode("utf-8") if body is not None else None
-        request = urllib.request.Request(
-            f"{self.api_base}{path}",
-            data=data,
-            method=method,
-            headers={
-                "Authorization": self.authorization,
-                "Notion-Version": NOTION_VERSION,
-                "Content-Type": "application/json",
-            },
-        )
-
-        # Every failure is reduced to a status or an exception *type*. Neither a
-        # response body nor an exception's own message is ever passed on: a body
-        # can quote page content, and a header error quotes the header.
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                return json.loads(response.read().decode("utf-8"))
-
-        except urllib.error.HTTPError as error:
-            if error.code in RETRYABLE_STATUSES:
-                raise Retryable(f"status {error.code}", retry_after_seconds(error)) from None
-
-            raise ExportError(
-                f"{method} {path} returned {error.code} ({notion_error_code(error)})",
-                status=error.code,
-            ) from None
-
-        except (urllib.error.URLError, http.client.HTTPException, OSError) as error:
-            raise Retryable(type(error).__name__, 1.0) from None
-
-        except ValueError as error:
-            raise ExportError(f"{method} {path} returned an unreadable body "
-                              f"({type(error).__name__})") from None
-
-    def paginated(self, method, path, body=None):
-        cursor = None
-
-        while True:
-            if method == "GET":
-                separator = "&" if "?" in path else "?"
-                page_path = f"{path}{separator}page_size={PAGE_SIZE}"
-                page_path += f"&start_cursor={cursor}" if cursor else ""
-                result = self.request("GET", page_path)
-
-            else:
-                result = self.request(method, path, {**(body or {}), "page_size": PAGE_SIZE,
-                                                     **({"start_cursor": cursor} if cursor else {})})
-
-            yield from result.get("results") or []
-
-            if not result.get("has_more"):
-                return
-
-            cursor = result.get("next_cursor")
-
-    def page(self, page_id):
-        return self.request("GET", f"/pages/{page_id}")
-
-    def block(self, block_id):
-        return self.request("GET", f"/blocks/{block_id}")
-
-    def database(self, database_id):
-        return self.request("GET", f"/databases/{database_id}")
-
-    def children(self, block_id):
-        return list(self.paginated("GET", f"/blocks/{block_id}/children"))
-
-    def database_rows(self, database_id):
-        return list(self.paginated("POST", f"/databases/{database_id}/query", {}))
-
-
-def retry_after_seconds(error):
-    try:
-        return max(1.0, float(error.headers.get("Retry-After") or 1))
-
-    except (TypeError, ValueError):
-        return 1.0
-
-
-def notion_error_code(error):
-    """Notion's own error code, never its message: a message can quote content."""
-    try:
-        code = json.loads(error.read().decode("utf-8")).get("code")
-
-    except (ValueError, OSError, AttributeError):
-        return "no code"
-
-    return code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code) else "no code"
-
-
-def parse_time(value):
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
-def floor_to_minute(moment):
-    return moment.replace(second=0, microsecond=0)
-
-
-def edited_since(item, since):
-    return parse_time(item["last_edited_time"]) >= since
-
-
-def format_time(moment):
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ---------------------------------------------------------------------------
@@ -348,20 +168,52 @@ class Walk:
         return found
 
 
-def changed_in_location(notion, location, since, max_depth, gaps):
-    """The changed pages under one location, and how many pages were checked."""
-    walk = Walk(notion, location, max_depth, gaps,
-                int(location.get("max_block_nesting", DEFAULT_MAX_BLOCK_NESTING)))
+class TreeWalkDiscovery:
+    """The changed pages under a location, found by visiting every page under it.
+    Complete, at a request per page."""
 
-    if location.get("kind") == "database":
-        walk.database(location["id"], 0, walk_rows=bool(location.get("walk_rows")))
+    def __init__(self, notion, since, max_depth, gaps):
+        self.notion = notion
+        self.since = since
+        self.max_depth = max_depth
+        self.gaps = gaps
 
-    else:
-        walk.page_tree(location["id"], 0)
+    def changed(self, location):
+        """The changed pages, and how many pages were checked to find them."""
+        walk = Walk(self.notion, location, self.max_depth, self.gaps,
+                    int(location.get("max_block_nesting", DEFAULT_MAX_BLOCK_NESTING)))
 
-    changed = [page for page in walk.pages.values() if edited_since(page, since)]
+        if location.get("kind") == "database":
+            walk.database(location["id"], 0, walk_rows=bool(location.get("walk_rows")))
 
-    return changed, len(walk.pages)
+        else:
+            walk.page_tree(location["id"], 0)
+
+        return [page for page in walk.pages.values() if edited_since(page, self.since)], len(walk.pages)
+
+
+class SearchDiscovery:
+    """The changed pages under a location, as Notion's search lists them and the
+    parent chain places them. One search serves every location."""
+
+    def __init__(self, notion, locations, since, gaps):
+        self.notion = notion
+        self.locations = locations
+        self.since = since
+        self.gaps = gaps
+        self.changes = None
+
+    def changed(self, location):
+        """The changed pages, and None for the checked count: a search checks the
+        workspace, not a location."""
+        if self.changes is None:
+            self.changes = notion_search.changes_since(self.notion, self.locations, self.since,
+                                                       self.gaps)
+
+        pages = [item for item in self.changes.under.get(location["name"], [])
+                 if item.get("object") == "page"]
+
+        return pages, None
 
 
 # ---------------------------------------------------------------------------
@@ -475,19 +327,24 @@ def render_block(block):
     return text
 
 
+def indent_lines(rendered, depth):
+    indent = "  " * depth
+
+    return indent + rendered.replace("\n", f"\n{indent}")
+
+
 def render_blocks(notion, block_id, depth=0):
     lines = []
 
     for block in notion.children(block_id):
-        indent = "  " * depth
         rendered = render_block(block)
 
         if rendered:
-            lines.append(indent + rendered.replace("\n", f"\n{indent}"))
+            lines.append(indent_lines(rendered, depth))
 
         if block.get("has_children") and block["type"] not in PAGE_BLOCK_TYPES:
             if depth >= DEFAULT_MAX_BLOCK_NESTING:
-                lines.append(f"{indent}*(deeper blocks not rendered)*")
+                lines.append(indent_lines("*(deeper blocks not rendered)*", depth))
 
             else:
                 lines += render_blocks(notion, block["id"], depth + 1)
@@ -550,11 +407,15 @@ def placeholder(page, side_file):
     return lines + [""]
 
 
-def render_location(notion, location, since, max_depth, side_files, gaps):
+def checked_phrase(checked):
+    return f"{checked} checked" if checked is not None else "found by search"
+
+
+def render_location(notion, location, discovery, side_files, gaps):
     lines = [f"## {location['name']}", ""]
 
     try:
-        changed, checked = changed_in_location(notion, location, since, max_depth, gaps)
+        changed, checked = discovery.changed(location)
 
     except ExportError as error:
         gaps.add(f"{location['name']} could not be read: {error}")
@@ -562,9 +423,10 @@ def render_location(notion, location, since, max_depth, side_files, gaps):
         return lines + ["**Unreadable this run**; see the gaps the adapter reported.", ""], 0, 0
 
     if not changed:
-        return lines + [f"No page edited since the watermark ({checked} checked).", ""], checked, 0
+        return (lines + [f"No page edited since the watermark ({checked_phrase(checked)}).", ""],
+                checked or 0, 0)
 
-    lines += [f"{len(changed)} page(s) edited since the watermark, of {checked} checked.", ""]
+    lines += [f"{len(changed)} page(s) edited since the watermark ({checked_phrase(checked)}).", ""]
 
     for page in sorted(changed, key=lambda item: item["last_edited_time"]):
         side_file = None
@@ -580,10 +442,10 @@ def render_location(notion, location, since, max_depth, side_files, gaps):
 
         lines += placeholder(page, side_file)
 
-    return lines, checked, len(changed)
+    return lines, checked or 0, len(changed)
 
 
-def build_export(notion, locations, since, max_depth, side_files, gaps):
+def build_export(notion, locations, since, discovery, side_files, gaps):
     header = [
         f"# Notion export (record-dense locations) — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
         "",
@@ -597,47 +459,12 @@ def build_export(notion, locations, since, max_depth, side_files, gaps):
     changed_total = 0
 
     for location in locations:
-        lines, checked, changed = render_location(notion, location, since, max_depth, side_files,
-                                                  gaps)
+        lines, checked, changed = render_location(notion, location, discovery, side_files, gaps)
         body += lines
         checked_total += checked
         changed_total += changed
 
     return "\n".join(header + body), checked_total, changed_total
-
-
-def read_locations(source):
-    locations = source.get("covered_locations") or []
-
-    if not locations:
-        raise configuration.ConfigurationError(
-            'the source lists no "covered_locations", so there is nothing to export. A run '
-            "that walks nothing would report a quiet source it never looked at."
-        )
-
-    for location in locations:
-        if not isinstance(location, dict) or not location.get("id") or not location.get("name"):
-            raise configuration.ConfigurationError(
-                'every entry in "covered_locations" needs a "name" and an "id"'
-            )
-
-    return locations
-
-
-def read_watermark(value):
-    try:
-        moment = parse_time(value)
-
-    except ValueError:
-        raise configuration.ConfigurationError(f"{value!r} is not an ISO-8601 time") from None
-
-    if moment.tzinfo is None:
-        raise configuration.ConfigurationError(
-            f"{value!r} has no timezone; give it as UTC, e.g. {value}T00:00:00Z"
-            if "T" not in value else f"{value!r} has no timezone; end it with Z"
-        )
-
-    return floor_to_minute(moment)
 
 
 def main(argv=None):
@@ -649,6 +476,11 @@ def main(argv=None):
         "--sensitive-raw-directory",
         help="write each changed page's text here for the isolated agent",
     )
+    parser.add_argument(
+        "--walk", action="store_true",
+        help="find changed pages by walking every page under each location, rather than "
+             "by search; complete, and a request per page",
+    )
     arguments = parser.parse_args(argv)
 
     # Rule 1: the clock is read before the first request, and becomes the watermark.
@@ -656,13 +488,9 @@ def main(argv=None):
 
     try:
         source = configuration.source(arguments.source)
-        locations = read_locations(source)
+        locations = notion_search.read_locations(source)
         since = read_watermark(arguments.watermark)
-        notion = Notion(
-            source.get("api_base", DEFAULT_API_BASE),
-            notion_credential.authorization(source),
-            float(source.get("request_interval_seconds", DEFAULT_REQUEST_INTERVAL_SECONDS)),
-        )
+        notion = Notion.from_source(source, notion_credential.authorization(source))
 
     except (configuration.ConfigurationError, notion_credential.CredentialError) as error:
         print(f"notion_export: {error}", file=sys.stderr)
@@ -675,13 +503,18 @@ def main(argv=None):
     side_files = SideFiles(arguments.sensitive_raw_directory)
     gaps = Gaps()
 
+    if arguments.walk:
+        discovery = TreeWalkDiscovery(notion, since, int(source.get("max_depth", DEFAULT_MAX_DEPTH)),
+                                      gaps)
+
+    else:
+        discovery = SearchDiscovery(notion, locations, since, gaps)
+
     # Past this point a failure is reported by type alone. An exception's message
     # can carry what it was handed — a header, a body — and a traceback prints it.
     try:
-        content, checked, changed = build_export(
-            notion, locations, since, int(source.get("max_depth", DEFAULT_MAX_DEPTH)),
-            side_files, gaps,
-        )
+        content, checked, changed = build_export(notion, locations, since, discovery, side_files,
+                                                 gaps)
         Path(arguments.output).write_text(content, encoding="utf-8")
 
     except Exception as error:  # noqa: BLE001 — the point is that nothing escapes unreduced
@@ -692,7 +525,12 @@ def main(argv=None):
         return EXIT_REFUSED
 
     print(arguments.output)
-    print(f"{len(locations)} location(s), {checked} page(s) checked, {changed} changed")
+
+    if arguments.walk:
+        print(f"{len(locations)} location(s), {checked} page(s) checked, {changed} changed")
+
+    else:
+        print(f"{len(locations)} location(s), {changed} changed, found by search")
 
     if not changed:
         print("Nothing to summarize: skip the isolated agent.")

@@ -92,6 +92,13 @@ The cost is that the newest section's position is a property of the source —
 appended at the end, or inserted at the top — and the descent has to know which.
 That is a fact about one source, so it belongs in the register, not here.
 
+Where the source stamps each child, a script can do the descent and hand back
+only what changed. The shipped `notion_page_changes.py` is that for Notion: it
+walks a page's blocks, prints those edited since the watermark with their
+unchanged ancestors as context, and adds the comments left since. The main
+session then reads a section rather than paging through the tree itself, and
+the position question goes away, because every block carries its own edit time.
+
 ## A deterministic script beats a model for the mechanical half
 
 Where the fetch is fixed, specifiable work — pagination, deduplication,

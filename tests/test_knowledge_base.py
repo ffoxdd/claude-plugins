@@ -921,9 +921,12 @@ class NotionAdapterTest(unittest.TestCase):
         }}))
 
     def export(self, *extra, watermark=StubNotion.WATERMARK):
+        """A walk: the stub serves a tree and no search, which is what these tests
+        pin. Search discovery has its own class below."""
         return support.run_script(
             adapter("notion_export.py"),
-            arguments=[watermark, str(self.output), "--source", "notion-covered", *extra],
+            arguments=[watermark, str(self.output), "--source", "notion-covered", "--walk",
+                       *extra],
             KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
         )
 
@@ -1131,6 +1134,28 @@ def search_item(identifier, edited, title, parent_type="workspace", parent_id=No
     return item
 
 
+def search_block(identifier, kind, text, edited, has_children=False, **content):
+    return {
+        "object": "block",
+        "id": identifier,
+        "type": kind,
+        "has_children": has_children,
+        "created_time": edited,
+        "last_edited_time": edited,
+        kind: {"rich_text": [{"plain_text": text}], **content},
+    }
+
+
+def search_comment(identifier, created, author, text):
+    return {
+        "object": "comment",
+        "id": identifier,
+        "created_time": created,
+        "created_by": {"object": "user", "id": author},
+        "rich_text": [{"plain_text": text}],
+    }
+
+
 class StubNotionSearch:
     """A local stand-in for Notion's search and metadata endpoints.
 
@@ -1166,8 +1191,46 @@ class StubNotionSearch:
     RESTRICTED = search_item("restricted-child", "2026-09-21T10:00:00.000Z", "RESTRICTED-TITLE",
                              "page_id", "forbidden")
 
+    # open-page's blocks, for the page-changes tool: an old heading holding one new
+    # bullet, one old bullet somebody commented on, and one old bullet left alone;
+    # then an old image and a new one whose file URL must never be printed.
+    CHILDREN = {
+        "open-page": [
+            search_block("old-heading", "heading_2", "Agenda", "2026-09-01T09:00:00.000Z",
+                         has_children=True),
+            search_block("old-image", "image", "", "2026-09-01T09:00:00.000Z",
+                         file={"url": "OLD-SIGNED-URL-MARKER"}),
+            search_block("new-image", "image", "", "2026-09-24T09:00:00.000Z",
+                         file={"url": "SIGNED-URL-MARKER"}),
+        ],
+        "old-heading": [
+            search_block("new-bullet", "bulleted_list_item", "NEW-BULLET text",
+                         "2026-09-24T09:00:00.000Z"),
+            search_block("commented-bullet", "bulleted_list_item", "COMMENTED-BULLET text",
+                         "2026-09-01T09:00:00.000Z"),
+            search_block("quiet-bullet", "bulleted_list_item", "QUIET-BULLET text",
+                         "2026-09-01T09:00:00.000Z"),
+        ],
+        "covered-child": [search_block("covered-paragraph", "paragraph", "SENSITIVE-MARKER detail",
+                                       "2026-09-22T09:00:00.000Z")],
+    }
+
+    COMMENTS = {
+        "commented-bullet": [search_comment("new-comment", "2026-09-24T10:00:00.000Z", "reviewer",
+                                            "COMMENT-TEXT")],
+        "open-page": [search_comment("old-comment", "2026-09-01T10:00:00.000Z", "reviewer",
+                                     "OLD-COMMENT")],
+    }
+
+    USERS = {"reviewer": {"object": "user", "id": "reviewer", "name": "Reviewer Name"}}
+
     METADATA = {
         ("pages", "hub"): search_item("hub", "2026-09-01T09:00:00.000Z", "Operations hub"),
+        ("pages", "open-page"): search_item("open-page", "2026-09-24T09:00:00.000Z", "Roadmap"),
+        ("pages", "deep-covered"): search_item("deep-covered", "2026-09-23T12:00:00.000Z",
+                                               "DEEP-PERSON-TITLE", "block_id", "toggle"),
+        ("pages", "covered-row"): search_item("covered-row", "2026-09-23T09:00:00.000Z",
+                                              "ROW-TITLE", "database_id", "covered-db"),
         ("pages", "covered-child"): search_item("covered-child", "2026-09-22T09:00:00.000Z",
                                                 "Jane PERSON-TITLE", "page_id", "hub"),
         ("blocks", "toggle"): {"object": "block", "id": "toggle",
@@ -1184,11 +1247,13 @@ class StubNotionSearch:
         self.results = list(self.RESULTS)
         self.search_status = search_status
         self.search_requests = 0
+        self.requested = []
         self.authorizations = []
         self.first_request_at = None
 
         if restricted:
             self.results.insert(4, self.RESTRICTED)
+            self.METADATA = {**self.METADATA, ("pages", "restricted-child"): self.RESTRICTED}
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *arguments):
@@ -1210,7 +1275,9 @@ class StubNotionSearch:
 
             def do_GET(self):
                 self.record()
-                parts = tuple(self.path.split("?")[0].strip("/").split("/"))
+                path, _, query = self.path.partition("?")
+                parts = tuple(path.strip("/").split("/"))
+                stub.requested.append(parts)
 
                 if parts == ("pages", "forbidden"):
                     return self.reply(403, {"object": "error", "code": "restricted_resource",
@@ -1218,6 +1285,19 @@ class StubNotionSearch:
 
                 if parts in stub.METADATA:
                     return self.reply(200, stub.METADATA[parts])
+
+                if len(parts) == 3 and parts[0] == "blocks" and parts[2] == "children":
+                    return self.reply(200, {"results": stub.CHILDREN.get(parts[1], []),
+                                            "has_more": False})
+
+                if parts == ("comments",):
+                    block = dict(pair.split("=") for pair in query.split("&")).get("block_id")
+
+                    return self.reply(200, {"results": stub.COMMENTS.get(block, []),
+                                            "has_more": False})
+
+                if parts[0] == "users" and parts[1] in stub.USERS:
+                    return self.reply(200, stub.USERS[parts[1]])
 
                 self.reply(404, {"object": "error", "code": "object_not_found",
                                  "message": "LEAKY-ERROR-MESSAGE"})
@@ -1400,3 +1480,194 @@ class NotionSweepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
         self.assertIn("Jane PERSON-TITLE", self.manifest())
+
+
+class NotionAdapterSearchTest(unittest.TestCase):
+    """The notion adapter's default discovery, by search, against the search stub.
+    The properties pinned: changed pages under a covered location are found by
+    search however they are nested, and nothing under the location is walked;
+    the same leak rules hold as for the walk; and what the search cannot place
+    withholds the watermark."""
+
+    TOKEN = "Bearer secret-TOKEN-MARKER"
+    COVERED = ("PERSON-TITLE", "DEEP-PERSON-TITLE", "ROW-TITLE", "SENSITIVE-MARKER",
+               "LEAKY-ERROR-MESSAGE", "TOKEN-MARKER")
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.output = self.root / "export.md"
+        self.raw = self.root / "raw"
+        self.claude_config = self.root / "claude.json"
+        self.claude_config.write_text(json.dumps({"mcpServers": {"notion": {
+            "env": {"OPENAPI_MCP_HEADERS": json.dumps({"Authorization": self.TOKEN})},
+        }}}))
+        self.stub = None
+        self.start_stub()
+
+    def tearDown(self):
+        self.stub.close()
+        self.directory.cleanup()
+
+    def start_stub(self, **options):
+        if self.stub:
+            self.stub.close()
+
+        self.stub = StubNotionSearch(**options)
+        self.config = write_register(self.root, register(**{"notion-covered": {
+            "adapter": "notion",
+            "api_base": self.stub.api_base,
+            "request_interval_seconds": 0,
+            "credential": {"claude_config": str(self.claude_config)},
+            "covered_locations": [{"name": "Operations hub", "id": "hub"}],
+        }}))
+
+    def export(self, *extra):
+        return support.run_script(
+            adapter("notion_export.py"),
+            arguments=[StubNotionSearch.WATERMARK, str(self.output), "--source", "notion-covered",
+                       "--sensitive-raw-directory", str(self.raw), *extra],
+            KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+        )
+
+    def export_text(self):
+        return self.output.read_text(encoding="utf-8")
+
+    def test_changed_pages_under_the_location_are_found_however_nested(self):
+        """Directly under it, under a block inside a page under it, and as a row of a
+        database under it: the three the sweep counts."""
+        result = self.export()
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("3 changed, found by search", result.stdout)
+
+        for page in ("covered-child", "deep-covered", "covered-row"):
+            with self.subTest(page=page):
+                self.assertIn(f"### Page `{page}`", self.export_text())
+
+        self.assertIn("SENSITIVE-MARKER", (self.raw / "covered-child.md").read_text(encoding="utf-8"))
+
+    def test_nothing_under_the_location_is_walked(self):
+        self.export()
+
+        self.assertNotIn(("blocks", "hub", "children"), self.stub.requested)
+        self.assertNotIn(("pages", "unshared-child"), self.stub.requested)
+
+    def test_content_reaches_only_the_side_files(self):
+        result = self.export()
+        streams = result.stdout + result.stderr + self.export_text()
+
+        for token in self.COVERED:
+            with self.subTest(token=token):
+                self.assertNotIn(token, streams)
+
+    def test_a_search_result_that_cannot_be_placed_withholds_the_watermark(self):
+        self.start_stub(restricted=True)
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("could not be placed", result.stderr)
+        self.assertNotIn("New watermark", result.stdout)
+
+    def test_an_unreadable_search_withholds_the_watermark(self):
+        self.start_stub(search_status=401)
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("a search page could not be read", result.stderr)
+        self.assertNotIn("New watermark", result.stdout)
+
+
+class NotionPageChangesTest(unittest.TestCase):
+    """The page-changes tool against the search stub. The properties pinned: only
+    edited blocks print, with unchanged ancestors as marked context; comments left
+    since the watermark print under their block, on an unchanged block too; a file
+    URL never prints; and a page under a covered location, or one that cannot be
+    placed, is refused before anything of it is printed."""
+
+    TOKEN = "Bearer secret-TOKEN-MARKER"
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.claude_config = self.root / "claude.json"
+        self.claude_config.write_text(json.dumps({"mcpServers": {"notion": {
+            "env": {"OPENAPI_MCP_HEADERS": json.dumps({"Authorization": self.TOKEN})},
+        }}}))
+        self.stub = None
+        self.start_stub()
+
+    def tearDown(self):
+        self.stub.close()
+        self.directory.cleanup()
+
+    def start_stub(self, **options):
+        if self.stub:
+            self.stub.close()
+
+        self.stub = StubNotionSearch(**options)
+        credential = {"claude_config": str(self.claude_config)}
+        self.config = write_register(self.root, register(
+            notion={"adapter": "notion-sweep", "api_base": self.stub.api_base,
+                    "request_interval_seconds": 0, "credential": credential,
+                    "covered_by": "notion-covered"},
+            **{"notion-covered": {"adapter": "notion",
+                                  "covered_locations": [{"name": "Operations hub", "id": "hub"}]}},
+        ))
+
+    def changes(self, page_id):
+        return support.run_script(
+            adapter("notion_page_changes.py"),
+            arguments=[page_id, StubNotionSearch.WATERMARK],
+            KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+        )
+
+    def test_only_edited_blocks_print_and_ancestors_are_marked_context(self):
+        result = self.changes("open-page")
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("NEW-BULLET text", result.stdout)
+        self.assertIn("#### Agenda *(unchanged, for context)*", result.stdout)
+        self.assertNotIn("QUIET-BULLET", result.stdout)
+        self.assertIn("2 changed block(s), 1 comment(s)", result.stdout)
+
+    def test_a_comment_prints_under_its_block_even_when_the_block_is_unchanged(self):
+        result = self.changes("open-page")
+
+        self.assertIn("COMMENTED-BULLET text *(unchanged, for context)*", result.stdout)
+        self.assertIn("Reviewer Name", result.stdout)
+        self.assertIn("COMMENT-TEXT", result.stdout)
+        self.assertNotIn("OLD-COMMENT", result.stdout)
+
+    def test_a_file_url_never_prints(self):
+        result = self.changes("open-page")
+
+        self.assertIn("*(image: )*", result.stdout)
+        self.assertNotIn("SIGNED-URL-MARKER", result.stdout)
+
+    def test_a_page_under_a_covered_location_is_refused_with_nothing_printed(self):
+        result = self.changes("covered-child")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("covered location 'Operations hub'", result.stderr)
+        self.assertNotIn("SENSITIVE-MARKER", result.stderr)
+        self.assertNotIn("PERSON-TITLE", result.stderr)
+
+    def test_a_page_that_cannot_be_placed_is_refused(self):
+        self.start_stub(restricted=True)
+
+        result = self.changes("restricted-child")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("could not be placed", result.stderr)
+        self.assertNotIn("RESTRICTED-TITLE", result.stderr)
+
+    def test_the_token_is_sent_and_printed_nowhere(self):
+        result = self.changes("open-page")
+
+        self.assertEqual(set(self.stub.authorizations), {self.TOKEN})
+        self.assertNotIn("TOKEN-MARKER", result.stdout + result.stderr)
