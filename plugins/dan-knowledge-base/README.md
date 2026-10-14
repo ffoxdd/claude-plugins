@@ -76,9 +76,10 @@ directly. It finds the changed pages over the REST API, by search, or by walking
 every page with `--walk` as the periodic check, and writes their text only to
 side files for an isolated agent. The `notion-sweep` adapter covers the rest of
 the workspace on the same token: a search for what changed that counts, rather
-than lists, anything under those locations. The page-changes tool then reads a
-listed page as only its blocks edited since the watermark, with the comments
-left since, and refuses any page under those locations.
+than lists, anything under those locations, and then reads each page it lists
+as only its blocks edited since the watermark, with the comments left since. The
+page-changes tool is that walk for one page by hand, and refuses any page under
+those locations.
 
 **Permissions.** A PreToolUse hook approves the read-only `slack-client` calls a
 sync runs, so installing the plugin is the grant and `permissions.allow` stays

@@ -2,11 +2,11 @@
 """Print the blocks of one Notion page edited since a watermark, with their
 ancestors for context and any comments left on them since.
 
-The page-changes tool, for the session's own reading. The sweep manifest names
-a page that changed; fetching it whole through the MCP server returns every
-block it has ever held, and on a page written into weekly that is a year of
-agendas, image URLs included, to read one new section. This prints the new
-section instead:
+The page-changes tool. The sweep (`notion_sweep.py`) runs it on every page it
+lists and writes the result to its output file; run it here by hand for one
+page. Fetching a page whole through the MCP server returns every block it has
+ever held, and on a page written into weekly that is a year of agendas, image
+URLs included, to read one new section. This prints the new section instead:
 
   * a block is **printed when it was edited at or after the watermark**, in
     full, with its own edited descendants below it;
@@ -19,6 +19,21 @@ section instead:
     nothing about the block;
   * images and files are named, never linked: a signed file URL is a few
     hundred characters that say nothing.
+
+**The walk is complete, so its cost is the page's size, not its change count.**
+Notion does not move a block's edit time when a block inside it is edited, nor
+when a comment is left on it, so no branch can be skipped: every block with
+children is listed and every block is asked for its comments, about two requests
+a block. A page of several hundred blocks takes minutes, which is the price of
+missing nothing; run it in the background rather than cutting it short.
+
+**What it cannot read is a gap, never a silence.** A comment request that
+fails, or blocks nested deeper than it walks, is reported on stderr and makes
+the exit status 3, so a caller holding a watermark keeps the old one.
+
+**One thing no poll can see:** a comment left on a page nobody edited. The
+comment moves no edit time, not even the page's, so no search returns the page
+and nothing runs this on it. Only a full walk of the workspace would find it.
 
 **It refuses a page under a covered location**, or one it cannot place, and
 prints nothing of it. The `notion` adapter is the route for those, through the
@@ -33,7 +48,8 @@ purpose, and the refusal above is what makes it safe to run from a session.
 
     python3 notion_page_changes.py <page id> <watermark> [--source notion]
 
-Exit status: 0 printed; 1 refused, before any content is printed.
+Exit status: 0 printed; 1 refused, before any content is printed; 3 printed,
+with gaps.
 """
 
 import argparse
@@ -46,8 +62,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import configuration
 import notion_credential
 import notion_search
-from notion_api import EXIT_REFUSED, ExportError, Notion, created_since, edited_since, \
-    format_time, parse_time, read_watermark
+from notion_api import EXIT_GAPS, EXIT_REFUSED, ExportError, Gaps, Notion, created_since, \
+    edited_since, format_time, parse_time, read_watermark
 from notion_export import DEFAULT_MAX_BLOCK_NESTING, PAGE_BLOCK_TYPES, indent_lines, \
     page_title, plain_text, render_block
 
@@ -72,7 +88,7 @@ class Node:
         return self.changed or any(child.included for child in self.children)
 
 
-def block_tree(notion, block_id, since, nesting=0):
+def block_tree(notion, block_id, since, gaps, nesting=0):
     nodes = []
 
     for block in notion.children(block_id):
@@ -80,7 +96,11 @@ def block_tree(notion, block_id, since, nesting=0):
 
         if block.get("has_children") and block["type"] not in PAGE_BLOCK_TYPES:
             if nesting < DEFAULT_MAX_BLOCK_NESTING:
-                children = block_tree(notion, block["id"], since, nesting + 1)
+                children = block_tree(notion, block["id"], since, gaps, nesting + 1)
+
+            else:
+                gaps.add(f"block {block['id']} nests deeper than {DEFAULT_MAX_BLOCK_NESTING} "
+                         "levels; what is below it was not read")
 
         nodes.append(Node(block, since, children))
 
@@ -108,19 +128,21 @@ class Authors:
         return self.names[identifier]
 
 
-def comments_since(notion, block_id, since):
+def comments_since(notion, block_id, since, gaps):
     try:
         return [comment for comment in notion.comments(block_id) if created_since(comment, since)]
 
-    except ExportError:
+    except ExportError as error:
+        gaps.add(f"comments on {block_id} could not be read ({error})")
+
         return []
 
 
-def attach_comments(notion, nodes, since):
+def attach_comments(notion, nodes, since, gaps):
     """Every block is asked, changed or not: a comment does not edit its block."""
     for node in nodes:
-        node.comments = comments_since(notion, node.block["id"], since)
-        attach_comments(notion, node.children, since)
+        node.comments = comments_since(notion, node.block["id"], since, gaps)
+        attach_comments(notion, node.children, since, gaps)
 
 
 def render_comment(comment, authors):
@@ -161,6 +183,11 @@ def count_changed(nodes):
     return sum((1 if node.changed else 0) + count_changed(node.children) for node in nodes)
 
 
+def comment_ids(nodes):
+    return {comment["id"] for node in nodes for comment in node.comments} | \
+        {identifier for node in nodes for identifier in comment_ids(node.children)}
+
+
 def count_comments(nodes):
     return sum(len(node.comments) + count_comments(node.children) for node in nodes)
 
@@ -186,14 +213,28 @@ def fetch_page(notion, page_id):
         raise Refused(f"page {page_id} could not be read ({error})") from None
 
 
-def report(notion, page, since):
-    nodes = block_tree(notion, page["id"], since)
-    attach_comments(notion, nodes, since)
-    authors = Authors(notion)
-    page_comments = comments_since(notion, page["id"], since)
+class PageReport:
+    """One page's changes, rendered, with the counts a caller reports."""
+
+    def __init__(self, text, changed, comments):
+        self.text = text
+        self.changed = changed
+        self.comments = comments
+
+
+def page_report(notion, page, since, gaps, heading="#", authors=None):
+    nodes = block_tree(notion, page["id"], since, gaps)
+    attach_comments(notion, nodes, since, gaps)
+    authors = authors or Authors(notion)
+
+    # Asked by page id, Notion can return comments anchored to blocks too, which
+    # are already printed under their block. The page's own list keeps the rest.
+    placed = comment_ids(nodes)
+    page_comments = [comment for comment in comments_since(notion, page["id"], since, gaps)
+                     if comment["id"] not in placed]
 
     lines = [
-        f"# {page_title(page)} — changes since {format_time(since)}",
+        f"{heading} {page_title(page)} — changes since {format_time(since)}",
         "",
         f"*Page `{page['id']}`, last edited {page['last_edited_time']}. Blocks edited since the "
         "watermark, with unchanged ancestors for context; comments left since the watermark "
@@ -212,7 +253,7 @@ def report(notion, page, since):
 
     lines += ["", f"*{changed} changed block(s), {comments} comment(s).*"]
 
-    return "\n".join(lines) + "\n"
+    return PageReport("\n".join(lines) + "\n", changed, comments)
 
 
 def main(argv=None):
@@ -233,11 +274,13 @@ def main(argv=None):
 
         return EXIT_REFUSED
 
+    gaps = Gaps()
+
     # Nothing is printed until the page is placed outside every covered location.
     try:
         page = fetch_page(notion, arguments.page_id)
         place(notion, locations, page)
-        text = report(notion, page, since)
+        text = page_report(notion, page, since, gaps).text
 
     except Refused as refusal:
         print(f"notion_page_changes: {refusal}", file=sys.stderr)
@@ -251,6 +294,14 @@ def main(argv=None):
         return EXIT_REFUSED
 
     sys.stdout.write(text)
+
+    if gaps:
+        print("Gaps — each may hide a change:", file=sys.stderr)
+
+        for message in gaps.messages:
+            print(f"  - {message}", file=sys.stderr)
+
+        return EXIT_GAPS
 
     return 0
 

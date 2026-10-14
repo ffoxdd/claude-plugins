@@ -99,6 +99,13 @@ unchanged ancestors as context, and adds the comments left since. The main
 session then reads a section rather than paging through the tree itself, and
 the position question goes away, because every block carries its own edit time.
 
+The descent cannot prune, though. Notion leaves a block's edit time alone when a
+block inside it changes, and a comment moves no edit time at all, so the walk
+lists every block and asks each for its comments: requests in proportion to the
+page's size, not its change. That is a script's cost, paid in minutes and no
+tokens, so the sweep runs it on every changed page itself, with no time limit.
+A shortened walk would cost the same tokens and miss things.
+
 ## A deterministic script beats a model for the mechanical half
 
 Where the fetch is fixed, specifiable work — pagination, deduplication,

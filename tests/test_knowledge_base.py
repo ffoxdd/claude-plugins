@@ -1215,11 +1215,15 @@ class StubNotionSearch:
                                        "2026-09-22T09:00:00.000Z")],
     }
 
+    # Asked by page id, Notion also returns the comment anchored to a block; it
+    # must print once, under that block.
     COMMENTS = {
         "commented-bullet": [search_comment("new-comment", "2026-09-24T10:00:00.000Z", "reviewer",
                                             "COMMENT-TEXT")],
         "open-page": [search_comment("old-comment", "2026-09-01T10:00:00.000Z", "reviewer",
-                                     "OLD-COMMENT")],
+                                     "OLD-COMMENT"),
+                      search_comment("new-comment", "2026-09-24T10:00:00.000Z", "reviewer",
+                                     "COMMENT-TEXT")],
     }
 
     USERS = {"reviewer": {"object": "user", "id": "reviewer", "name": "Reviewer Name"}}
@@ -1239,13 +1243,16 @@ class StubNotionSearch:
                                                  "Rows", "page_id", "hub", kind="database"),
     }
 
-    def __init__(self, restricted=False, search_status=None):
+    def __init__(self, restricted=False, search_status=None, failing_comments=(),
+                 failing_children=()):
         import http.server
         import threading
 
         stub = self
         self.results = list(self.RESULTS)
         self.search_status = search_status
+        self.failing_comments = set(failing_comments)
+        self.failing_children = set(failing_children)
         self.search_requests = 0
         self.requested = []
         self.authorizations = []
@@ -1287,11 +1294,19 @@ class StubNotionSearch:
                     return self.reply(200, stub.METADATA[parts])
 
                 if len(parts) == 3 and parts[0] == "blocks" and parts[2] == "children":
+                    if parts[1] in stub.failing_children:
+                        return self.reply(403, {"object": "error", "code": "restricted_resource",
+                                                "message": "LEAKY-ERROR-MESSAGE"})
+
                     return self.reply(200, {"results": stub.CHILDREN.get(parts[1], []),
                                             "has_more": False})
 
                 if parts == ("comments",):
                     block = dict(pair.split("=") for pair in query.split("&")).get("block_id")
+
+                    if block in stub.failing_comments:
+                        return self.reply(403, {"object": "error", "code": "restricted_resource",
+                                                "message": "LEAKY-ERROR-MESSAGE"})
 
                     return self.reply(200, {"results": stub.COMMENTS.get(block, []),
                                             "has_more": False})
@@ -1481,6 +1496,46 @@ class NotionSweepTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("Jane PERSON-TITLE", self.manifest())
 
+    def test_every_listed_page_is_read_into_the_output_and_only_counts_reach_stdout(self):
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0)
+
+        for text in ("## Roadmap — changes since", "NEW-BULLET text", "COMMENT-TEXT"):
+            with self.subTest(text=text):
+                self.assertIn(text, self.manifest())
+
+        self.assertNotIn("QUIET-BULLET", self.manifest())
+        self.assertNotIn("SIGNED-URL-MARKER", self.manifest())
+        self.assertIn("3 page(s) read: 2 changed block(s), 1 new comment(s)", result.stdout)
+
+        for text in ("NEW-BULLET", "COMMENT-TEXT", "Roadmap"):
+            with self.subTest(stdout=text):
+                self.assertNotIn(text, result.stdout + result.stderr)
+
+    def test_a_comment_request_that_fails_withholds_the_watermark(self):
+        """It used to read as "no comments", which is the silent loss this pins."""
+        self.start_stub(failing_comments={"quiet-bullet"})
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("comments on quiet-bullet could not be read", result.stderr)
+        self.assertNotIn("New watermark", result.stdout)
+        self.assertNotIn("LEAKY-ERROR-MESSAGE", result.stdout + result.stderr + self.manifest())
+        self.assertIn("NEW-BULLET text", self.manifest())
+
+    def test_a_page_that_cannot_be_read_is_marked_and_withholds_the_watermark(self):
+        self.start_stub(failing_children={"old-heading"})
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("page open-page could not be read", result.stderr)
+        self.assertIn("## Roadmap — not read", self.manifest())
+        self.assertIn("`same-minute`", self.manifest())
+        self.assertNotIn("New watermark", result.stdout)
+
 
 class NotionAdapterSearchTest(unittest.TestCase):
     """The notion adapter's default discovery, by search, against the search stub.
@@ -1639,6 +1694,7 @@ class NotionPageChangesTest(unittest.TestCase):
         self.assertIn("COMMENTED-BULLET text *(unchanged, for context)*", result.stdout)
         self.assertIn("Reviewer Name", result.stdout)
         self.assertIn("COMMENT-TEXT", result.stdout)
+        self.assertEqual(result.stdout.count("COMMENT-TEXT"), 1)
         self.assertNotIn("OLD-COMMENT", result.stdout)
 
     def test_a_file_url_never_prints(self):
@@ -1671,3 +1727,13 @@ class NotionPageChangesTest(unittest.TestCase):
 
         self.assertEqual(set(self.stub.authorizations), {self.TOKEN})
         self.assertNotIn("TOKEN-MARKER", result.stdout + result.stderr)
+
+    def test_a_comment_request_that_fails_is_a_gap_not_an_empty_list(self):
+        self.start_stub(failing_comments={"commented-bullet"})
+
+        result = self.changes("open-page")
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("NEW-BULLET text", result.stdout)
+        self.assertIn("comments on commented-bullet could not be read", result.stderr)
+        self.assertNotIn("LEAKY-ERROR-MESSAGE", result.stdout + result.stderr)

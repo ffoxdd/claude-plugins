@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """List the Notion pages and databases edited since a watermark, outside the
-record-dense locations.
+record-dense locations, and read what changed in each page.
 
-The `notion-sweep` adapter: the workspace-wide "what changed?" half of a Notion
-sync, run as a script so no model pages through search results. A sweep done
+The `notion-sweep` adapter: the workspace-wide half of a Notion sync, run as a
+script so no model pages through search results or block trees. A sweep done
 through the MCP server shares one result stream with the record-dense locations,
 so a guard that withholds those results also stalls the pagination that runs
 through them, and every retry after a refusal reads as a workaround. Here the
@@ -13,9 +13,13 @@ search runs over Notion's REST API, and each result is placed in the page tree
   * a result **under a covered location** is counted against that location and
     written nowhere else. The `notion` adapter (`notion_export.py`) is the route
     that reads those, so this one never has to;
-  * every **other** result goes into the output file by id, kind, edit time and
-    title, for the session to choose from and fetch with the page-changes tool
-    (`notion_page_changes.py`) or through the MCP server;
+  * every **other** result goes into the output file's manifest by id, kind,
+    edit time and title;
+  * every page in the manifest is then **read with the page-changes walk**
+    (`notion_page_changes.py`), and its changed blocks and new comments are
+    written below the manifest, one section per page. The session reads this one
+    file; it never runs the walk page by page. A database in the manifest is
+    listed only: its edited rows are pages, and arrive as their own results;
   * **stdout** carries the output path, counts and the new watermark, and
     **stderr** carries gaps, a request path and a status only. Neither carries a
     title.
@@ -34,10 +38,17 @@ and is the clock read before the first request. The search is sorted newest
 first, and stops after the first page whose last result is older than the
 watermark.
 
-**A gap withholds the watermark.** A search page that could not be read, or a
-result whose chain could not be followed, is named on stderr, and the run exits
-3 without printing a new watermark. An unplaced result is written nowhere, since
-it might sit under a covered location.
+**It reads everything, so it takes as long as the pages are long.** The walk
+cannot skip a branch (see `notion_page_changes.py`), so a sync whose changed
+pages hold a few thousand blocks takes several minutes. There is no time limit
+to cut it short. Run it in the background.
+
+**A gap withholds the watermark.** A search page that could not be read, a
+result whose chain could not be followed, a page whose blocks or comments could
+not be read, or blocks nested past the walk's limit, is named on stderr, and the
+run exits 3 without printing a new watermark. An unplaced result is written
+nowhere, since it might sit under a covered location. A page that failed part-way
+is listed in the manifest, with a section saying it was not read.
 
 Exit status: 0 complete; 1 refused before any request, or failed part-way; 3
 written, with gaps, watermark withheld.
@@ -57,6 +68,7 @@ import notion_search
 from notion_api import EXIT_GAPS, EXIT_REFUSED, Gaps, Notion, format_time, parse_time, \
     read_watermark
 from notion_export import page_title, plain_text
+from notion_page_changes import Authors, page_report
 
 
 def item_title(item):
@@ -98,6 +110,48 @@ def build_manifest(changes, since, covered_source):
     return "\n".join(lines) + "\n"
 
 
+class Readings:
+    """The changes read from every listed page, and their totals."""
+
+    def __init__(self):
+        self.sections = []
+        self.pages = 0
+        self.changed = 0
+        self.comments = 0
+
+
+def read_changes(notion, changes, since, gaps):
+    """Every listed page, newest first. One page failing is a gap, not the end."""
+    readings = Readings()
+    authors = Authors(notion)
+    pages = [item for item in changes.outside if item.get("object") == "page"]
+
+    for page in sorted(pages, key=lambda entry: entry["last_edited_time"], reverse=True):
+        try:
+            report = page_report(notion, page, since, gaps, heading="##", authors=authors)
+
+        except Exception as error:  # noqa: BLE001 — reduced to a type, as everywhere here
+            gaps.add(f"page {page['id']} could not be read ({type(error).__name__})")
+            readings.sections.append(f"## {item_title(page)} — not read\n\n"
+                                     f"Page `{page['id']}` failed part-way; the next run "
+                                     "re-reads it.\n")
+            continue
+
+        readings.sections.append(report.text)
+        readings.pages += 1
+        readings.changed += report.changed
+        readings.comments += report.comments
+
+    return readings
+
+
+def build_output(manifest, readings):
+    if not readings.sections:
+        return manifest
+
+    return manifest + "\n# What changed, page by page\n\n" + "\n".join(readings.sections)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("watermark", help="ISO-8601 UTC time; items edited at or after its minute")
@@ -124,8 +178,11 @@ def main(argv=None):
     # Past this point a failure is reported by type alone, as in notion_export.py.
     try:
         changes = notion_search.changes_since(notion, locations, since, gaps)
-        Path(arguments.output).write_text(build_manifest(changes, since, covered_source),
-                                          encoding="utf-8")
+        readings = read_changes(notion, changes, since, gaps)
+        Path(arguments.output).write_text(
+            build_output(build_manifest(changes, since, covered_source), readings),
+            encoding="utf-8",
+        )
 
     except Exception as error:  # noqa: BLE001 — the point is that nothing escapes unreduced
         print(f"notion_sweep: failed part-way ({type(error).__name__}); no manifest written",
@@ -137,6 +194,8 @@ def main(argv=None):
     print(f"{len(changes.outside)} changed outside covered locations, "
           f"{sum(len(items) for items in changes.under.values())} under covered locations, "
           f"{changes.unplaced} unplaced")
+    print(f"{readings.pages} page(s) read: {readings.changed} changed block(s), "
+          f"{readings.comments} new comment(s)")
 
     if gaps:
         print("Watermark not advanced: keep the previous one, so the next run re-covers "

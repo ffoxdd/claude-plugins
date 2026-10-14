@@ -216,12 +216,19 @@ page and minutes on a large location, but complete where a search index can lag
 or miss an item. Run the walk about weekly as the check on the search, and say
 in the watermark note when it last ran.
 
-**Notion sweep** — everything else in the workspace changed since the watermark,
-as a manifest of id, kind, edit time and title:
+**Notion sweep** — everything else in the workspace changed since the watermark:
+a manifest of id, kind, edit time and title, then **what changed in each listed
+page**, read by the page-changes walk below and written into the same file:
 
 ```
 python3 <SKILL_DIR>/scripts/notion_sweep.py <watermark> <output>
 ```
+
+It reads every block of every changed page and asks every block for its comments,
+because Notion moves no edit time for an edit nested inside a block or for a new
+comment, so nothing can be skipped. That takes minutes when the changed pages are
+long. **Run it in the background, never under a time limit**, and read the one
+file it writes. A page it could not read fully is a gap, like any other.
 
 All four print the output path, then counts, then the new watermark, and send gaps
 to stderr. No message content passes through stdout, which is what makes them
@@ -230,8 +237,8 @@ safe to run from this session directly.
 Add `--source <name>` when the register calls a source something other than
 `email`, `chat` or `notion`.
 
-**Notion page changes** — for each page the sweep manifest lists, what actually
-changed, rather than the whole page:
+**Notion page changes** — the walk the sweep runs on each page, for reading one
+page by hand, such as a page someone points at outside a sync:
 
 ```
 python3 <SKILL_DIR>/scripts/notion_page_changes.py <page id> <watermark>
@@ -243,9 +250,15 @@ block it sits on, with images and files named rather than linked. A page that
 has been appended to weekly for a year comes back as its newest section. Unlike
 the adapters its stdout is content, so it reads the register and **refuses a
 page under a covered location**, or one it cannot place, before printing
-anything; those stay the `notion` adapter's. Prefer it to fetching a listed page
+anything; those stay the `notion` adapter's. Prefer it to fetching a page
 through the MCP server, whose markdown carries every block the page has ever
-held and a few hundred characters of signed URL per image.
+held and a few hundred characters of signed URL per image. It exits 3 when a
+comment request failed or blocks nested too deep to read, and names them on
+stderr.
+
+**One change no poll can see:** a comment left on a page nobody edited. It moves
+no edit time, so no search returns the page. Say so when a sync's completeness
+matters; only Notion's webhooks report it.
 
 ### The chat sequence, which is not one step
 
@@ -292,7 +305,7 @@ so a guard withholding their results also stalls the pagination running through
 them, and a retry after the refusal reads as a workaround. The sweep searches
 over the REST API instead and places each result by its parent chain. A result
 under a covered location is only counted, since the export adapter reads it, and
-everything else lands in the manifest for the session to fetch. It takes its
+everything else lands in the manifest and is read into the same file. It takes its
 exclusions from the covered source it names with `covered_by`, so the register
 lists them once. It shares the export's minute-inclusive watermark, and a result
 it cannot place withholds the watermark, since it might be record-dense.
