@@ -212,5 +212,15 @@ def main(argv=None):
     return 0
 
 
+def utf8_streams():
+    """Claude Code reads stdout and stderr as UTF-8; left to the locale, a Windows
+    Python would encode them with the console code page and raise on the first
+    character it lacks — a bullet, an em dash, an emoji in a page title."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 if __name__ == "__main__":
+    utf8_streams()
     sys.exit(main())
