@@ -549,6 +549,44 @@ class EmailAdapterInvocationTest(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("no senders", result.stderr)
 
+    def email_source(self):
+        return {
+            "adapter": "email",
+            "senders": [{"match": "domain", "value": "example.test"}],
+            "graph": {"client_id": "x", "tenant_id": "y", "credential_cache": "/nonexistent"},
+        }
+
+    def test_a_watermark_past_the_lookback_cap_refuses_before_touching_the_mailbox(self):
+        """A stale watermark would list every message in the gap before the whitelist
+        narrows it; the refusal comes before any network call, and names both ways
+        forward rather than clamping, since a clamp would skip the gap silently."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_register(directory, register(email=self.email_source()))
+
+            result = support.run_script(
+                adapter("email_sweep.py"),
+                arguments=["2020-01-01T00:00:00Z", str(Path(directory) / "out.md")],
+                KNOWLEDGE_BASE_CONFIG_FILE=str(path),
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("max_lookback_days", result.stderr)
+            self.assertIn("--allow-backfill", result.stderr)
+
+    def test_the_register_sets_its_own_cap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = self.email_source() | {"max_lookback_days": 3650}
+            path = write_register(directory, register(email=source))
+
+            result = support.run_script(
+                adapter("email_sweep.py"),
+                arguments=["2020-01-01T00:00:00Z", str(Path(directory) / "out.md")],
+                KNOWLEDGE_BASE_CONFIG_FILE=str(path),
+            )
+
+            # Past the cap check: the next failure is the credential cache, not the lookback.
+            self.assertNotIn("max_lookback_days", result.stderr)
+
 
 class ChatClientInvocationTest(unittest.TestCase):
     """How the adapter reaches the bundled client. Without a client_command

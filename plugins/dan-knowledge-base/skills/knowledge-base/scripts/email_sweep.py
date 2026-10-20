@@ -70,6 +70,14 @@ DEFAULT_KEYCHAIN_ACCOUNT = "msal-token-cache"
 
 DEFAULT_RETENTION_DAYS = 180
 
+# The listing step touches every message received since the watermark before the
+# sender whitelist narrows it, so a watermark left behind for months — a long
+# absence, a stale register — turns a sync into a mailbox-wide scan nobody asked
+# for. A window older than this is refused rather than clamped: clamping would
+# silently skip the gap, which is the failure watermark discipline exists to
+# prevent. The register's `max_lookback_days` overrides the default.
+DEFAULT_MAX_LOOKBACK_DAYS = 30
+
 # Long-form English dates. A vendor writing them another way needs this pattern
 # extended rather than worked around: the meeting's own date is the dedup key, so
 # failing to read it merges or splits meetings silently.
@@ -252,6 +260,39 @@ def list_messages_since(access_token, watermark):
         url = payload.get("@odata.nextLink")
 
     return [message for message in messages if message["receivedDateTime"] > watermark]
+
+
+def lookback_refusal(watermark, max_lookback_days, allowed):
+    """Why a sweep from this watermark will not run, or None when it will.
+
+    A refusal names the two deliberate ways forward — a narrower watermark with the
+    skipped gap written down, or the flag — because the one thing it must not do is
+    choose for the caller: a gap advanced over silently looks exactly like a gap
+    that was read."""
+    if allowed:
+        return None
+
+    try:
+        since = datetime.fromisoformat(watermark.replace("Z", "+00:00"))
+
+    except ValueError:
+        return None  # an unparseable watermark fails later, with Graph's own message
+
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+
+    age = datetime.now(timezone.utc) - since
+
+    if age.days <= max_lookback_days:
+        return None
+
+    return (
+        f"the watermark {watermark} is {age.days} days back, past the register's "
+        f"max_lookback_days of {max_lookback_days}; a window that wide lists every "
+        "message in it before the whitelist narrows it. Either advance the watermark "
+        "to a deliberate start and record the skipped gap in the sync notes, or pass "
+        "--allow-backfill to sweep the whole window on purpose."
+    )
 
 
 def sender_address(message):
@@ -498,6 +539,11 @@ def main(argv=None):
     parser.add_argument("output", help="path to write the intake file to")
     parser.add_argument("--source", default="email", help="register entry to read (default: email)")
     parser.add_argument("--ledger", type=Path, help="override the register's ledger path")
+    parser.add_argument(
+        "--allow-backfill",
+        action="store_true",
+        help="sweep a window older than the register's max_lookback_days, deliberately",
+    )
     arguments = parser.parse_args(argv)
 
     try:
@@ -518,6 +564,17 @@ def main(argv=None):
             "without one every message would need judging for relevance.",
             file=sys.stderr,
         )
+
+        return 1
+
+    too_far = lookback_refusal(
+        arguments.watermark,
+        source.get("max_lookback_days", DEFAULT_MAX_LOOKBACK_DAYS),
+        arguments.allow_backfill,
+    )
+
+    if too_far:
+        print(f"email_sweep: {too_far}", file=sys.stderr)
 
         return 1
 

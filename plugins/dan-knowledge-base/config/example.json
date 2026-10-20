@@ -13,6 +13,7 @@
       "watermark": {"format": "iso-8601", "boundary": "exclusive"},
       "ledger": "notes/.delivery-ledger",
       "ledger_retention_days": 180,
+  "max_lookback_days": 30,
       "graph": {
         "client_id": "<the mail MCP server's own client id>",
         "tenant_id": "<your tenant id>",
