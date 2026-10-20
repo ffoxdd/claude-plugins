@@ -204,6 +204,9 @@ def decide(payload, tool_input, session, pending):
 
 def read_payload():
     try:
+        # Claude Code writes the payload as UTF-8; left to the locale, a Windows
+        # Python would read it as the code page and garble every non-ASCII character.
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
         payload = json.load(sys.stdin)
 
     except (json.JSONDecodeError, ValueError):
