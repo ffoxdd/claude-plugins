@@ -20,7 +20,9 @@ sequences the work.
    already has a conflicting structure worth preserving — otherwise take the
    defaults and say what you took.
 
-3. **Create it.** Re-run `scaffold.py` without `--dry-run`. It writes the
+3. **Create it.** If the folder is not a git repository yet, run `git init`
+   first: the gitignore rules the scaffold writes mean nothing outside one.
+   Then re-run `scaffold.py` without `--dry-run`. It writes the
    directories, the `.gitignore` entries, an empty watermark file, and a
    `.knowledge-base.json` declaring no sources. It never overwrites: anything
    already present is reported and left alone.
