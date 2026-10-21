@@ -75,8 +75,9 @@ DEFAULT_RETENTION_DAYS = 180
 # absence, a stale register — turns a sync into a mailbox-wide scan nobody asked
 # for. A window older than this is refused rather than clamped: clamping would
 # silently skip the gap, which is the failure watermark discipline exists to
-# prevent. The register's `max_lookback_days` overrides the default.
-DEFAULT_MAX_LOOKBACK_DAYS = 30
+# prevent. The register's `max_lookback_days` overrides the default; ninety days is
+# the widest first import a knowledge-base kit will seed, so the two agree.
+DEFAULT_MAX_LOOKBACK_DAYS = 90
 
 # Long-form English dates. A vendor writing them another way needs this pattern
 # extended rather than worked around: the meeting's own date is the dedup key, so
