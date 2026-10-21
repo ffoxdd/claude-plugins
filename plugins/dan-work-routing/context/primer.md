@@ -53,7 +53,10 @@ until the harness records the agent, so spawns issued in one batch see each
 other. A denial names what is in flight; the answer is to end the turn and
 continue on the completion notification, or to fold the work into a helper
 already running, with the tier as the task chose it — never to re-issue the
-call unchanged. The limits are plugin options.
+call unchanged. The limits are plugin options, and
+`/dan-work-routing:session-limits` is how the person widens one for the
+current session alone, for a batch of reviews to run side by side; that is
+the person's call, made by typing the command.
 
 Model is one of two dials. **Effort** is the other: how long a model reasons per
 step, `low` through `max`, set per agent and per skill in frontmatter and per
@@ -106,7 +109,10 @@ no helper budget; only the top-tier concurrency holds them, and a denial
 there is answered by waiting or folding. It still goes to the
 slices whose blast radius justifies it, one at a time, with nothing else
 top-tier running beside it, because the fork and its correctness angles read
-the whole slice at the session's tier — and the guard holds that sequence. Other logic slices go to the `reviewer`
+the whole slice at the session's tier — and the guard holds that sequence
+unless the person has widened it for the session with
+`/dan-work-routing:session-limits`, which is what several PRs reviewed side
+by side call for. Other logic slices go to the `reviewer`
 agent: one top-tier agent at high effort, one pass, no fan-out.
 Mechanical slices go to `reviewer` with a cheaper `model` passed on the call;
 prose to a path-independence pass at the cheapest tier. Diff against the upstream base (`origin/main...HEAD`), never a local

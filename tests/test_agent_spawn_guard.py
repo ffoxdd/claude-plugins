@@ -11,7 +11,8 @@ no denial may suggest a cheaper model. It reads the harness's own subagent
 records, holding its own approvals only until those records appear, so the
 tests build the records — `agent-<id>.meta.json`, a transcript, and the
 forked-skill marker where the harness would write one — under a throwaway
-session directory, and a throwaway data directory for the approvals.
+session directory, and a throwaway data directory for the approvals and the
+session's grant.
 """
 
 import json
@@ -24,6 +25,12 @@ from pathlib import Path
 import support
 
 GUARD = support.script("dan-work-routing", "agent_spawn_guard.py")
+
+SESSION_LIMITS = support.script("dan-work-routing", "session_limits.py")
+
+SESSION_LIMITS_COMMAND = (
+    support.plugin_root("dan-work-routing") / "commands" / "session-limits.md"
+)
 
 SESSION_ID = "11111111-2222-3333-4444-555555555555"
 
@@ -657,6 +664,132 @@ class ForkedSkillTest(GuardCase):
         self.assertEqual(self.decision(CHEAP, spawner="ghost"), "deny")
 
 
+class SessionGrantTest(GuardCase):
+    """A grant written for one session overrides a plugin option for that
+    session alone: the option is the default for every session, the grant is
+    the person's decision for this one, and it dies with the session."""
+
+    def grant_file(self, session=SESSION_ID):
+        return self.data / "spawn-guard" / f"{session}.limits.json"
+
+    def grant(self, *settings, session=SESSION_ID, **environment):
+        arguments = ["--data", self.data]
+
+        if session:
+            arguments += ["--session", session]
+
+        return support.run_script(
+            SESSION_LIMITS, arguments=[*arguments, *settings], **environment
+        )
+
+    def test_a_grant_widens_the_top_tier_concurrency(self):
+        self.record("a1")
+        self.record("a2")
+        self.grant("top_tier_concurrency=3")
+
+        self.assertIsNone(self.decision(TOP))
+
+    def test_a_grant_is_read_ahead_of_the_option(self):
+        self.options["TOP_TIER_CONCURRENCY"] = 1
+        self.record("a1")
+        self.grant("top_tier_concurrency=2")
+
+        self.assertIsNone(self.decision(TOP))
+
+    def test_zero_lifts_the_limit_for_the_session(self):
+        for index in range(4):
+            self.record(f"a{index}")
+
+        self.grant("top_tier_concurrency=0")
+
+        self.assertIsNone(self.decision(TOP))
+
+    def test_another_sessions_grant_does_not_apply(self):
+        self.record("a1")
+        self.grant("top_tier_concurrency=0", session="99999999-aaaa-bbbb-cccc-dddddddddddd")
+
+        self.assertEqual(self.decision(TOP), "deny")
+
+    def test_reset_removes_the_grant(self):
+        self.grant("top_tier_concurrency=0")
+        self.grant("reset")
+        self.record("a1")
+
+        self.assertFalse(self.grant_file().exists())
+        self.assertEqual(self.decision(TOP), "deny")
+
+    def test_reset_with_no_grant_is_not_an_error(self):
+        self.assertEqual(self.grant("reset").returncode, 0)
+
+    def test_settings_accumulate_until_reset(self):
+        self.grant("top_tier_concurrency=3")
+        self.grant("agent_width=0")
+
+        granted = support.read_json(self.grant_file())["limits"]
+
+        self.assertEqual(granted, {"top_tier_concurrency": 3, "agent_width": 0})
+
+    def test_a_malformed_grant_is_ignored(self):
+        """A grant the guard cannot read leaves the options in force; it never
+        blocks on the grant's own failure, and never reads it as a lift."""
+        self.grant_file().parent.mkdir(parents=True)
+        self.grant_file().write_text("not json", encoding="utf-8")
+        self.record("a1")
+
+        self.assertEqual(self.decision(TOP), "deny")
+
+    def test_an_unknown_key_is_refused_and_the_keys_are_named(self):
+        result = self.grant("top_tier=3")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("top_tier_concurrency", result.stderr)
+        self.assertFalse(self.grant_file().exists())
+
+    def test_a_value_that_is_not_a_whole_number_is_refused(self):
+        for value in ("lots", "-1", "1.5"):
+            with self.subTest(value=value):
+                self.assertNotEqual(self.grant(f"top_tier_concurrency={value}").returncode, 0)
+
+        self.assertFalse(self.grant_file().exists())
+
+    def test_the_session_comes_from_the_environment_when_not_passed(self):
+        result = self.grant("top_tier_concurrency=2", session=None, CLAUDE_CODE_SESSION_ID=SESSION_ID)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.grant_file().exists())
+
+    def test_no_session_at_all_is_an_error_that_says_how_to_pass_one(self):
+        result = self.grant("top_tier_concurrency=2", session=None)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--session", result.stderr)
+
+    def test_prints_the_grant_with_no_settings(self):
+        self.grant("top_tier_concurrency=3")
+
+        result = self.grant()
+
+        self.assertIn("top_tier_concurrency=3", result.stdout)
+
+    def test_says_when_there_is_no_grant(self):
+        self.assertIn("No grant", self.grant().stdout)
+
+    def test_the_command_runs_the_script_with_the_data_directory(self):
+        """The Bash tool's environment carries neither variable, so the command
+        body must substitute both: the root to find the script, the data
+        directory to find the session's grant where the guard will look."""
+        text = SESSION_LIMITS_COMMAND.read_text(encoding="utf-8")
+
+        self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/session_limits.py", text)
+        self.assertIn('--data "${CLAUDE_PLUGIN_DATA}"', text)
+        self.assertTrue(SESSION_LIMITS.exists())
+
+    def test_the_command_says_it_is_not_an_answer_to_a_denial(self):
+        text = SESSION_LIMITS_COMMAND.read_text(encoding="utf-8")
+
+        self.assertIn("denial", text)
+
+
 class PendingApprovalTest(GuardCase):
     """The harness writes an agent's record after the spawn, so two spawns in one
     batch are each checked before either exists. The guard's own approvals
@@ -802,6 +935,7 @@ class ManifestOptionsTest(unittest.TestCase):
             "nested_top_tier_budget",
             "nested_agent_budget",
             "idle_minutes",
+            "settle_seconds",
         ):
             with self.subTest(option=key):
                 self.assertIn(key, options)

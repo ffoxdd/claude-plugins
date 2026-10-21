@@ -28,6 +28,10 @@ routing happens before the work rather than being remembered mid-task.
   denial names what is in flight and offers waiting or folding, with the
   tier as the task chose it. The six
   limits are plugin options (`/plugin` → configure).
+- **`/dan-work-routing:session-limits`** — widens or restores a guard limit
+  for the current session alone (`top_tier_concurrency=3`, `reset`), so a
+  batch of top-tier reviews the person asked for runs side by side. It is the
+  person's call, not an answer to a denial.
 - **Secret-handling rules** — never materialize a credential; reference it and
   let it resolve at runtime.
 - **Agents** — `explorer` (bounded questions over many files), `reviewer`

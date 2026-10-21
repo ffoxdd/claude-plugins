@@ -57,9 +57,13 @@ offers are waiting and folding; a fork reviewing top-tier work is the reader
 most likely to act on a hint to go cheaper, which is why no denial carries one.
 
 Limits are plugin options, exported as `CLAUDE_PLUGIN_OPTION_<KEY>`; the
-defaults here match the manifest's. A limit of 0 lifts that rule. The
-pending file lives under `CLAUDE_PLUGIN_DATA`, the plugin's persistent
-directory, one file per session.
+defaults here match the manifest's. A limit of 0 lifts that rule. A session
+may also carry a grant — `<session>.limits.json`, written by
+`session_limits.py` when the person runs `/dan-work-routing:session-limits`
+— that overrides an option for that session alone. That is how a batch of
+top-tier reviews the person asked for runs side by side. The grant and the
+pending file live under `CLAUDE_PLUGIN_DATA`, the plugin's persistent
+directory, one of each per session.
 
 A call the guard cannot read — malformed JSON, no tool_input, a transcript
 path that resolves to no session — passes rather than blocking on the guard's
@@ -146,9 +150,10 @@ def main():
 def decide(payload, tool_input, session, pending):
     spawner = payload.get("agent_id") or None
     tier = spawn_tier(tool_input)
+    limits = session.limits
     in_flight = session.in_flight(excluding=spawner) + pending.in_flight()
 
-    width = limit("AGENT_WIDTH")
+    width = limits.get("AGENT_WIDTH")
 
     if width and len(in_flight) >= width:
         deny(
@@ -162,7 +167,7 @@ def decide(payload, tool_input, session, pending):
     # the module docstring.
     budgeted = spawner is not None and not session.forked_skill(spawner)
 
-    total_budget = limit("NESTED_AGENT_BUDGET")
+    total_budget = limits.get("NESTED_AGENT_BUDGET")
 
     if budgeted and total_budget:
         children = session.children_of(spawner) + pending.children_of(spawner)
@@ -181,7 +186,7 @@ def decide(payload, tool_input, session, pending):
         pending.record(payload, tool_input, tier, spawner)
         return
 
-    concurrency = limit("TOP_TIER_CONCURRENCY")
+    concurrency = limits.get("TOP_TIER_CONCURRENCY")
     top_tier = [agent for agent in in_flight if agent.tier == "top"]
 
     if concurrency and len(top_tier) >= concurrency:
@@ -192,7 +197,7 @@ def decide(payload, tool_input, session, pending):
         )
         return
 
-    budget = limit("NESTED_TOP_TIER_BUDGET")
+    budget = limits.get("NESTED_TOP_TIER_BUDGET")
 
     if budgeted and budget:
         children = [
@@ -231,17 +236,63 @@ def read_payload():
     return payload
 
 
-def limit(key):
-    value = os.environ.get(f"CLAUDE_PLUGIN_OPTION_{key}")
+class Limits:
+    """The guard's limits as they apply to one session: a session grant first,
+    then the plugin option, then the default here.
 
-    if value is None or value == "":
-        return DEFAULTS[key]
+    A grant is written by `session_limits.py` on the person's instruction and
+    keyed by session id, so it dies with the session. A grant decides one
+    session; the option is the default for every session.
+    """
 
+    def __init__(self, granted):
+        self.granted = granted
+
+    @classmethod
+    def for_session(cls, session_id):
+        return cls(read_grant(grant_path(session_id)))
+
+    def get(self, key):
+        if key.lower() in self.granted:
+            return self.granted[key.lower()]
+
+        value = os.environ.get(f"CLAUDE_PLUGIN_OPTION_{key}")
+
+        if value is None or value == "":
+            return DEFAULTS[key]
+
+        try:
+            return max(0, int(float(value)))
+
+        except ValueError:
+            return DEFAULTS[key]
+
+
+def read_grant(path):
+    """The limits a session grant sets, lower-case option keys to non-negative
+    integers; empty when there is no grant or it cannot be read. Unknown keys
+    are ignored rather than fatal: a grant from a newer script must not stop
+    the guard deciding."""
     try:
-        return max(0, int(float(value)))
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
 
-    except ValueError:
-        return DEFAULTS[key]
+    except (OSError, ValueError):
+        return {}
+
+    limits = data.get("limits") if isinstance(data, dict) else None
+
+    if not isinstance(limits, dict):
+        return {}
+
+    granted = {}
+
+    for key in DEFAULTS:
+        value = limits.get(key.lower())
+
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            granted[key.lower()] = max(0, int(value))
+
+    return granted
 
 
 def describe(agents):
@@ -386,6 +437,8 @@ class Session:
 
     def __init__(self, directory):
         self.directory = directory
+        self.id = directory.parent.name
+        self.limits = Limits.for_session(self.id)
         self.agents = {agent.id: agent for agent in self.read_all()}
         self.tool_use_ids = {agent.tool_use_id for agent in self.agents.values()}
 
@@ -422,8 +475,8 @@ class Session:
         """Agents still running, less the spawner and its ancestors — a fork
         spawning a helper is not competing with itself."""
         lineage = set(self.lineage(excluding))
-        idle_seconds = limit("IDLE_MINUTES") * 60
-        settle_seconds = limit("SETTLE_SECONDS")
+        idle_seconds = self.limits.get("IDLE_MINUTES") * 60
+        settle_seconds = self.limits.get("SETTLE_SECONDS")
 
         return [
             agent
@@ -734,13 +787,24 @@ class _PendingContext:
             pass
 
 
-def pending_path(session):
-    base = os.environ.get("CLAUDE_PLUGIN_DATA") or os.path.join(
+def state_directory(base=None):
+    """Where the guard keeps per-session state: the plugin's persistent data
+    directory, which hooks receive as `CLAUDE_PLUGIN_DATA` and the
+    session-limits command passes explicitly, since the Bash tool's
+    environment does not carry it."""
+    base = base or os.environ.get("CLAUDE_PLUGIN_DATA") or os.path.join(
         tempfile.gettempdir(), "dan-work-routing"
     )
-    session_id = session.directory.parent.name
 
-    return Path(base) / "spawn-guard" / f"{session_id}.jsonl"
+    return Path(base) / "spawn-guard"
+
+
+def pending_path(session):
+    return state_directory() / f"{session.id}.jsonl"
+
+
+def grant_path(session_id, base=None):
+    return state_directory(base) / f"{session_id}.limits.json"
 
 
 def awaits_tool_result(message):
