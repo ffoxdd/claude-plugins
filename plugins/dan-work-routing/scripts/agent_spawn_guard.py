@@ -36,19 +36,25 @@ own, since hooks run in subagents too. It applies three of them, in order:
    see each other. The spawner and its ancestors are not counted: a fork
    spawning a helper is not competing with itself.
 
-3. **A sub-agent spawns a bounded number of helpers.** The root session's
-   spawns are the person's own choices, one at a time; a fan-out inside a
-   fork — `/code-review`'s finder angles, spawned with no model of their own
-   — is nobody's, and every angle re-reads the same diff. So a spawner that
-   is itself a subagent may create only so many children in total, and fewer
-   of them top-tier. Beyond the top-tier budget an angle takes `sonnet`;
-   beyond the total, it folds into a helper already running.
+3. **An unchosen fan-out spawns a bounded number of helpers.** A fan-out is
+   somebody's choice or nobody's. The root session's spawns are the person's,
+   and so are the helpers of a skill the person invoked — `/code-review`,
+   which the harness runs as a fork and marks with a `forked-skill.marker`
+   file beside its meta: its finder angles are the skill's design at the
+   effort the person set. Neither is budgeted. A fan-out inside any other
+   sub-agent is nobody's, and every helper re-reads the same material, so
+   such a spawner may create only so many children in total, and fewer of
+   them top-tier; past the budget the work folds into a helper already
+   running.
 
 The decision is deny, with a reason that names what is in flight and the
 choices that remain, which turns the call into a retry that states its
 choice. Never `updatedInput` with a default: a silently substituted cheaper
 model narrows the rigor of whatever was being delegated without anyone
-deciding to, and review is the case where that costs most.
+deciding to, and review is the case where that costs most. A denial reports
+what is in flight, not the task the tier was chosen from, so the answers it
+offers are waiting and folding; a fork reviewing top-tier work is the reader
+most likely to act on a hint to go cheaper, which is why no denial carries one.
 
 Limits are plugin options, exported as `CLAUDE_PLUGIN_OPTION_<KEY>`; the
 defaults here match the manifest's. A limit of 0 lifts that rule. The
@@ -110,8 +116,9 @@ MODEL_REASON = (
 
 RETRY_ADVICE = (
     "Do not re-issue this call unchanged in the same turn: end the turn and "
-    "continue when the completion notification arrives, or pass `sonnet` or "
-    "`haiku` if the task accepts a cheaper tier."
+    "continue when the completion notification arrives, or fold the work into a "
+    "helper already running. Keep the tier the task chose: this denial reports "
+    "what is in flight, not the task."
 )
 
 
@@ -150,9 +157,14 @@ def decide(payload, tool_input, session, pending):
         )
         return
 
+    # The root session's spawns and a forked skill's helpers are the person's
+    # own fan-out and carry no helper budget; see the unchosen-fan-out rule in
+    # the module docstring.
+    budgeted = spawner is not None and not session.forked_skill(spawner)
+
     total_budget = limit("NESTED_AGENT_BUDGET")
 
-    if spawner and total_budget:
+    if budgeted and total_budget:
         children = session.children_of(spawner) + pending.children_of(spawner)
 
         if len(children) >= total_budget:
@@ -182,7 +194,7 @@ def decide(payload, tool_input, session, pending):
 
     budget = limit("NESTED_TOP_TIER_BUDGET")
 
-    if spawner and budget:
+    if budgeted and budget:
         children = [
             agent
             for agent in session.children_of(spawner) + pending.children_of(spawner)
@@ -193,9 +205,10 @@ def decide(payload, tool_input, session, pending):
             deny(
                 f"A sub-agent may spawn at most {budget} top-tier helpers in total, and "
                 f"this one has spawned {len(children)}: {describe(children)}. The root "
-                f"session chooses its own top-tier spawns; a fan-out inside a fork is "
-                f"nobody's choice, so it is capped here. Give the remaining angle to "
-                f"`sonnet`, or fold it into a helper already running."
+                f"session and a skill the person invoked choose their own top-tier "
+                f"spawns; a fan-out inside any other agent is nobody's choice, so it is "
+                f"capped here. Fold the remaining work into a top-tier helper already "
+                f"running, or do it in this agent."
             )
             return
 
@@ -421,6 +434,14 @@ class Session:
     def children_of(self, spawner):
         return [agent for agent in self.agents.values() if agent.parent == spawner]
 
+    def forked_skill(self, agent_id):
+        """Whether the agent is a skill the person invoked, which the harness
+        runs as a fork and marks beside its meta. Only the marker grants the
+        exemption; an agent the session has no record of is budgeted."""
+        agent = self.agents.get(agent_id)
+
+        return agent is not None and agent.forked_skill
+
     def lineage(self, agent_id):
         seen = set()
 
@@ -433,7 +454,7 @@ class Session:
 
 
 class AgentRecord:
-    def __init__(self, agent_id, meta, transcript):
+    def __init__(self, agent_id, meta, transcript, forked_skill=False):
         self.id = agent_id
         self.type = meta.get("agentType") or "agent"
         self.description = meta.get("description") or ""
@@ -441,6 +462,7 @@ class AgentRecord:
         self.parent = meta.get("parentAgentId")
         self.tool_use_id = meta.get("toolUseId")
         self.transcript = transcript
+        self.forked_skill = forked_skill
 
     @classmethod
     def read(cls, meta_path):
@@ -455,7 +477,16 @@ class AgentRecord:
         if not isinstance(meta, dict):
             return None
 
-        return cls(agent_id, meta, meta_path.with_name(f"agent-{agent_id}.jsonl"))
+        # The harness writes this marker beside the meta of a skill it forked on
+        # the person's invocation; the meta itself says only `general-purpose`.
+        marker = meta_path.with_name(f"agent-{agent_id}.forked-skill.marker.json")
+
+        return cls(
+            agent_id,
+            meta,
+            meta_path.with_name(f"agent-{agent_id}.jsonl"),
+            forked_skill=marker.exists(),
+        )
 
     @property
     def tier(self):

@@ -18,12 +18,15 @@ routing happens before the work rather than being remembered mid-task.
   rules hold inside skills and forks this plugin does not own. It denies a
   call naming no `model` (a fork passes, as does an agent type whose
   definition declares one, `inherit` included); a top-tier spawn while
-  another top-tier agent is in flight; any spawn past a width ceiling; and a
-  sub-agent's helpers past a small total budget, fewer of them top-tier,
-  which is what caps a built-in review's fan-out. In-flight state comes from the harness's own
+  another top-tier agent is in flight; any spawn past a width ceiling; and
+  the helpers of a sub-agent nobody asked for past a small total budget,
+  fewer of them top-tier. The root session's spawns and the helpers of a
+  skill the person invoked — a `/code-review`'s finder angles — are the
+  person's choice and carry no such budget. In-flight state comes from the harness's own
   subagent records, with the guard's approvals standing in until the harness
   records the agent, so spawns issued in one batch see each other; each
-  denial names what is in flight. The six
+  denial names what is in flight and offers waiting or folding, with the
+  tier as the task chose it. The six
   limits are plugin options (`/plugin` → configure).
 - **Secret-handling rules** — never materialize a credential; reference it and
   let it resolve at runtime.

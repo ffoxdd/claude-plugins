@@ -1,15 +1,17 @@
 """The dan-work-routing spawn guard applies the primer's spawn rules to one
 Agent call: name the model, keep one top-tier agent in flight, keep the width
-under a ceiling, and cap the top-tier helpers a sub-agent may create.
+under a ceiling, and cap the helpers a sub-agent nobody asked for may create.
 
 The hook is what makes those rules hold inside skills and forks the plugin does
 not own. Its blast radius has to be exact: a fork, or a type whose definition
 already chose, must pass the model rule; a spawner must never be counted as its
-own competitor; a finished or dead agent must not hold the top-tier slot. It
-reads the harness's own subagent records, holding its own approvals only until
-those records appear, so the tests build the records — `agent-<id>.meta.json`
-and a transcript — under a throwaway session directory, and a throwaway data
-directory for the approvals.
+own competitor; a finished or dead agent must not hold the top-tier slot; a
+skill the person invoked must not be budgeted like a fan-out nobody chose; and
+no denial may suggest a cheaper model. It reads the harness's own subagent
+records, holding its own approvals only until those records appear, so the
+tests build the records — `agent-<id>.meta.json`, a transcript, and the
+forked-skill marker where the harness would write one — under a throwaway
+session directory, and a throwaway data directory for the approvals.
 """
 
 import json
@@ -108,6 +110,7 @@ class GuardCase(unittest.TestCase):
         idle_seconds=0,
         transcript=True,
         trailing=(),
+        forked_skill=False,
     ):
         meta = {"agentType": agent_type, "description": description, "spawnDepth": 1}
 
@@ -120,6 +123,14 @@ class GuardCase(unittest.TestCase):
         (self.subagents / f"agent-{agent_id}.meta.json").write_text(
             json.dumps(meta), encoding="utf-8"
         )
+
+        if forked_skill:
+            # The harness's marker for a skill it forked on the person's
+            # invocation; the meta says only `general-purpose`.
+            (self.subagents / f"agent-{agent_id}.forked-skill.marker.json").write_text(
+                json.dumps({"forkedSkill": True, "skillName": "code-review"}),
+                encoding="utf-8",
+            )
 
         if not transcript:
             return
@@ -440,7 +451,7 @@ class NestedBudgetTest(GuardCase):
         reason = self.reason(TOP, spawner="fork1")
 
         self.assertIn("correctness", reason)
-        self.assertIn("sonnet", reason)
+        self.assertIn("already running", reason)
 
     def test_permits_a_cheap_helper_past_the_budget(self):
         self.record("angle1", parent="fork1", ended=True)
@@ -530,6 +541,120 @@ class NestedTotalBudgetTest(GuardCase):
         self.options["NESTED_AGENT_BUDGET"] = 4
 
         self.assertIsNone(self.decision(CHEAP, spawner="fork1"))
+
+
+class NoDowngradeInDenialTest(GuardCase):
+    """A denial says what is in flight and nothing about the task, so it never
+    names a cheaper tier. A fork blocked mid-review takes the suggestion it is
+    given, and the angles that would take it are the correctness ones — the
+    exact work the primer says must stay on the session's model.
+
+    The in-flight agents here are all top-tier, so a cheap tier's name can
+    reach the reason only through the advice."""
+
+    def assertOffersWaitingOrFoldingOnly(self, reason):
+        for tier in ("sonnet", "haiku"):
+            self.assertNotIn(tier, reason)
+
+        self.assertIn("already running", reason)
+
+    def test_the_concurrency_denial(self):
+        self.record("a1", model="opus", description="review the merge slice")
+
+        self.assertOffersWaitingOrFoldingOnly(self.reason(TOP))
+
+    def test_the_width_denial(self):
+        for index in range(8):
+            self.record(f"a{index}", model="opus")
+
+        self.assertOffersWaitingOrFoldingOnly(self.reason(TOP))
+
+    def test_the_nested_total_denial(self):
+        self.record("fork1", agent_type="fork")
+
+        for index in range(3):
+            self.record(f"helper{index}", parent="fork1", model="opus", ended=True)
+
+        self.assertOffersWaitingOrFoldingOnly(self.reason(TOP, spawner="fork1"))
+
+    def test_the_nested_top_tier_denial(self):
+        self.record("fork1", agent_type="fork")
+        self.record("angle1", parent="fork1", model="opus", ended=True)
+        self.record("angle2", parent="fork1", model="opus", ended=True)
+
+        self.assertOffersWaitingOrFoldingOnly(self.reason(TOP, spawner="fork1"))
+
+    def test_the_model_rule_still_names_the_tiers(self):
+        """The one reason that is about the task rather than about what is in
+        flight: an omitted model is a choice not made, and the reason has to
+        say what the choices are."""
+        self.assertIn("sonnet", self.reason({"prompt": "x"}))
+
+
+class ForkedSkillTest(GuardCase):
+    """A skill the person invoked — `/code-review` typed at the prompt — runs as
+    a fork the harness marks with `agent-<id>.forked-skill.marker.json` beside
+    its meta. Its fan-out is the skill's design at the effort the person set,
+    so like the root session it carries no helper budget. The concurrency and
+    width rules still hold: a usage-limit trip kills a chosen fan-out as surely
+    as an unchosen one."""
+
+    def setUp(self):
+        super().setUp()
+        self.record("review", description="/code-review 14 --comment", forked_skill=True)
+
+    def test_a_third_top_tier_angle_passes(self):
+        self.options["TOP_TIER_CONCURRENCY"] = 0
+        self.record("angle1", parent="review", ended=True)
+        self.record("angle2", parent="review", ended=True)
+
+        self.assertIsNone(self.decision(TOP, spawner="review"))
+
+    def test_a_fourth_angle_of_any_tier_passes(self):
+        for index in range(3):
+            self.record(f"angle{index}", parent="review", model="sonnet", ended=True)
+
+        self.assertIsNone(self.decision(CHEAP, spawner="review"))
+
+    def test_its_angles_still_wait_on_the_top_tier_slot(self):
+        self.record("angle1", parent="review", description="correctness angle")
+
+        self.assertEqual(self.decision(TOP, spawner="review"), "deny")
+
+    def test_its_angles_still_count_toward_the_width(self):
+        self.options["AGENT_WIDTH"] = 2
+        self.record("angle1", parent="review", model="sonnet")
+        self.record("angle2", parent="review", model="sonnet")
+
+        self.assertEqual(self.decision(CHEAP, spawner="review"), "deny")
+
+    def test_a_helper_of_its_helper_is_budgeted(self):
+        """The exemption is the skill's, not its descendants': an angle that
+        fans out on its own is nobody's choice again."""
+        self.options["TOP_TIER_CONCURRENCY"] = 0
+        self.record("angle1", parent="review")
+
+        for index in range(3):
+            self.record(f"deep{index}", parent="angle1", model="sonnet", ended=True)
+
+        self.assertEqual(self.decision(CHEAP, spawner="angle1"), "deny")
+
+    def test_a_fork_the_model_made_is_still_budgeted(self):
+        """An Agent-tool fork carries no marker: it is the model's own fan-out,
+        which is the case the budget exists for."""
+        self.record("fork1", agent_type="fork")
+
+        for index in range(3):
+            self.record(f"helper{index}", parent="fork1", model="sonnet", ended=True)
+
+        self.assertEqual(self.decision(CHEAP, spawner="fork1"), "deny")
+
+    def test_a_spawner_the_session_has_no_record_of_is_budgeted(self):
+        """Only the marker grants the exemption."""
+        for index in range(3):
+            self.record(f"helper{index}", parent="ghost", model="sonnet", ended=True)
+
+        self.assertEqual(self.decision(CHEAP, spawner="ghost"), "deny")
 
 
 class PendingApprovalTest(GuardCase):

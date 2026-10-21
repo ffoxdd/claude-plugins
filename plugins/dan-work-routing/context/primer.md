@@ -43,15 +43,17 @@ forks and skills this plugin does not own as much as here. A call with no
 regardless, or its agent type's definition declares one. One top-tier agent
 runs at a time: a top-tier spawn is denied while another top-tier agent is in
 flight (the spawner and its ancestors excepted), and any spawn is denied past
-a width ceiling. A sub-agent may spawn only a few helpers in total, and fewer
-of them top-tier, because a fan-out inside a fork is nobody's choice and every
-helper re-reads the fork's material; the root session's spawns are the
-person's and carry no such budget. In-flight state is read from the
-harness's own subagent records, with the guard's approvals standing in until
-the harness records the agent, so spawns issued in one batch see each other. A denial names what is in
-flight; the answer is to end the turn and continue on the completion
-notification, or to pass a cheaper model where the task accepts one — never
-to re-issue the call unchanged. The limits are plugin options.
+a width ceiling. A sub-agent nobody asked for may spawn only a few helpers in
+total, and fewer of them top-tier, because its fan-out is nobody's choice and
+every helper re-reads its material; the root session's spawns are the
+person's, and so are the helpers of a skill the person invoked, such as
+`/code-review`, and neither carries that budget. In-flight state is read from
+the harness's own subagent records, with the guard's approvals standing in
+until the harness records the agent, so spawns issued in one batch see each
+other. A denial names what is in flight; the answer is to end the turn and
+continue on the completion notification, or to fold the work into a helper
+already running, with the tier as the task chose it — never to re-issue the
+call unchanged. The limits are plugin options.
 
 Model is one of two dials. **Effort** is the other: how long a model reasons per
 step, `low` through `max`, set per agent and per skill in frontmatter and per
@@ -95,15 +97,16 @@ test-only edits) or logic (runtime behavior), with the logic slices ranked by
 blast radius. Then dispatch by class. The built-in `/code-review` forks at the
 session's model and, at high effort, fans out to several finder angles and a
 verify pass, spawned with no model of their own. The spawn guard makes each
-of those a stated choice and caps the fork's top-tier helpers, so the fork
-chooses per angle by the rule below: a correctness or verification angle over
-top-tier work stays on the session's model, since a weaker model checking a
-stronger one's output is not a task it accepts; a convention, reuse or
-mechanical-shape angle takes `sonnet`; angles past the top-tier budget take
-`sonnet`, and past the total fold into one already running. It still goes to the slices whose blast
-radius justifies it, one at a time, with nothing else top-tier running beside
-it, because the fork and its correctness angles read the whole slice at the
-session's tier — and the guard holds that sequence. Other logic slices go to the `reviewer`
+of those a stated choice, and the fork chooses per angle by this rule: a
+correctness or verification angle over top-tier work stays on the session's
+model, since a weaker model checking a stronger one's output is not a task it
+accepts; a convention, reuse or mechanical-shape angle takes `sonnet`. The
+angles are the skill's own design at the effort the person set, so they carry
+no helper budget; only the top-tier concurrency holds them, and a denial
+there is answered by waiting or folding. It still goes to the
+slices whose blast radius justifies it, one at a time, with nothing else
+top-tier running beside it, because the fork and its correctness angles read
+the whole slice at the session's tier — and the guard holds that sequence. Other logic slices go to the `reviewer`
 agent: one top-tier agent at high effort, one pass, no fan-out.
 Mechanical slices go to `reviewer` with a cheaper `model` passed on the call;
 prose to a path-independence pass at the cheapest tier. Diff against the upstream base (`origin/main...HEAD`), never a local
