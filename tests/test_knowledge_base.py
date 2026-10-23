@@ -459,6 +459,33 @@ class EmailParsingTest(unittest.TestCase):
 
         self.sweep = email_sweep
 
+    def test_whitelisted_mail_without_a_recap_title_is_set_aside(self):
+        """A vendor's marketing and its recording-access notices come from the same
+        domain as its recaps. The subject already says which is which, so the
+        whitelist stays a domain match and the title decides what gets parsed."""
+        recap = {"subject": 'Recap for "Weekly sync"'}
+        shared = {"subject": "Pat shared a recap of Planning"}
+        marketing = {"subject": "Introducing Fathom Teams"}
+        access = {"subject": "Pat shared a recording with you"}
+        sender = {"match": "domain", "value": "fathom.video"}
+
+        recaps, others = self.sweep.split_by_title(
+            [(recap, sender), (marketing, sender), (shared, sender), (access, sender)]
+        )
+
+        self.assertEqual([message["subject"] for message, _ in recaps], [recap["subject"], shared["subject"]])
+        self.assertEqual([message["subject"] for message, _ in others], [marketing["subject"], access["subject"]])
+
+    def test_a_sender_with_its_own_title_patterns_is_judged_by_those(self):
+        sender = {"value": "notes.example", "title_patterns": [r"^Notes: (.+)$"]}
+
+        recaps, others = self.sweep.split_by_title(
+            [({"subject": "Notes: Board prep"}, sender), ({"subject": 'Recap for "x"'}, sender)]
+        )
+
+        self.assertEqual(len(recaps), 1)
+        self.assertEqual(others[0][0]["subject"], 'Recap for "x"')
+
     def test_the_footer_date_beats_a_date_mentioned_in_the_summary(self):
         """The whole reason a body marker is configured. A summary saying "deploys
         August 10" would otherwise key the meeting to the wrong day."""

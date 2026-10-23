@@ -296,6 +296,24 @@ def title_patterns(sender):
     ]
 
 
+def has_recap_title(message, sender):
+    subject = message.get("subject") or ""
+
+    return any(pattern.search(subject) for pattern in title_patterns(sender))
+
+
+def split_by_title(candidates):
+    """A whitelisted sender's mail that carries no recap title — the vendor's
+    marketing, a recording-access notice — set aside rather than parsed as a
+    meeting. The title patterns are already the adapter's definition of a recap,
+    so no second whitelist is needed; what is set aside is reported by subject,
+    so a recap whose subject changed shape is noticed rather than lost."""
+    recaps = [(message, sender) for message, sender in candidates if has_recap_title(message, sender)]
+    others = [(message, sender) for message, sender in candidates if not has_recap_title(message, sender)]
+
+    return recaps, others
+
+
 def extract_meeting_title(message, sender):
     subject = message.get("subject") or ""
 
@@ -532,11 +550,12 @@ def main(argv=None):
         access_token = acquire_access_token(graph_settings(source))
         messages = list_messages_since(access_token, arguments.watermark)
         drift = find_sender_drift(messages, senders, signatures)
-        candidates = [
+        whitelisted = [
             (message, matching_sender(message, senders))
             for message in messages
             if matching_sender(message, senders)
         ]
+        candidates, set_aside = split_by_title(whitelisted)
         digests, duplicates = deduplicate(
             [fetch_digest(access_token, message, sender) for message, sender in candidates]
         )
@@ -588,13 +607,19 @@ def main(argv=None):
                 f"in {earlier['intake_file']}"
             )
 
+    if set_aside:
+        print(f"{len(set_aside)} from whitelisted senders carried no recap title and were set aside:")
+
+        for message, _ in set_aside:
+            print(f"  - {sender_address(message)}: {message.get('subject', '(no subject)')!r}")
+
     advanced = max(
-        (message["receivedDateTime"] for message, _ in candidates),
+        (message["receivedDateTime"] for message, _ in whitelisted),
         default=arguments.watermark,
     )
     print(f"New watermark: {advanced}")
 
-    report_observed(candidates, senders)
+    report_observed(whitelisted, senders)
 
     if drift:
         print("\nPossible sender drift — confirm and widen the register:", file=sys.stderr)
