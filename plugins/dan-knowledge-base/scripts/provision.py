@@ -31,6 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import configuration
+import mail_cache
 import notion_credential
 
 # What each adapter needs beyond what this plugin ships: the shipped commands it
@@ -279,39 +280,16 @@ def chat_session_captured():
 
 def mail_credential_cache_present(document):
     """The mail adapter borrows a mail MCP server's own token cache rather than
-    minting a credential. The register may name where that cache lives, since the
-    location moves when that server updates; the default is where current
-    versions write it."""
-    configured = source_with_adapter(document, "email").get("credential_cache")
+    minting a credential. `mail_cache` knows where each version of that server
+    keeps it on each platform; the register's `graph.credential_cache` is
+    consulted first when it names a path."""
+    source = source_with_adapter(document, "email")
+    graph = dict(source.get("graph", {}))
 
-    if configured:
-        return Path(configured).expanduser().is_file()
+    if "credential_cache" in source and "credential_cache" not in graph:
+        graph["credential_cache"] = source["credential_cache"]
 
-    default = Path.home() / ".config" / "ms-365-mcp-server" / "msal-token-cache.json"
-
-    if default.is_file():
-        return True
-
-    # macOS-only fallback, and stated as such: older versions kept the cache in
-    # the login keychain. On Windows and Linux there is no keychain to check, so
-    # the absence of the file is the whole answer and the note must not send a
-    # reader looking for one.
-    return sys.platform == "darwin" and keychain_holds_cache()
-
-
-def keychain_holds_cache():
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            ["security", "find-generic-password", "-s", "ms-365-mcp-server"],
-            capture_output=True,
-        )
-
-    except OSError:
-        return False
-
-    return result.returncode == 0
+    return mail_cache.present(graph)
 
 
 def report(notes):

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["msal", "requests"]
+# dependencies = ["msal", "requests", "cryptography"]
 # ///
 """Collect new digest emails from configured senders into one intake file.
 
@@ -10,7 +10,8 @@ and their kind all send one summary per attendee — but nothing here knows whic
 vendor it is talking to. Senders, the marker that ends the useful half of a body,
 and the phrases that identify one by shape are all read from the register.
 
-Authenticates by **reusing a mail MCP server's existing MSAL token cache**, so it
+Authenticates by **reusing a mail MCP server's existing MSAL token cache**, found
+and opened the way that server does on each platform (`mail_cache`), so it
 needs no app registration of its own, no separate consent, and no credential to
 rotate. It only ever reads, and it never writes that cache back — this process is
 a guest in another tool's credential store, and a partial write would break the
@@ -59,14 +60,11 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 
 import configuration
+import mail_cache
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
 PAGE_SIZE = 50
 SCOPES = ["Mail.Read"]
-
-DEFAULT_CACHE_FILE = "~/.config/ms-365-mcp-server/msal-token-cache.json"
-DEFAULT_KEYCHAIN_SERVICE = "ms-365-mcp-server"
-DEFAULT_KEYCHAIN_ACCOUNT = "msal-token-cache"
 
 DEFAULT_RETENTION_DAYS = 180
 
@@ -104,75 +102,21 @@ def graph_settings(source):
 
 
 def read_token_cache(graph):
-    """Load the mail MCP server's MSAL cache, from wherever that server put it.
+    """Load the mail MCP server's MSAL cache, from wherever that server put it:
+    its per-platform config directory, encrypted, with the key in the system
+    credential store or beside the file; or the plain `~/.config` file of an
+    older version or a custom cache command. The register's `credential_cache`
+    is consulted first when it names one."""
+    try:
+        text = mail_cache.load(graph)
 
-    The server is typically installed via `npx -y`, so its version — and its
-    cache location — can move without anything on this machine changing. Current
-    versions write a file; older ones used the macOS login keychain. The file is
-    checked first because it is what current versions maintain; a keychain entry
-    may be a stale leftover.
-    """
-    cache_file = Path(graph.get("credential_cache", DEFAULT_CACHE_FILE)).expanduser()
-    stored_text = read_file_cache(cache_file) or read_keychain_cache(graph)
-
-    if not stored_text:
-        raise SweepError(
-            f"no MSAL cache at {cache_file}"
-            + (
-                f" and none in the keychain under {keychain_names(graph)}"
-                if sys.platform == "darwin"
-                else ""
-            )
-            + ". Sign the mail MCP server in first, then re-run."
-        )
-
-    stored = json.loads(stored_text)
-
-    # The MCP server wraps the cache in {_cacheEnvelope, data, savedAt}. Handing
-    # MSAL the envelope parses without error and yields zero accounts, which
-    # reads as "signed out" rather than as a format mismatch.
-    payload = stored["data"] if stored.get("_cacheEnvelope") else stored_text
+    except mail_cache.CacheError as error:
+        raise SweepError(str(error)) from None
 
     cache = msal.SerializableTokenCache()
-    cache.deserialize(payload if isinstance(payload, str) else json.dumps(payload))
+    cache.deserialize(text)
 
     return cache
-
-
-def read_file_cache(path):
-    if not path.exists():
-        return None
-
-    return path.read_text(encoding="utf-8").strip() or None
-
-
-def keychain_names(graph):
-    service = graph.get("keychain_service", DEFAULT_KEYCHAIN_SERVICE)
-    account = graph.get("keychain_account", DEFAULT_KEYCHAIN_ACCOUNT)
-
-    return f"{service}/{account}"
-
-
-def read_keychain_cache(graph):
-    """macOS only, and stated as such: there is no keychain to consult elsewhere,
-    so on Windows and Linux the file's absence is the whole answer."""
-    if sys.platform != "darwin":
-        return None
-
-    service = graph.get("keychain_service", DEFAULT_KEYCHAIN_SERVICE)
-    account = graph.get("keychain_account", DEFAULT_KEYCHAIN_ACCOUNT)
-
-    completed = subprocess.run(
-        ["security", "find-generic-password", "-w", "-s", service, "-a", account],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    if completed.returncode != 0:
-        return None
-
-    return completed.stdout.strip() or None
 
 
 def acquire_access_token(graph):

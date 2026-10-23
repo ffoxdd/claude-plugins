@@ -51,6 +51,17 @@ to confirm before moving on.
    is an **expired** credential, not a missing one — the remedy is a fresh
    sign-in. Say which of the two you are looking at.
 
+   The cache lives where `@softeria/ms-365-mcp-server` puts it on this
+   platform — `%APPDATA%\ms-365-mcp-server` on Windows, `~/Library/Application
+   Support/ms-365-mcp-server` on macOS, `~/.config/ms-365-mcp-server` on Linux
+   — as an encrypted `.token-cache.json` whose key is in the system credential
+   store, or in `.cache-key` beside it where that store was unusable. The
+   adapter reads all of that itself; nothing is copied or exported, and a
+   register names `graph.credential_cache` only for a server pointed somewhere
+   else (`MS365_MCP_AUTH_CACHE_COMMAND`, say). "No key opens it" after a
+   sign-in means the server encrypted under a key this machine no longer
+   holds: sign in once more and it re-encrypts.
+
    **The notion adapter's credential** works the same way: it borrows the Notion
    MCP server's token from Claude Code's config, so the fix for "no Notion token"
    is adding that server at user scope. It needs no `uv`, only `python3`. A token

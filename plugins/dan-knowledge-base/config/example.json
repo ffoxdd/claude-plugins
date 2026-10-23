@@ -17,7 +17,7 @@
       "graph": {
         "client_id": "<the mail MCP server's own client id>",
         "tenant_id": "<your tenant id>",
-        "credential_cache": "~/.config/ms-365-mcp-server/msal-token-cache.json"
+        "credential_cache": null
       },
       "senders": [
         {
