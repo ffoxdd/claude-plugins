@@ -230,6 +230,15 @@ comment, so nothing can be skipped. That takes minutes when the changed pages ar
 long. **Run it in the background, never under a time limit**, and read the one
 file it writes. A page it could not read fully is a gap, like any other.
 
+The one exception is a long page that grows by inserting each new section above
+the last. List it in the register under `newest_first_pages`, with the number of
+top-level `blocks` still being edited, and the walk reads only those, saying in
+the output how many older ones it left unread:
+
+```
+"newest_first_pages": [{"name": "Weekly reviews", "id": "<page id>", "blocks": 2}]
+```
+
 All four print the output path, then counts, then the new watermark, and send gaps
 to stderr. No message content passes through stdout, which is what makes them
 safe to run from this session directly.

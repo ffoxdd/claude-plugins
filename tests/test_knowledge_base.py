@@ -1601,6 +1601,32 @@ class NotionSweepTest(unittest.TestCase):
         self.assertIn("`same-minute`", self.manifest())
         self.assertNotIn("New watermark", result.stdout)
 
+    def test_a_newest_first_page_is_walked_from_the_top_only(self):
+        """open-page's first block holds the new bullet; the new image below it is
+        past the limit, so it is neither printed nor asked for comments."""
+        self.write_register({"covered_by": "notion-covered",
+                             "newest_first_pages": [{"name": "Roadmap", "id": "open-page",
+                                                     "blocks": 1}]})
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("NEW-BULLET text", self.manifest())
+        self.assertNotIn("*(image: )*", self.manifest())
+        self.assertIn("only the first 1 top-level block(s) were walked; 2 older one(s) were not "
+                      "read", self.manifest())
+        self.assertIn("3 page(s) read: 1 changed block(s), 1 new comment(s)", result.stdout)
+
+    def test_a_newest_first_entry_without_a_block_count_is_refused(self):
+        self.write_register({"covered_by": "notion-covered",
+                             "newest_first_pages": [{"name": "Roadmap", "id": "open-page"}]})
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("newest_first_pages entry 'Roadmap'", result.stderr)
+        self.assertEqual(self.stub.search_requests, 0)
+
 
 class NotionAdapterSearchTest(unittest.TestCase):
     """The notion adapter's default discovery, by search, against the search stub.

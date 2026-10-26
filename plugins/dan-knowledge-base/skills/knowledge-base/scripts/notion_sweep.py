@@ -41,7 +41,9 @@ watermark.
 **It reads everything, so it takes as long as the pages are long.** The walk
 cannot skip a branch (see `notion_page_changes.py`), so a sync whose changed
 pages hold a few thousand blocks takes several minutes. There is no time limit
-to cut it short. Run it in the background.
+to cut it short. Run it in the background. The one exception is a page the
+register lists under `newest_first_pages`, read from the top only, which is
+the setting for a long page that grows by inserting new sections above the old.
 
 **A gap withholds the watermark.** A search page that could not be read, a
 result whose chain could not be followed, a page whose blocks or comments could
@@ -68,7 +70,7 @@ import notion_search
 from notion_api import EXIT_GAPS, EXIT_REFUSED, Gaps, Notion, format_time, parse_time, \
     read_watermark
 from notion_export import page_title, plain_text
-from notion_page_changes import Authors, page_report
+from notion_page_changes import Authors, newest_first_blocks, page_report
 
 
 def item_title(item):
@@ -120,7 +122,7 @@ class Readings:
         self.comments = 0
 
 
-def read_changes(notion, changes, since, gaps):
+def read_changes(notion, changes, since, gaps, limits):
     """Every listed page, newest first. One page failing is a gap, not the end."""
     readings = Readings()
     authors = Authors(notion)
@@ -128,7 +130,9 @@ def read_changes(notion, changes, since, gaps):
 
     for page in sorted(pages, key=lambda entry: entry["last_edited_time"], reverse=True):
         try:
-            report = page_report(notion, page, since, gaps, heading="##", authors=authors)
+            newest_blocks = limits.get(notion_search.normalize(page["id"]))
+            report = page_report(notion, page, since, gaps, heading="##", authors=authors,
+                                 newest_blocks=newest_blocks)
 
         except Exception as error:  # noqa: BLE001 — reduced to a type, as everywhere here
             gaps.add(f"page {page['id']} could not be read ({type(error).__name__})")
@@ -165,6 +169,7 @@ def main(argv=None):
     try:
         source = configuration.source(arguments.source)
         locations, covered_source = notion_search.covered_locations(source)
+        limits = newest_first_blocks(source)
         since = read_watermark(arguments.watermark)
         notion = Notion.from_source(source, notion_credential.authorization(source))
 
@@ -178,7 +183,7 @@ def main(argv=None):
     # Past this point a failure is reported by type alone, as in notion_export.py.
     try:
         changes = notion_search.changes_since(notion, locations, since, gaps)
-        readings = read_changes(notion, changes, since, gaps)
+        readings = read_changes(notion, changes, since, gaps, limits)
         Path(arguments.output).write_text(
             build_output(build_manifest(changes, since, covered_source), readings),
             encoding="utf-8",

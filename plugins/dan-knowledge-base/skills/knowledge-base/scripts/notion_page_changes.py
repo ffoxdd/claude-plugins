@@ -27,6 +27,16 @@ children is listed and every block is asked for its comments, about two requests
 a block. A page of several hundred blocks takes minutes, which is the price of
 missing nothing; run it in the background rather than cutting it short.
 
+**A newest-first page is read from the top only.** A page the register lists
+under `newest_first_pages` grows by inserting each new section above the last,
+so its first few top-level blocks are where any edit lands; only those are
+walked, and the rest are counted, not read:
+
+    "newest_first_pages": [{"name": "Weekly reviews", "id": "<page id>", "blocks": 2}]
+
+Choose `blocks` to cover every section still being edited — the section being
+written and the one being reviewed — since an edit below them goes unseen.
+
 **What it cannot read is a gap, never a silence.** A comment request that
 fails, or blocks nested deeper than it walks, is reported on stderr and makes
 the exit status 3, so a caller holding a watermark keeps the old one.
@@ -89,9 +99,13 @@ class Node:
 
 
 def block_tree(notion, block_id, since, gaps, nesting=0):
+    return nodes_of(notion, notion.children(block_id), since, gaps, nesting)
+
+
+def nodes_of(notion, blocks, since, gaps, nesting=0):
     nodes = []
 
-    for block in notion.children(block_id):
+    for block in blocks:
         children = []
 
         if block.get("has_children") and block["type"] not in PAGE_BLOCK_TYPES:
@@ -213,6 +227,32 @@ def fetch_page(notion, page_id):
         raise Refused(f"page {page_id} could not be read ({error})") from None
 
 
+def newest_first_blocks(source):
+    """How many top-level blocks to walk, by page, for the pages the source lists
+    as newest-first."""
+    entries = source.get("newest_first_pages", [])
+    limits = {}
+
+    for entry in entries:
+        blocks = entry.get("blocks")
+
+        if "id" not in entry or not isinstance(blocks, int) or isinstance(blocks, bool) \
+                or blocks < 1:
+            raise configuration.ConfigurationError(
+                f"newest_first_pages entry {entry.get('name', entry.get('id', '?'))!r} needs an "
+                '"id" and a positive whole number of "blocks"'
+            )
+
+        limits[notion_search.normalize(entry["id"])] = blocks
+
+    return limits
+
+
+def newest_first_note(walked, unread):
+    return [f"*Listed as newest-first: only the first {walked} top-level block(s) were walked; "
+            f"{unread} older one(s) were not read.*", ""]
+
+
 class PageReport:
     """One page's changes, rendered, with the counts a caller reports."""
 
@@ -222,8 +262,10 @@ class PageReport:
         self.comments = comments
 
 
-def page_report(notion, page, since, gaps, heading="#", authors=None):
-    nodes = block_tree(notion, page["id"], since, gaps)
+def page_report(notion, page, since, gaps, heading="#", authors=None, newest_blocks=None):
+    top_level = notion.children(page["id"])
+    walked = top_level[:newest_blocks]
+    nodes = nodes_of(notion, walked, since, gaps)
     attach_comments(notion, nodes, since, gaps)
     authors = authors or Authors(notion)
 
@@ -241,6 +283,10 @@ def page_report(notion, page, since, gaps, heading="#", authors=None):
         "under the blocks they sit on.*",
         "",
     ]
+
+    if newest_blocks is not None:
+        lines += newest_first_note(len(walked), len(top_level) - len(walked))
+
     lines += [render_comment(comment, authors) for comment in page_comments]
     lines += render_nodes(nodes, authors)
 
@@ -266,6 +312,7 @@ def main(argv=None):
     try:
         source = configuration.source(arguments.source)
         locations, _ = notion_search.covered_locations(source)
+        limits = newest_first_blocks(source)
         since = read_watermark(arguments.watermark)
         notion = Notion.from_source(source, notion_credential.authorization(source))
 
@@ -280,7 +327,8 @@ def main(argv=None):
     try:
         page = fetch_page(notion, arguments.page_id)
         place(notion, locations, page)
-        text = page_report(notion, page, since, gaps).text
+        newest_blocks = limits.get(notion_search.normalize(page["id"]))
+        text = page_report(notion, page, since, gaps, newest_blocks=newest_blocks).text
 
     except Refused as refusal:
         print(f"notion_page_changes: {refusal}", file=sys.stderr)
