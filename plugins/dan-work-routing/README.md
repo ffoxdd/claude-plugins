@@ -17,8 +17,10 @@ routing happens before the work rather than being remembered mid-task.
 - **The spawn guard** — a hook on every Agent call, so the primer's spawn
   rules hold inside skills and forks this plugin does not own. It denies a
   call naming no `model` (a fork passes, as does an agent type whose
-  definition declares one, `inherit` included); a top-tier spawn while
-  another top-tier agent is in flight; any spawn past a width ceiling; and
+  definition declares one, `inherit` included); a top-tier spawn (the
+  session's own model) while another top-tier agent is in flight; a
+  strong-tier spawn (`opus`, the builders) past their own wider limit; any
+  spawn past a width ceiling; and
   the helpers of a sub-agent nobody asked for past a small total budget,
   fewer of them top-tier. The root session's spawns and the helpers of a
   skill the person invoked — a `/code-review`'s finder angles — are the
@@ -26,7 +28,7 @@ routing happens before the work rather than being remembered mid-task.
   subagent records, with the guard's approvals standing in until the harness
   records the agent, so spawns issued in one batch see each other; each
   denial names what is in flight and offers waiting or folding, with the
-  tier as the task chose it. The six
+  tier as the task chose it. The seven
   limits are plugin options (`/plugin` → configure).
 - **`/dan-work-routing:session-limits`** — widens or restores a guard limit
   for the current session alone (`top_tier_concurrency=3`, `reset`), so a

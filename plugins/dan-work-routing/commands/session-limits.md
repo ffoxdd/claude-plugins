@@ -19,7 +19,8 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/session_limits.py" --data "${CLAUDE_PLUGI
 - `reset` removes the grant, so the plugin options apply again.
 - Otherwise each argument is `key=value` with a non-negative integer, where
   the keys are the plugin's option names — `top_tier_concurrency`,
-  `agent_width`, `nested_top_tier_budget`, `nested_agent_budget`,
+  `strong_tier_concurrency`, `agent_width`, `nested_top_tier_budget`,
+  `nested_agent_budget`,
   `idle_minutes`, `settle_seconds` — and `0` lifts that limit. Settings
   accumulate across runs until `reset`.
 

@@ -32,17 +32,25 @@ above total tokens — never above top-tier spend.
 
 Delegate to the least powerful model the task accepts — which is not the
 cheapest: checking another agent's work needs a model at least as capable as
-the one that produced it. Reserve the top tier for design, specification,
-review of top-tier work, and triage. **Set the model explicitly on
-every spawned agent.** An omitted model inherits the session's, usually the most
-expensive tier; the session model needs a stated reason.
+the one that produced it. Three tiers. The **top** tier is the session's own
+model, the orchestrator's: reserve it for design, specification, review of
+top-tier work, and triage, and run one of it at a time. The **strong** tier
+is `opus`: a build from a specification, a review of strong-tier work, and
+several of them run side by side as the normal shape. The **cheap** tier is
+`sonnet` and `haiku`: reading, searching, convention checks, mechanical
+edits. **Set the model explicitly on every spawned agent.** An omitted model
+inherits the session's, the most expensive tier; the session model needs a
+stated reason. And never choose a model below what the task needs in order
+to fit the guard: a denial is answered by waiting, by folding, or by the
+person widening the limit, never by a weaker builder.
 
 A hook — the spawn guard — enforces three rules on every Agent call, inside
 forks and skills this plugin does not own as much as here. A call with no
 `model` is denied unless it is a fork, which runs on the parent's model
 regardless, or its agent type's definition declares one. One top-tier agent
 runs at a time: a top-tier spawn is denied while another top-tier agent is in
-flight (the spawner and its ancestors excepted), and any spawn is denied past
+flight (the spawner and its ancestors excepted); strong-tier spawns are
+denied past their own, wider limit; and any spawn is denied past
 a width ceiling. A sub-agent nobody asked for may spawn only a few helpers in
 total, and fewer of them top-tier, because its fan-out is nobody's choice and
 every helper re-reads its material; the root session's spawns are the
@@ -113,7 +121,8 @@ the whole slice at the session's tier — and the guard holds that sequence
 unless the person has widened it for the session with
 `/dan-work-routing:session-limits`, which is what several PRs reviewed side
 by side call for. Other logic slices go to the `reviewer`
-agent: one top-tier agent at high effort, one pass, no fan-out.
+agent at the tier that wrote them, `opus` for a strong-tier build, at high
+effort, one pass, no fan-out.
 Mechanical slices go to `reviewer` with a cheaper `model` passed on the call;
 prose to a path-independence pass at the cheapest tier. Diff against the upstream base (`origin/main...HEAD`), never a local
 branch that may be stale. The expensive tier still reads every line that needs

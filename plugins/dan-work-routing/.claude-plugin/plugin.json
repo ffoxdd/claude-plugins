@@ -16,6 +16,13 @@
       "default": 1,
       "min": 0
     },
+    "strong_tier_concurrency": {
+      "type": "number",
+      "title": "Strong-tier agents in flight",
+      "description": "How many opus sub-agents may run at once across the session: the builders a specification is handed to, which run side by side as the normal shape. 0 lifts the limit.",
+      "default": 4,
+      "min": 0
+    },
     "agent_width": {
       "type": "number",
       "title": "Agents in flight, any tier",

@@ -65,7 +65,9 @@ TOOL_CALL_LINE = json.dumps(
     }
 )
 
-TOP = {"subagent_type": "general-purpose", "model": "opus", "prompt": "judge"}
+TOP = {"subagent_type": "general-purpose", "model": "fable", "prompt": "judge"}
+
+STRONG = {"subagent_type": "general-purpose", "model": "opus", "prompt": "build"}
 
 CHEAP = {"subagent_type": "general-purpose", "model": "sonnet", "prompt": "read"}
 
@@ -265,7 +267,7 @@ class ModelRuleTest(GuardCase):
 
 class TopTierConcurrencyTest(GuardCase):
     def test_denies_a_top_tier_spawn_while_a_top_tier_agent_runs(self):
-        self.record("a1", model="opus", description="review the merge slice")
+        self.record("a1", model="fable", description="review the merge slice")
 
         self.assertEqual(self.decision(TOP), "deny")
 
@@ -392,12 +394,12 @@ class TopTierConcurrencyTest(GuardCase):
         self.assertEqual(self.decision(TOP, spawner="fork1", transcript=transcript), "deny")
 
     def test_the_reason_names_what_is_in_flight(self):
-        self.record("a1", model="opus", description="review the merge slice")
+        self.record("a1", model="fable", description="review the merge slice")
 
         reason = self.reason(TOP)
 
         self.assertIn("review the merge slice", reason)
-        self.assertIn("opus", reason)
+        self.assertIn("fable", reason)
         self.assertIn("end the turn", reason)
 
     def test_the_limit_is_an_option(self):
@@ -412,6 +414,56 @@ class TopTierConcurrencyTest(GuardCase):
         self.options["TOP_TIER_CONCURRENCY"] = 0
 
         self.assertIsNone(self.decision(TOP))
+
+
+class StrongTierConcurrencyTest(GuardCase):
+    """`opus` is the builders' tier: several run side by side, up to a limit
+    of their own that is wider than the top tier's, and neither tier's
+    agents hold the other's slots."""
+
+    def test_permits_strong_spawns_up_to_the_limit(self):
+        for index in range(3):
+            self.record(f"a{index}", model="opus")
+
+        self.assertIsNone(self.decision(STRONG))
+
+    def test_denies_a_strong_spawn_at_the_limit(self):
+        for index in range(4):
+            self.record(f"a{index}", model="opus")
+
+        self.assertEqual(self.decision(STRONG), "deny")
+
+    def test_a_strong_agent_holds_no_top_tier_slot(self):
+        self.record("a1", model="opus")
+
+        self.assertIsNone(self.decision(TOP))
+
+    def test_a_top_tier_agent_holds_no_strong_slot(self):
+        self.record("a1", model="fable")
+
+        self.assertIsNone(self.decision(STRONG))
+
+    def test_the_limit_is_an_option(self):
+        self.record("a1", model="opus")
+        self.options["STRONG_TIER_CONCURRENCY"] = 1
+
+        self.assertEqual(self.decision(STRONG), "deny")
+
+    def test_zero_lifts_the_limit(self):
+        for index in range(5):
+            self.record(f"a{index}", model="opus")
+        self.options["STRONG_TIER_CONCURRENCY"] = 0
+
+        self.assertIsNone(self.decision(STRONG))
+
+    def test_the_denial_offers_waiting_or_folding_only(self):
+        for index in range(4):
+            self.record(f"a{index}", model="opus")
+
+        reason = self.reason(STRONG)
+        for tier in ("sonnet", "haiku"):
+            self.assertNotIn(tier, reason)
+        self.assertIn("already running", reason)
 
 
 class WidthTest(GuardCase):
@@ -566,13 +618,13 @@ class NoDowngradeInDenialTest(GuardCase):
         self.assertIn("already running", reason)
 
     def test_the_concurrency_denial(self):
-        self.record("a1", model="opus", description="review the merge slice")
+        self.record("a1", model="fable", description="review the merge slice")
 
         self.assertOffersWaitingOrFoldingOnly(self.reason(TOP))
 
     def test_the_width_denial(self):
         for index in range(8):
-            self.record(f"a{index}", model="opus")
+            self.record(f"a{index}", model="fable")
 
         self.assertOffersWaitingOrFoldingOnly(self.reason(TOP))
 
@@ -580,14 +632,14 @@ class NoDowngradeInDenialTest(GuardCase):
         self.record("fork1", agent_type="fork")
 
         for index in range(3):
-            self.record(f"helper{index}", parent="fork1", model="opus", ended=True)
+            self.record(f"helper{index}", parent="fork1", model="fable", ended=True)
 
         self.assertOffersWaitingOrFoldingOnly(self.reason(TOP, spawner="fork1"))
 
     def test_the_nested_top_tier_denial(self):
         self.record("fork1", agent_type="fork")
-        self.record("angle1", parent="fork1", model="opus", ended=True)
-        self.record("angle2", parent="fork1", model="opus", ended=True)
+        self.record("angle1", parent="fork1", model="fable", ended=True)
+        self.record("angle2", parent="fork1", model="fable", ended=True)
 
         self.assertOffersWaitingOrFoldingOnly(self.reason(TOP, spawner="fork1"))
 
@@ -931,6 +983,7 @@ class ManifestOptionsTest(unittest.TestCase):
 
         for key in (
             "top_tier_concurrency",
+            "strong_tier_concurrency",
             "agent_width",
             "nested_top_tier_budget",
             "nested_agent_budget",

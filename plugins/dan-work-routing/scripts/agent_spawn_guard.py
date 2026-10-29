@@ -12,9 +12,17 @@ own, since hooks run in subagents too. It applies three of them, in order:
    ignores the field), as does an agent type whose definition declares
    `model:`, `inherit` included — `inherit` is a stated decision.
 
-2. **One top-tier agent runs at a time, and the width has a ceiling.** A
-   fan-out of top-tier agents is what a usage-limit trip kills mid-flight,
-   wasting every one's sunk reading. In-flight agents are read from the
+2. **One top-tier agent runs at a time, a few strong-tier agents do, and
+   the width has a ceiling.** Three tiers: `top` is the session's own
+   model — the orchestrator's, reached by `inherit`, a fork, or a name this
+   file does not place — and one of it runs at a time, since a fan-out of
+   the most expensive model is what a usage-limit trip kills mid-flight,
+   wasting every one's sunk reading. `strong` is `opus`, the tier a
+   well-specified build goes to, and several of those run side by side up
+   to their own limit: parallel builders are the normal shape, and the
+   limit exists so that a model is never chosen below what the task needs
+   just to fit the guard. `cheap` is `sonnet` and `haiku`, held only by
+   the width. In-flight agents are read from the
    harness's own records — each subagent's `agent-<id>.meta.json` and
    transcript under the session's `subagents/` directory. An agent is in
    flight while its newest assistant record is not a terminal stop (the
@@ -80,6 +88,8 @@ from pathlib import Path
 
 CHEAP_TIER_MARKERS = ("sonnet", "haiku")
 
+STRONG_TIER_MARKERS = ("opus",)
+
 TERMINAL_STOP_REASONS = ("end_turn", "stop_sequence")
 
 # What the newest assistant record says of an agent's turn (AgentRecord.standing).
@@ -87,6 +97,7 @@ ENDED, RESTING, WORKING = "ended", "resting", "working"
 
 DEFAULTS = {
     "TOP_TIER_CONCURRENCY": 1,
+    "STRONG_TIER_CONCURRENCY": 4,
     "AGENT_WIDTH": 8,
     "NESTED_TOP_TIER_BUDGET": 2,
     "NESTED_AGENT_BUDGET": 3,
@@ -112,7 +123,8 @@ MODEL_REASON = (
     "checking another agent's work needs a model at least as capable as the one "
     "that produced it, so defect-finding and verification over top-tier work stay "
     "on the session's model (`inherit`, or name it), as do design, specification "
-    "and adjudication. `sonnet` takes reading, searching, summarizing, and "
+    "and adjudication. `opus` takes a build from a specification, and several "
+    "run side by side. `sonnet` takes reading, searching, summarizing, and "
     "convention, reuse or mechanical-shape checks; `haiku` takes mechanical edits "
     "and bounded lookups. A `fork` needs no model; an agent type whose definition "
     "declares `model:` passes as well."
@@ -182,7 +194,21 @@ def decide(payload, tool_input, session, pending):
             )
             return
 
-    if tier != "top":
+    if tier == "cheap":
+        pending.record(payload, tool_input, tier, spawner)
+        return
+
+    if tier == "strong":
+        concurrency = limits.get("STRONG_TIER_CONCURRENCY")
+        strong_tier = [agent for agent in in_flight if agent.tier == "strong"]
+
+        if concurrency and len(strong_tier) >= concurrency:
+            deny(
+                f"{concurrency} strong-tier agents already run at once (the limit); in "
+                f"flight now: {describe(strong_tier)}. {RETRY_ADVICE}"
+            )
+            return
+
         pending.record(payload, tool_input, tier, spawner)
         return
 
@@ -315,7 +341,7 @@ def names_a_model(tool_input):
 
 
 def spawn_tier(tool_input):
-    """`top` or `cheap`, for a call that names_a_model.
+    """`top`, `strong` or `cheap`, for a call that names_a_model.
 
     A fork runs on the parent's model, which is the session's tier unless the
     session itself was started cheap — read as top, the conservative side.
@@ -334,8 +360,9 @@ def spawn_tier(tool_input):
 
 
 def tier_of(model):
-    """A model name's tier. Anything not recognisably cheap — an inherited
-    model, `inherit`, `opus`, a name this file has not heard of — is top."""
+    """A model name's tier. `opus` is strong; `sonnet` and `haiku` are cheap;
+    anything else — an inherited model, `inherit`, a name this file has not
+    heard of — is top, the session's own."""
     if not model:
         return "top"
 
@@ -343,6 +370,9 @@ def tier_of(model):
 
     if any(marker in name for marker in CHEAP_TIER_MARKERS):
         return "cheap"
+
+    if any(marker in name for marker in STRONG_TIER_MARKERS):
+        return "strong"
 
     return "top"
 
