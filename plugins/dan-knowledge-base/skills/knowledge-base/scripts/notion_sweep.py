@@ -15,11 +15,12 @@ search runs over Notion's REST API, and each result is placed in the page tree
     that reads those, so this one never has to;
   * every **other** result goes into the output file's manifest by id, kind,
     edit time and title;
-  * every page in the manifest is then **read with the page-changes walk**
-    (`notion_page_changes.py`), and its changed blocks and new comments are
-    written below the manifest, one section per page. The session reads this one
-    file; it never runs the walk page by page. A database in the manifest is
-    listed only: its edited rows are pages, and arrive as their own results;
+  * every page in the manifest but those the register skips (below) is then
+    **read with the page-changes walk** (`notion_page_changes.py`), and its
+    changed blocks and new comments are written below the manifest, one section
+    per page. The session reads this one file; it never runs the walk page by
+    page. A database in the manifest is listed only: its edited rows are pages,
+    and arrive as their own results;
   * **stdout** carries the output path, counts and the new watermark, and
     **stderr** carries gaps, a request path and a status only. Neither carries a
     title.
@@ -41,9 +42,25 @@ watermark.
 **It reads everything, so it takes as long as the pages are long.** The walk
 cannot skip a branch (see `notion_page_changes.py`), so a sync whose changed
 pages hold a few thousand blocks takes several minutes. There is no time limit
-to cut it short. Run it in the background. The one exception is a page the
-register lists under `newest_first_pages`, read from the top only, which is
-the setting for a long page that grows by inserting new sections above the old.
+to cut it short. Run it in the background. The register narrows it three ways,
+each resolved by the same parent-chain walk as the covered placement, which
+fetches no ancestor twice:
+
+  * a page listed under `newest_first_pages` is read from the top only, for a
+    long page that grows by inserting new sections above the old;
+  * a page at or under a `newest_last_locations` entry, at any depth, is read
+    from the bottom only, for pages that append — a database of call logs;
+  * a page at or under a `skipped_locations` entry is **not read at all**: it
+    stays in the manifest and is named in a skipped section, for locations whose
+    pages are edited often and never yield anything. A skip is not a gap.
+
+    "newest_last_locations": [{"name": "CRM", "id": "<database id>", "blocks": 2}],
+    "skipped_locations": [{"name": "Recruiting", "id": "<page id>"}]
+
+A skip beats a window, a page's own newest-first entry beats a newest-last
+location above it, and the nearest newest-last location wins. Covered locations
+are excluded before any of this, so no rule reaches one. See
+`notion_page_changes.py` for what a window reads.
 
 **A gap withholds the watermark.** A search page that could not be read, a
 result whose chain could not be followed, a page whose blocks or comments could
@@ -70,7 +87,7 @@ import notion_search
 from notion_api import EXIT_GAPS, EXIT_REFUSED, Gaps, Notion, format_time, parse_time, \
     read_watermark
 from notion_export import page_title, plain_text
-from notion_page_changes import Authors, newest_first_blocks, page_report
+from notion_page_changes import Authors, ReadingRules, page_report
 
 
 def item_title(item):
@@ -113,26 +130,33 @@ def build_manifest(changes, since, covered_source):
 
 
 class Readings:
-    """The changes read from every listed page, and their totals."""
+    """The changes read from every listed page, the pages skipped, and their totals."""
 
     def __init__(self):
         self.sections = []
+        self.skipped = []
         self.pages = 0
         self.changed = 0
         self.comments = 0
 
 
-def read_changes(notion, changes, since, gaps, limits):
-    """Every listed page, newest first. One page failing is a gap, not the end."""
+def read_changes(notion, changes, since, gaps, rules, ancestry):
+    """Every listed page, newest first, but those the rules skip. One page failing
+    is a gap, not the end."""
     readings = Readings()
     authors = Authors(notion)
     pages = [item for item in changes.outside if item.get("object") == "page"]
 
     for page in sorted(pages, key=lambda entry: entry["last_edited_time"], reverse=True):
+        location = rules.skipped_by(page, ancestry)
+
+        if location is not None:
+            readings.skipped.append((page, location))
+            continue
+
         try:
-            newest_blocks = limits.get(notion_search.normalize(page["id"]))
             report = page_report(notion, page, since, gaps, heading="##", authors=authors,
-                                 newest_blocks=newest_blocks)
+                                 window=rules.window_for(page, ancestry))
 
         except Exception as error:  # noqa: BLE001 — reduced to a type, as everywhere here
             gaps.add(f"page {page['id']} could not be read ({type(error).__name__})")
@@ -149,11 +173,25 @@ def read_changes(notion, changes, since, gaps, limits):
     return readings
 
 
-def build_output(manifest, readings):
-    if not readings.sections:
-        return manifest
+def skipped_section(readings):
+    if not readings.skipped:
+        return ""
 
-    return manifest + "\n# What changed, page by page\n\n" + "\n".join(readings.sections)
+    lines = [f"## Skipped — listed, not read ({len(readings.skipped)})", "",
+             "Under a location the register lists as `skipped_locations`.", ""]
+    lines += [f"- {item_title(page)} — `{page['id']}`, under {location}"
+              for page, location in readings.skipped]
+
+    return "\n" + "\n".join(lines) + "\n"
+
+
+def build_output(manifest, readings):
+    output = manifest + skipped_section(readings)
+
+    if not readings.sections:
+        return output
+
+    return output + "\n# What changed, page by page\n\n" + "\n".join(readings.sections)
 
 
 def main(argv=None):
@@ -169,7 +207,7 @@ def main(argv=None):
     try:
         source = configuration.source(arguments.source)
         locations, covered_source = notion_search.covered_locations(source)
-        limits = newest_first_blocks(source)
+        rules = ReadingRules.from_source(source)
         since = read_watermark(arguments.watermark)
         notion = Notion.from_source(source, notion_credential.authorization(source))
 
@@ -179,11 +217,12 @@ def main(argv=None):
         return EXIT_REFUSED
 
     gaps = Gaps()
+    ancestry = notion_search.Ancestry(notion)
 
     # Past this point a failure is reported by type alone, as in notion_export.py.
     try:
-        changes = notion_search.changes_since(notion, locations, since, gaps)
-        readings = read_changes(notion, changes, since, gaps, limits)
+        changes = notion_search.changes_since(notion, locations, since, gaps, ancestry)
+        readings = read_changes(notion, changes, since, gaps, rules, ancestry)
         Path(arguments.output).write_text(
             build_output(build_manifest(changes, since, covered_source), readings),
             encoding="utf-8",
@@ -200,7 +239,7 @@ def main(argv=None):
           f"{sum(len(items) for items in changes.under.values())} under covered locations, "
           f"{changes.unplaced} unplaced")
     print(f"{readings.pages} page(s) read: {readings.changed} changed block(s), "
-          f"{readings.comments} new comment(s)")
+          f"{readings.comments} new comment(s); {len(readings.skipped)} skipped")
 
     if gaps:
         print("Watermark not advanced: keep the previous one, so the next run re-covers "

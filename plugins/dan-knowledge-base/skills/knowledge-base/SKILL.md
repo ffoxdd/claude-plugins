@@ -230,14 +230,34 @@ comment, so nothing can be skipped. That takes minutes when the changed pages ar
 long. **Run it in the background, never under a time limit**, and read the one
 file it writes. A page it could not read fully is a gap, like any other.
 
-The one exception is a long page that grows by inserting each new section above
-the last. List it in the register under `newest_first_pages`, with the number of
-top-level `blocks` still being edited, and the walk reads only those, saying in
-the output how many older ones it left unread:
+The register narrows the walk three ways. A long page that grows by inserting
+each new section above the last goes under `newest_first_pages`, with the number
+of top-level `blocks` still being edited, and the walk reads only those, saying
+in the output how many older ones it left unread:
 
 ```
 "newest_first_pages": [{"name": "Weekly reviews", "id": "<page id>", "blocks": 2}]
 ```
+
+Pages that append instead — a database of call logs, one dated heading a call —
+go under `newest_last_locations` by the database or parent page they sit in.
+Every page beneath it, at any depth, is read over its last `blocks` only:
+
+```
+"newest_last_locations": [{"name": "CRM", "id": "<database id>", "blocks": 2}]
+```
+
+And a location whose pages are touched often but never yield anything goes under
+`skipped_locations`. Its changed pages stay in the manifest and are named in a
+skipped section, but are not read; a skip is not a gap:
+
+```
+"skipped_locations": [{"name": "Recruiting", "id": "<page id>"}]
+```
+
+A skip beats a window, a page's own `newest_first_pages` entry beats a
+newest-last location above it, and the nearest newest-last location wins.
+Covered locations are excluded before any of this.
 
 All four print the output path, then counts, then the new watermark, and send gaps
 to stderr. No message content passes through stdout, which is what makes them

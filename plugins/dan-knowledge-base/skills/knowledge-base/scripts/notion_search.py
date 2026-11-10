@@ -14,6 +14,13 @@ chain leading into one is visible all the way up to it.
 A result whose chain cannot be followed is `Unplaceable`. Every caller treats
 that as a gap, because an item that might sit under a covered location must not
 be named anywhere.
+
+**Every ancestor is fetched once per run**, whatever asks about it. The chain is
+held by `Ancestry`, which the covered placement walks first and the reading rules
+(`notion_page_changes.ReadingRules`) walk again for the pages outside, so the
+second walk is a run of cache hits. The reading rules ask only for a page's
+`lineage`, which ends quietly where an ancestor cannot be fetched: a rule that
+cannot be placed is not applied, and the page is read whole.
 """
 
 import configuration
@@ -34,11 +41,72 @@ def normalize(identifier):
     return identifier.replace("-", "").lower()
 
 
+class Ancestry:
+    """Every item's parent, fetched at most once per run. An ancestor the
+    integration cannot see is remembered as None, the top of the visible tree."""
+
+    def __init__(self, notion):
+        self.notion = notion
+        self.parents = {}
+
+    def parent_of(self, item):
+        """The item's parent, or None at the top of the visible tree. A fetch that
+        fails for any reason but 404 raises, and is not remembered."""
+        parent = item.get("parent") or {}
+        kind = parent.get("type")
+
+        if kind not in PARENT_KINDS:
+            return None
+
+        identifier = normalize(parent[kind])
+
+        if identifier not in self.parents:
+            self.parents[identifier] = self.fetch_visible(kind, parent[kind])
+
+        return self.parents[identifier]
+
+    def fetch_visible(self, kind, identifier):
+        try:
+            return self.fetch(kind, identifier)
+
+        except ExportError as error:
+            if error.status == 404:
+                return None
+
+            raise
+
+    def fetch(self, kind, identifier):
+        if kind == "page_id":
+            return self.notion.page(identifier)
+
+        if kind == "database_id":
+            return self.notion.database(identifier)
+
+        return self.notion.block(identifier)
+
+    def lineage(self, item):
+        """The item's id and its ancestors', nearest first, as far up as the chain
+        can be followed."""
+        identifiers = []
+        current = item
+
+        while current is not None and len(identifiers) < MAX_ANCESTRY:
+            identifiers.append(normalize(current["id"]))
+
+            try:
+                current = self.parent_of(current)
+
+            except ExportError:
+                break
+
+        return identifiers
+
+
 class Placement:
     """Which covered location, if any, each item sits under, cached per run."""
 
-    def __init__(self, notion, locations):
-        self.notion = notion
+    def __init__(self, notion, locations, ancestry=None):
+        self.ancestry = ancestry or Ancestry(notion)
         self.locations = {normalize(location["id"]): location["name"] for location in locations}
         self.known = {}
 
@@ -58,30 +126,16 @@ class Placement:
             if identifier in self.locations:
                 return self.settle(chain, self.locations[identifier])
 
-            parent = current.get("parent") or {}
-
-            if parent.get("type") not in PARENT_KINDS:
-                return self.settle(chain, None)
-
             try:
-                current = self.fetch(parent["type"], parent[parent["type"]])
+                current = self.ancestry.parent_of(current)
 
             except ExportError as error:
-                if error.status == 404:
-                    return self.settle(chain, None)
-
                 raise Unplaceable(str(error)) from None
 
+            if current is None:
+                return self.settle(chain, None)
+
         raise Unplaceable(f"a parent chain longer than {MAX_ANCESTRY} items")
-
-    def fetch(self, kind, identifier):
-        if kind == "page_id":
-            return self.notion.page(identifier)
-
-        if kind == "database_id":
-            return self.notion.database(identifier)
-
-        return self.notion.block(identifier)
 
     def settle(self, chain, location):
         for identifier in chain:
@@ -132,10 +186,11 @@ class Changes:
         return len(self.under.get(location, []))
 
 
-def changes_since(notion, locations, since, gaps):
+def changes_since(notion, locations, since, gaps, ancestry=None):
     """Every item edited since the watermark, placed against the covered locations.
-    An item that cannot be placed is counted and reported as a gap, never kept."""
-    placement = Placement(notion, locations)
+    An item that cannot be placed is counted and reported as a gap, never kept.
+    Pass the run's `ancestry` to reuse what this placement fetched."""
+    placement = Placement(notion, locations, ancestry)
     changes = Changes()
 
     for item in search_since(notion, since, gaps):

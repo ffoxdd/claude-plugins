@@ -37,6 +37,24 @@ walked, and the rest are counted, not read:
 Choose `blocks` to cover every section still being edited — the section being
 written and the one being reviewed — since an edit below them goes unseen.
 
+**A newest-last location is read from the bottom.** Its mirror image is a page
+that appends each new section below the last — a call log, one dated heading a
+call. The register lists the location such pages sit under, a database or a
+parent page, and every page beneath it at any depth walks only its last
+`blocks` top-level blocks:
+
+    "newest_last_locations": [{"name": "CRM", "id": "<database id>", "blocks": 2}]
+
+Either way the whole top level is listed, which is cheap, and the page's own
+comments are still asked for; only the blocks outside the window go unread.
+An exact `newest_first_pages` entry beats a newest-last location above it, and
+the nearest newest-last location beats one further up. A location found by
+parent chain (`notion_search.Ancestry`) whose chain cannot be followed applies
+no window: the page is read whole, which costs time but misses nothing.
+
+The sweep's `skipped_locations` are not read here: a page asked for by hand is
+read, wherever it sits.
+
 **What it cannot read is a gap, never a silence.** A comment request that
 fails, or blocks nested deeper than it walks, is reported on stderr and makes
 the exit status 3, so a caller holding a watermark keeps the old one.
@@ -206,9 +224,9 @@ def count_comments(nodes):
     return sum(len(node.comments) + count_comments(node.children) for node in nodes)
 
 
-def place(notion, locations, page):
+def place(notion, locations, page, ancestry=None):
     try:
-        location = notion_search.Placement(notion, locations).location_of(page)
+        location = notion_search.Placement(notion, locations, ancestry).location_of(page)
 
     except notion_search.Unplaceable as error:
         raise Refused(f"page {page['id']} could not be placed ({error}); it might sit under a "
@@ -227,19 +245,56 @@ def fetch_page(notion, page_id):
         raise Refused(f"page {page_id} could not be read ({error})") from None
 
 
-def newest_first_blocks(source):
-    """How many top-level blocks to walk, by page, for the pages the source lists
-    as newest-first."""
-    entries = source.get("newest_first_pages", [])
+NEWEST_FIRST = "first"
+NEWEST_LAST = "last"
+
+
+class Window:
+    """Which end of a page's top level to walk, and how many blocks of it."""
+
+    def __init__(self, end, blocks):
+        self.end = end
+        self.blocks = blocks
+
+    def select(self, top_level):
+        if self.end == NEWEST_FIRST:
+            return top_level[:self.blocks]
+
+        return top_level[-self.blocks:]
+
+    def note(self, walked, unread):
+        if self.end == NEWEST_FIRST:
+            return [f"*Listed as newest-first: only the first {walked} top-level block(s) were "
+                    f"walked; {unread} older one(s) were not read.*", ""]
+
+        return [f"*Listed as newest-last: only the last {walked} top-level block(s) were walked; "
+                f"{unread} earlier one(s) were not read.*", ""]
+
+
+def entries_of(source, key):
+    entries = source.get(key, [])
+
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        raise configuration.ConfigurationError(f'"{key}" must be a list of objects')
+
+    return entries
+
+
+def entry_label(entry):
+    return entry.get("name", entry.get("id", "?"))
+
+
+def window_blocks(source, key):
+    """How many top-level blocks to walk, by the id each entry under `key` names."""
     limits = {}
 
-    for entry in entries:
+    for entry in entries_of(source, key):
         blocks = entry.get("blocks")
 
         if "id" not in entry or not isinstance(blocks, int) or isinstance(blocks, bool) \
                 or blocks < 1:
             raise configuration.ConfigurationError(
-                f"newest_first_pages entry {entry.get('name', entry.get('id', '?'))!r} needs an "
+                f"{key} entry {entry_label(entry)!r} needs an "
                 '"id" and a positive whole number of "blocks"'
             )
 
@@ -248,9 +303,68 @@ def newest_first_blocks(source):
     return limits
 
 
-def newest_first_note(walked, unread):
-    return [f"*Listed as newest-first: only the first {walked} top-level block(s) were walked; "
-            f"{unread} older one(s) were not read.*", ""]
+def skipped_location_names(source):
+    """The name of each location the source lists as skipped, by its id."""
+    names = {}
+
+    for entry in entries_of(source, "skipped_locations"):
+        if not entry.get("id") or not entry.get("name"):
+            raise configuration.ConfigurationError(
+                f"skipped_locations entry {entry_label(entry)!r} needs a \"name\" and an \"id\""
+            )
+
+        names[notion_search.normalize(entry["id"])] = entry["name"]
+
+    return names
+
+
+def nearest(lineage, identifiers):
+    """The first id of the lineage that is one of these, or None."""
+    return next((identifier for identifier in lineage if identifier in identifiers), None)
+
+
+class ReadingRules:
+    """How much of a page the register says to read: none of it, under a skipped
+    location; one end of its top level, under a window; otherwise all of it.
+
+    Covered locations are not among them: those are excluded before any rule is
+    asked, and no rule here can bring one back."""
+
+    def __init__(self, newest_first, newest_last, skipped):
+        self.newest_first = newest_first
+        self.newest_last = newest_last
+        self.skipped = skipped
+
+    @classmethod
+    def from_source(cls, source):
+        """The source's rules, refused before any request when an entry is malformed."""
+        return cls(window_blocks(source, "newest_first_pages"),
+                   window_blocks(source, "newest_last_locations"),
+                   skipped_location_names(source))
+
+    def skipped_by(self, page, ancestry):
+        """The name of the skipped location the page sits at or under, or None."""
+        if not self.skipped:
+            return None
+
+        location = nearest(ancestry.lineage(page), self.skipped)
+
+        return self.skipped.get(location)
+
+    def window_for(self, page, ancestry):
+        """The page's window, or None to walk it whole. Its own newest-first entry
+        wins; then the nearest newest-last location at or above it."""
+        identifier = notion_search.normalize(page["id"])
+
+        if identifier in self.newest_first:
+            return Window(NEWEST_FIRST, self.newest_first[identifier])
+
+        if not self.newest_last:
+            return None
+
+        location = nearest(ancestry.lineage(page), self.newest_last)
+
+        return Window(NEWEST_LAST, self.newest_last[location]) if location else None
 
 
 class PageReport:
@@ -262,9 +376,10 @@ class PageReport:
         self.comments = comments
 
 
-def page_report(notion, page, since, gaps, heading="#", authors=None, newest_blocks=None):
+def page_report(notion, page, since, gaps, heading="#", authors=None, window=None):
+    """The page's changes. A `window` walks only one end of its top level."""
     top_level = notion.children(page["id"])
-    walked = top_level[:newest_blocks]
+    walked = window.select(top_level) if window else top_level
     nodes = nodes_of(notion, walked, since, gaps)
     attach_comments(notion, nodes, since, gaps)
     authors = authors or Authors(notion)
@@ -284,8 +399,8 @@ def page_report(notion, page, since, gaps, heading="#", authors=None, newest_blo
         "",
     ]
 
-    if newest_blocks is not None:
-        lines += newest_first_note(len(walked), len(top_level) - len(walked))
+    if window:
+        lines += window.note(len(walked), len(top_level) - len(walked))
 
     lines += [render_comment(comment, authors) for comment in page_comments]
     lines += render_nodes(nodes, authors)
@@ -312,7 +427,7 @@ def main(argv=None):
     try:
         source = configuration.source(arguments.source)
         locations, _ = notion_search.covered_locations(source)
-        limits = newest_first_blocks(source)
+        rules = ReadingRules.from_source(source)
         since = read_watermark(arguments.watermark)
         notion = Notion.from_source(source, notion_credential.authorization(source))
 
@@ -326,9 +441,10 @@ def main(argv=None):
     # Nothing is printed until the page is placed outside every covered location.
     try:
         page = fetch_page(notion, arguments.page_id)
-        place(notion, locations, page)
-        newest_blocks = limits.get(notion_search.normalize(page["id"]))
-        text = page_report(notion, page, since, gaps, newest_blocks=newest_blocks).text
+        ancestry = notion_search.Ancestry(notion)
+        place(notion, locations, page, ancestry)
+        text = page_report(notion, page, since, gaps,
+                           window=rules.window_for(page, ancestry)).text
 
     except Refused as refusal:
         print(f"notion_page_changes: {refusal}", file=sys.stderr)

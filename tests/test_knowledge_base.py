@@ -1230,6 +1230,8 @@ class StubNotionSearch:
       └─ covered-db         database → covered-row
     private                 a page the integration cannot see (404) → unshared-child
     forbidden               a page that refuses (403), opt-in → restricted-child
+    crm-db                  a database of call logs, opt-in → call-notes, pinned-notes
+    recruiting              a page, opt-in → recruiting-toggle (block) → candidate
 
     Search pages hold two results each, and page 2's cursor names a covered item —
     the break that stalled a sweep run through the MCP server.
@@ -1293,6 +1295,45 @@ class StubNotionSearch:
 
     USERS = {"reviewer": {"object": "user", "id": "reviewer", "name": "Reviewer Name"}}
 
+    # The opt-in pages the reading rules are tried on. Each call log holds an old
+    # block and two new ones, so which end was walked shows in what prints.
+    CALL_NOTES_RESULTS = [
+        search_item("call-notes", "2026-09-23T15:00:00.000Z", "Acme calls",
+                    "database_id", "crm-db"),
+        search_item("pinned-notes", "2026-09-23T14:00:00.000Z", "Globex calls",
+                    "database_id", "crm-db"),
+        search_item("candidate", "2026-09-23T13:00:00.000Z", "Candidate notes",
+                    "block_id", "recruiting-toggle"),
+    ]
+
+    CALL_NOTES_CHILDREN = {
+        "call-notes": [
+            search_block("old-call", "heading_2", "OLD-CALL", "2026-09-01T09:00:00.000Z"),
+            search_block("mid-call", "paragraph", "MID-CALL text", "2026-09-23T15:00:00.000Z"),
+            search_block("new-call", "paragraph", "NEW-CALL text", "2026-09-23T15:00:00.000Z"),
+        ],
+        "pinned-notes": [
+            search_block("pinned-top", "paragraph", "PINNED-TOP text",
+                         "2026-09-23T14:00:00.000Z"),
+            search_block("pinned-old", "paragraph", "PINNED-OLD", "2026-09-01T09:00:00.000Z"),
+            search_block("pinned-bottom", "paragraph", "PINNED-BOTTOM text",
+                         "2026-09-23T14:00:00.000Z"),
+        ],
+        "candidate": [search_block("candidate-paragraph", "paragraph", "CANDIDATE-MARKER text",
+                                   "2026-09-23T13:00:00.000Z")],
+    }
+
+    CALL_NOTES_METADATA = {
+        **{("pages", item["id"]): item for item in CALL_NOTES_RESULTS},
+        ("databases", "crm-db"): search_item("crm-db", "2026-09-01T09:00:00.000Z", "CRM",
+                                             kind="database"),
+        ("blocks", "recruiting-toggle"): {"object": "block", "id": "recruiting-toggle",
+                                          "parent": {"type": "page_id",
+                                                     "page_id": "recruiting"}},
+        ("pages", "recruiting"): search_item("recruiting", "2026-09-01T09:00:00.000Z",
+                                             "Recruiting"),
+    }
+
     METADATA = {
         ("pages", "hub"): search_item("hub", "2026-09-01T09:00:00.000Z", "Operations hub"),
         ("pages", "open-page"): search_item("open-page", "2026-09-24T09:00:00.000Z", "Roadmap"),
@@ -1309,7 +1350,7 @@ class StubNotionSearch:
     }
 
     def __init__(self, restricted=False, search_status=None, failing_comments=(),
-                 failing_children=()):
+                 failing_children=(), call_notes=False):
         import http.server
         import threading
 
@@ -1320,12 +1361,18 @@ class StubNotionSearch:
         self.failing_children = set(failing_children)
         self.search_requests = 0
         self.requested = []
+        self.commented = []
         self.authorizations = []
         self.first_request_at = None
 
         if restricted:
             self.results.insert(4, self.RESTRICTED)
             self.METADATA = {**self.METADATA, ("pages", "restricted-child"): self.RESTRICTED}
+
+        if call_notes:
+            self.results[1:1] = self.CALL_NOTES_RESULTS
+            self.METADATA = {**self.METADATA, **self.CALL_NOTES_METADATA}
+            self.CHILDREN = {**self.CHILDREN, **self.CALL_NOTES_CHILDREN}
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *arguments):
@@ -1368,6 +1415,7 @@ class StubNotionSearch:
 
                 if parts == ("comments",):
                     block = dict(pair.split("=") for pair in query.split("&")).get("block_id")
+                    stub.commented.append(block)
 
                     if block in stub.failing_comments:
                         return self.reply(403, {"object": "error", "code": "restricted_resource",
@@ -1627,6 +1675,113 @@ class NotionSweepTest(unittest.TestCase):
         self.assertIn("newest_first_pages entry 'Roadmap'", result.stderr)
         self.assertEqual(self.stub.search_requests, 0)
 
+    def sweep_call_notes(self, **rules):
+        self.start_stub(call_notes=True)
+        self.write_register({"covered_by": "notion-covered", **rules})
+
+        return self.sweep()
+
+    def test_a_page_under_a_newest_last_location_is_walked_from_the_bottom_only(self):
+        """call-notes is a row of crm-db; only its last block is walked, but the
+        page's own comments are still asked for."""
+        result = self.sweep_call_notes(
+            newest_last_locations=[{"name": "CRM", "id": "crm-db", "blocks": 1}])
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("NEW-CALL text", self.manifest())
+        self.assertNotIn("MID-CALL", self.manifest())
+        self.assertIn("only the last 1 top-level block(s) were walked; 2 earlier one(s) were not "
+                      "read", self.manifest())
+        self.assertIn("call-notes", self.stub.commented)
+        self.assertNotIn("old-call", self.stub.commented)
+        self.assertNotIn("mid-call", self.stub.commented)
+
+    def test_the_nearest_newest_last_location_wins(self):
+        result = self.sweep_call_notes(newest_last_locations=[
+            {"name": "CRM", "id": "crm-db", "blocks": 1},
+            {"name": "Acme calls", "id": "call-notes", "blocks": 2},
+        ])
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("MID-CALL text", self.manifest())
+        self.assertIn("PINNED-BOTTOM text", self.manifest())
+        self.assertNotIn("PINNED-TOP", self.manifest())
+
+    def test_a_pages_own_newest_first_entry_beats_a_newest_last_location(self):
+        result = self.sweep_call_notes(
+            newest_last_locations=[{"name": "CRM", "id": "crm-db", "blocks": 1}],
+            newest_first_pages=[{"name": "Globex calls", "id": "pinned-notes", "blocks": 1}])
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("PINNED-TOP text", self.manifest())
+        self.assertNotIn("PINNED-BOTTOM", self.manifest())
+        self.assertIn("Listed as newest-first", self.manifest())
+
+    def test_a_skipped_page_is_listed_but_walked_by_no_request(self):
+        """candidate sits under recruiting through a block; it stays in the
+        manifest, is named as skipped, and nothing of it is asked for."""
+        result = self.sweep_call_notes(
+            skipped_locations=[{"name": "Recruiting", "id": "recruiting"}])
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("| Candidate notes | `candidate` |", self.manifest())
+        self.assertIn("## Skipped — listed, not read (1)", self.manifest())
+        self.assertIn("- Candidate notes — `candidate`, under Recruiting", self.manifest())
+        self.assertNotIn("CANDIDATE-MARKER", self.manifest())
+        self.assertNotIn(("blocks", "candidate", "children"), self.stub.requested)
+        self.assertNotIn("candidate", self.stub.commented)
+        self.assertIn("; 1 skipped", result.stdout)
+
+    def test_a_skip_does_not_withhold_the_watermark(self):
+        result = self.sweep_call_notes(
+            skipped_locations=[{"name": "Recruiting", "id": "recruiting"}])
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("New watermark", result.stdout)
+        self.assertEqual(result.stderr, "")
+
+    def test_a_skip_beats_a_window(self):
+        self.sweep_call_notes(
+            skipped_locations=[{"name": "Recruiting", "id": "recruiting"}],
+            newest_last_locations=[{"name": "Recruiting", "id": "recruiting", "blocks": 1}])
+
+        self.assertIn("under Recruiting", self.manifest())
+        self.assertNotIn("CANDIDATE-MARKER", self.manifest())
+
+    def test_the_reading_rules_fetch_no_ancestor_the_placement_fetched(self):
+        self.sweep_call_notes(
+            skipped_locations=[{"name": "Recruiting", "id": "recruiting"}],
+            newest_last_locations=[{"name": "CRM", "id": "crm-db", "blocks": 1}])
+
+        for ancestor in (("databases", "crm-db"), ("blocks", "recruiting-toggle"),
+                         ("pages", "recruiting")):
+            with self.subTest(ancestor=ancestor):
+                self.assertEqual(self.stub.requested.count(ancestor), 1)
+
+    def test_a_newest_last_entry_without_a_positive_block_count_is_refused(self):
+        for blocks in (None, 0, True):
+            with self.subTest(blocks=blocks):
+                entry = {"name": "CRM", "id": "crm-db", **({} if blocks is None else
+                                                           {"blocks": blocks})}
+                self.write_register({"covered_by": "notion-covered",
+                                     "newest_last_locations": [entry]})
+
+                result = self.sweep()
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("newest_last_locations entry 'CRM'", result.stderr)
+                self.assertEqual(self.stub.search_requests, 0)
+
+    def test_a_skipped_location_without_an_id_is_refused(self):
+        self.write_register({"covered_by": "notion-covered",
+                             "skipped_locations": [{"name": "Recruiting"}]})
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("skipped_locations entry 'Recruiting'", result.stderr)
+        self.assertEqual(self.stub.search_requests, 0)
+
 
 class NotionAdapterSearchTest(unittest.TestCase):
     """The notion adapter's default discovery, by search, against the search stub.
@@ -1749,7 +1904,7 @@ class NotionPageChangesTest(unittest.TestCase):
         self.stub.close()
         self.directory.cleanup()
 
-    def start_stub(self, **options):
+    def start_stub(self, rules=None, **options):
         if self.stub:
             self.stub.close()
 
@@ -1758,7 +1913,7 @@ class NotionPageChangesTest(unittest.TestCase):
         self.config = write_register(self.root, register(
             notion={"adapter": "notion-sweep", "api_base": self.stub.api_base,
                     "request_interval_seconds": 0, "credential": credential,
-                    "covered_by": "notion-covered"},
+                    "covered_by": "notion-covered", **(rules or {})},
             **{"notion-covered": {"adapter": "notion",
                                   "covered_locations": [{"name": "Operations hub", "id": "hub"}]}},
         ))
@@ -1828,3 +1983,25 @@ class NotionPageChangesTest(unittest.TestCase):
         self.assertIn("NEW-BULLET text", result.stdout)
         self.assertIn("comments on commented-bullet could not be read", result.stderr)
         self.assertNotIn("LEAKY-ERROR-MESSAGE", result.stdout + result.stderr)
+
+    def test_a_page_under_a_newest_last_location_is_read_from_the_bottom(self):
+        self.start_stub(rules={"newest_last_locations": [{"name": "CRM", "id": "crm-db",
+                                                          "blocks": 1}]},
+                        call_notes=True)
+
+        result = self.changes("call-notes")
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("NEW-CALL text", result.stdout)
+        self.assertNotIn("MID-CALL", result.stdout)
+        self.assertIn("Listed as newest-last", result.stdout)
+
+    def test_a_page_asked_for_by_hand_is_read_under_a_skipped_location(self):
+        self.start_stub(rules={"skipped_locations": [{"name": "Recruiting", "id": "recruiting"}]},
+                        call_notes=True)
+
+        result = self.changes("candidate")
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("CANDIDATE-MARKER text", result.stdout)
+
