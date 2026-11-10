@@ -1297,8 +1297,10 @@ class StubNotionSearch:
 
     # The opt-in pages the reading rules are tried on. call-notes is flat but for
     # an old heading hiding a new bullet, which only a full walk finds, and a new
-    # heading whose new child a shallow read still descends to. pinned-notes has
-    # new blocks at both ends, so a newest-first read shows by what it leaves out.
+    # heading whose new child a shallow read still descends to, and a block edited
+    # in the watermark's own minute, which a shallow read must still walk.
+    # pinned-notes has new blocks at both ends, so a newest-first read shows by
+    # what it leaves out.
     CALL_NOTES_RESULTS = [
         search_item("call-notes", "2026-09-23T15:00:00.000Z", "Acme calls",
                     "database_id", "crm-db"),
@@ -1315,6 +1317,8 @@ class StubNotionSearch:
             search_block("mid-call", "heading_2", "MID-CALL text", "2026-09-23T15:00:00.000Z",
                          has_children=True),
             search_block("new-call", "paragraph", "NEW-CALL text", "2026-09-23T15:00:00.000Z"),
+            search_block("minute-call", "paragraph", "MINUTE-CALL text",
+                         "2026-09-20T10:30:00.000Z"),
         ],
         "old-call": [search_block("nested-call", "bulleted_list_item", "NESTED-CALL text",
                                   "2026-09-23T15:00:00.000Z")],
@@ -1703,11 +1707,18 @@ class NotionSweepTest(unittest.TestCase):
 
         self.assertNotIn("NESTED-CALL", self.manifest())
         self.assertIn("Read shallow: only top-level blocks edited since the watermark were "
-                      "walked (2 of 3)", self.manifest())
+                      "walked (3 of 4)", self.manifest())
         self.assertNotIn(("blocks", "old-call", "children"), self.stub.requested)
         self.assertNotIn("old-call", self.stub.commented)
         self.assertIn("mid-detail", self.stub.commented)
         self.assertIn("call-notes", self.stub.commented)
+
+    def test_a_shallow_read_walks_a_block_edited_in_the_watermarks_own_minute(self):
+        """The watermark is inclusive at minute granularity, top-level blocks too."""
+        self.sweep_call_notes(shallow_locations=[{"name": "CRM", "id": "crm-db"}])
+
+        self.assertIn("MINUTE-CALL text", self.manifest())
+        self.assertIn("minute-call", self.stub.commented)
 
     def test_a_page_read_whole_finds_what_a_shallow_read_does_not(self):
         self.sweep_call_notes()
@@ -1718,7 +1729,7 @@ class NotionSweepTest(unittest.TestCase):
         self.sweep_call_notes(shallow_locations=[{"name": "CRM", "id": "crm-db"},
                                                  {"name": "Acme calls", "id": "call-notes"}])
 
-        self.assertIn("walked (2 of 3)", self.manifest())
+        self.assertIn("walked (3 of 4)", self.manifest())
         self.assertNotIn("NESTED-CALL", self.manifest())
 
     def test_a_pages_own_newest_first_entry_beats_a_shallow_location(self):
