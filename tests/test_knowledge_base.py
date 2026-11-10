@@ -1295,8 +1295,10 @@ class StubNotionSearch:
 
     USERS = {"reviewer": {"object": "user", "id": "reviewer", "name": "Reviewer Name"}}
 
-    # The opt-in pages the reading rules are tried on. Each call log holds an old
-    # block and two new ones, so which end was walked shows in what prints.
+    # The opt-in pages the reading rules are tried on. call-notes is flat but for
+    # an old heading hiding a new bullet, which only a full walk finds, and a new
+    # heading whose new child a shallow read still descends to. pinned-notes has
+    # new blocks at both ends, so a newest-first read shows by what it leaves out.
     CALL_NOTES_RESULTS = [
         search_item("call-notes", "2026-09-23T15:00:00.000Z", "Acme calls",
                     "database_id", "crm-db"),
@@ -1308,10 +1310,16 @@ class StubNotionSearch:
 
     CALL_NOTES_CHILDREN = {
         "call-notes": [
-            search_block("old-call", "heading_2", "OLD-CALL", "2026-09-01T09:00:00.000Z"),
-            search_block("mid-call", "paragraph", "MID-CALL text", "2026-09-23T15:00:00.000Z"),
+            search_block("old-call", "heading_2", "OLD-CALL", "2026-09-01T09:00:00.000Z",
+                         has_children=True),
+            search_block("mid-call", "heading_2", "MID-CALL text", "2026-09-23T15:00:00.000Z",
+                         has_children=True),
             search_block("new-call", "paragraph", "NEW-CALL text", "2026-09-23T15:00:00.000Z"),
         ],
+        "old-call": [search_block("nested-call", "bulleted_list_item", "NESTED-CALL text",
+                                  "2026-09-23T15:00:00.000Z")],
+        "mid-call": [search_block("mid-detail", "bulleted_list_item", "MID-DETAIL text",
+                                  "2026-09-23T15:00:00.000Z")],
         "pinned-notes": [
             search_block("pinned-top", "paragraph", "PINNED-TOP text",
                          "2026-09-23T14:00:00.000Z"),
@@ -1681,35 +1689,41 @@ class NotionSweepTest(unittest.TestCase):
 
         return self.sweep()
 
-    def test_a_page_under_a_newest_last_location_is_walked_from_the_bottom_only(self):
-        """call-notes is a row of crm-db; only its last block is walked, but the
-        page's own comments are still asked for."""
-        result = self.sweep_call_notes(
-            newest_last_locations=[{"name": "CRM", "id": "crm-db", "blocks": 1}])
+    def test_a_shallow_page_walks_only_its_edited_top_level_blocks(self):
+        """call-notes is a row of crm-db. Its unchanged heading is asked for neither
+        children nor comments, so the new bullet under it goes unseen; the new
+        heading is walked into as usual, and the page's own comments still read."""
+        result = self.sweep_call_notes(shallow_locations=[{"name": "CRM", "id": "crm-db"}])
 
         self.assertEqual(result.returncode, 0)
-        self.assertIn("NEW-CALL text", self.manifest())
-        self.assertNotIn("MID-CALL", self.manifest())
-        self.assertIn("only the last 1 top-level block(s) were walked; 2 earlier one(s) were not "
-                      "read", self.manifest())
-        self.assertIn("call-notes", self.stub.commented)
+
+        for text in ("MID-CALL text", "MID-DETAIL text", "NEW-CALL text"):
+            with self.subTest(text=text):
+                self.assertIn(text, self.manifest())
+
+        self.assertNotIn("NESTED-CALL", self.manifest())
+        self.assertIn("Read shallow: only top-level blocks edited since the watermark were "
+                      "walked (2 of 3)", self.manifest())
+        self.assertNotIn(("blocks", "old-call", "children"), self.stub.requested)
         self.assertNotIn("old-call", self.stub.commented)
-        self.assertNotIn("mid-call", self.stub.commented)
+        self.assertIn("mid-detail", self.stub.commented)
+        self.assertIn("call-notes", self.stub.commented)
 
-    def test_the_nearest_newest_last_location_wins(self):
-        result = self.sweep_call_notes(newest_last_locations=[
-            {"name": "CRM", "id": "crm-db", "blocks": 1},
-            {"name": "Acme calls", "id": "call-notes", "blocks": 2},
-        ])
+    def test_a_page_read_whole_finds_what_a_shallow_read_does_not(self):
+        self.sweep_call_notes()
 
-        self.assertEqual(result.returncode, 0)
-        self.assertIn("MID-CALL text", self.manifest())
-        self.assertIn("PINNED-BOTTOM text", self.manifest())
-        self.assertNotIn("PINNED-TOP", self.manifest())
+        self.assertIn("NESTED-CALL text", self.manifest())
 
-    def test_a_pages_own_newest_first_entry_beats_a_newest_last_location(self):
+    def test_two_shallow_locations_over_one_page_read_it_shallow(self):
+        self.sweep_call_notes(shallow_locations=[{"name": "CRM", "id": "crm-db"},
+                                                 {"name": "Acme calls", "id": "call-notes"}])
+
+        self.assertIn("walked (2 of 3)", self.manifest())
+        self.assertNotIn("NESTED-CALL", self.manifest())
+
+    def test_a_pages_own_newest_first_entry_beats_a_shallow_location(self):
         result = self.sweep_call_notes(
-            newest_last_locations=[{"name": "CRM", "id": "crm-db", "blocks": 1}],
+            shallow_locations=[{"name": "CRM", "id": "crm-db"}],
             newest_first_pages=[{"name": "Globex calls", "id": "pinned-notes", "blocks": 1}])
 
         self.assertEqual(result.returncode, 0)
@@ -1740,47 +1754,70 @@ class NotionSweepTest(unittest.TestCase):
         self.assertIn("New watermark", result.stdout)
         self.assertEqual(result.stderr, "")
 
-    def test_a_skip_beats_a_window(self):
+    def test_a_skip_beats_a_shallow_location_and_a_newest_first_entry(self):
         self.sweep_call_notes(
-            skipped_locations=[{"name": "Recruiting", "id": "recruiting"}],
-            newest_last_locations=[{"name": "Recruiting", "id": "recruiting", "blocks": 1}])
+            skipped_locations=[{"name": "CRM", "id": "crm-db"}],
+            shallow_locations=[{"name": "CRM", "id": "crm-db"}],
+            newest_first_pages=[{"name": "Globex calls", "id": "pinned-notes", "blocks": 1}])
 
-        self.assertIn("under Recruiting", self.manifest())
-        self.assertNotIn("CANDIDATE-MARKER", self.manifest())
+        self.assertIn("## Skipped — listed, not read (2)", self.manifest())
+        self.assertNotIn("PINNED-TOP", self.manifest())
+        self.assertNotIn("NEW-CALL", self.manifest())
+
+    def test_a_covered_location_wins_over_every_reading_rule(self):
+        """call-notes is covered and sits under, and at, ids the rules name. It is
+        counted and nothing more: not listed, read, asked for, or named as skipped."""
+        rules = {"skipped_locations": [{"name": "CRM", "id": "crm-db"},
+                                       {"name": "Acme", "id": "call-notes"}],
+                 "shallow_locations": [{"name": "CRM", "id": "crm-db"},
+                                       {"name": "Acme", "id": "call-notes"}]}
+
+        for key, entries in rules.items():
+            with self.subTest(rule=key):
+                self.start_stub(call_notes=True)
+                self.write_register({"covered_locations": [{"name": "Acme covered",
+                                                            "id": "call-notes"}],
+                                     key: entries})
+
+                result = self.sweep()
+
+                self.assertEqual(result.returncode, 0)
+                self.assertIn("- Acme covered: 1", self.manifest())
+                self.assertNotIn("`call-notes`", self.manifest())
+                self.assertNotIn("Acme calls", self.manifest() + result.stdout + result.stderr)
+                self.assertNotIn("CALL text", self.manifest())
+                self.assertNotIn(("blocks", "call-notes", "children"), self.stub.requested)
+                self.assertNotIn("call-notes", self.stub.commented)
 
     def test_the_reading_rules_fetch_no_ancestor_the_placement_fetched(self):
         self.sweep_call_notes(
             skipped_locations=[{"name": "Recruiting", "id": "recruiting"}],
-            newest_last_locations=[{"name": "CRM", "id": "crm-db", "blocks": 1}])
+            shallow_locations=[{"name": "CRM", "id": "crm-db"}])
 
         for ancestor in (("databases", "crm-db"), ("blocks", "recruiting-toggle"),
                          ("pages", "recruiting")):
             with self.subTest(ancestor=ancestor):
                 self.assertEqual(self.stub.requested.count(ancestor), 1)
 
-    def test_a_newest_last_entry_without_a_positive_block_count_is_refused(self):
-        for blocks in (None, 0, True):
-            with self.subTest(blocks=blocks):
-                entry = {"name": "CRM", "id": "crm-db", **({} if blocks is None else
-                                                           {"blocks": blocks})}
-                self.write_register({"covered_by": "notion-covered",
-                                     "newest_last_locations": [entry]})
-
-                result = self.sweep()
-
-                self.assertEqual(result.returncode, 1)
-                self.assertIn("newest_last_locations entry 'CRM'", result.stderr)
-                self.assertEqual(self.stub.search_requests, 0)
-
-    def test_a_skipped_location_without_an_id_is_refused(self):
-        self.write_register({"covered_by": "notion-covered",
-                             "skipped_locations": [{"name": "Recruiting"}]})
+    def assert_refused(self, key, entry, label):
+        self.write_register({"covered_by": "notion-covered", key: [entry]})
 
         result = self.sweep()
 
         self.assertEqual(result.returncode, 1)
-        self.assertIn("skipped_locations entry 'Recruiting'", result.stderr)
+        self.assertIn(f"{key} entry {label!r}", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(self.stub.search_requests, 0)
+
+    def test_a_location_entry_without_a_name_and_a_string_id_is_refused(self):
+        for key in ("skipped_locations", "shallow_locations"):
+            for entry, label in (({"name": "X"}, "X"), ({"name": "X", "id": 123}, "X"),
+                                 ({"id": "crm-db"}, "crm-db")):
+                with self.subTest(key=key, entry=entry):
+                    self.assert_refused(key, entry, label)
+
+    def test_a_newest_first_entry_with_a_non_string_id_is_refused(self):
+        self.assert_refused("newest_first_pages", {"name": "X", "id": 123, "blocks": 1}, "X")
 
 
 class NotionAdapterSearchTest(unittest.TestCase):
@@ -1984,17 +2021,16 @@ class NotionPageChangesTest(unittest.TestCase):
         self.assertIn("comments on commented-bullet could not be read", result.stderr)
         self.assertNotIn("LEAKY-ERROR-MESSAGE", result.stdout + result.stderr)
 
-    def test_a_page_under_a_newest_last_location_is_read_from_the_bottom(self):
-        self.start_stub(rules={"newest_last_locations": [{"name": "CRM", "id": "crm-db",
-                                                          "blocks": 1}]},
+    def test_a_page_under_a_shallow_location_is_read_shallow(self):
+        self.start_stub(rules={"shallow_locations": [{"name": "CRM", "id": "crm-db"}]},
                         call_notes=True)
 
         result = self.changes("call-notes")
 
         self.assertEqual(result.returncode, 0)
         self.assertIn("NEW-CALL text", result.stdout)
-        self.assertNotIn("MID-CALL", result.stdout)
-        self.assertIn("Listed as newest-last", result.stdout)
+        self.assertNotIn("NESTED-CALL", result.stdout)
+        self.assertIn("Read shallow", result.stdout)
 
     def test_a_page_asked_for_by_hand_is_read_under_a_skipped_location(self):
         self.start_stub(rules={"skipped_locations": [{"name": "Recruiting", "id": "recruiting"}]},

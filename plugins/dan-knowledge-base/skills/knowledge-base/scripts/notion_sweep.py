@@ -48,19 +48,21 @@ fetches no ancestor twice:
 
   * a page listed under `newest_first_pages` is read from the top only, for a
     long page that grows by inserting new sections above the old;
-  * a page at or under a `newest_last_locations` entry, at any depth, is read
-    from the bottom only, for pages that append — a database of call logs;
+  * a page at or under a `shallow_locations` entry, at any depth, walks only
+    the top-level blocks edited since the watermark, for flat pages — a CRM
+    database whose rows are hundreds of top-level paragraphs. Notion moves no
+    edit time on a parent for a nested change, which is why the full walk
+    descends; a flat page has nothing nested, so its top-level times suffice;
   * a page at or under a `skipped_locations` entry is **not read at all**: it
     stays in the manifest and is named in a skipped section, for locations whose
     pages are edited often and never yield anything. A skip is not a gap.
 
-    "newest_last_locations": [{"name": "CRM", "id": "<database id>", "blocks": 2}],
+    "shallow_locations": [{"name": "CRM", "id": "<database id>"}],
     "skipped_locations": [{"name": "Recruiting", "id": "<page id>"}]
 
-A skip beats a window, a page's own newest-first entry beats a newest-last
-location above it, and the nearest newest-last location wins. Covered locations
-are excluded before any of this, so no rule reaches one. See
-`notion_page_changes.py` for what a window reads.
+A skip beats both others, and a page's own newest-first entry beats a shallow
+location above it. Covered locations are excluded before any of this, so no rule
+reaches one. See `notion_page_changes.py` for what each reads.
 
 **A gap withholds the watermark.** A search page that could not be read, a
 result whose chain could not be followed, a page whose blocks or comments could
@@ -148,15 +150,15 @@ def read_changes(notion, changes, since, gaps, rules, ancestry):
     pages = [item for item in changes.outside if item.get("object") == "page"]
 
     for page in sorted(pages, key=lambda entry: entry["last_edited_time"], reverse=True):
-        location = rules.skipped_by(page, ancestry)
-
-        if location is not None:
-            readings.skipped.append((page, location))
-            continue
-
         try:
+            location = rules.skipped_by(page, ancestry)
+
+            if location is not None:
+                readings.skipped.append((page, location))
+                continue
+
             report = page_report(notion, page, since, gaps, heading="##", authors=authors,
-                                 window=rules.window_for(page, ancestry))
+                                 scope=rules.scope_for(page, ancestry))
 
         except Exception as error:  # noqa: BLE001 — reduced to a type, as everywhere here
             gaps.add(f"page {page['id']} could not be read ({type(error).__name__})")

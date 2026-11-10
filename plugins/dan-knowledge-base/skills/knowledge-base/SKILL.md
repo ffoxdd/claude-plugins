@@ -239,12 +239,16 @@ in the output how many older ones it left unread:
 "newest_first_pages": [{"name": "Weekly reviews", "id": "<page id>", "blocks": 2}]
 ```
 
-Pages that append instead — a database of call logs, one dated heading a call —
-go under `newest_last_locations` by the database or parent page they sit in.
-Every page beneath it, at any depth, is read over its last `blocks` only:
+Flat pages — a CRM database whose rows are hundreds of top-level paragraphs —
+go under `shallow_locations` by the database or parent page they sit in. Every
+page at or under it, at any depth, walks only the top-level blocks edited since
+the watermark. Notion moves no edit time on a parent for a nested change, which
+is what the full walk is for; a flat page keeps everything at the top level,
+where the edit times are reliable. An edit or comment nested under an unchanged
+block goes unseen, so keep it to pages that are flat:
 
 ```
-"newest_last_locations": [{"name": "CRM", "id": "<database id>", "blocks": 2}]
+"shallow_locations": [{"name": "CRM", "id": "<database id>"}]
 ```
 
 And a location whose pages are touched often but never yield anything goes under
@@ -255,8 +259,8 @@ skipped section, but are not read; a skip is not a gap:
 "skipped_locations": [{"name": "Recruiting", "id": "<page id>"}]
 ```
 
-A skip beats a window, a page's own `newest_first_pages` entry beats a
-newest-last location above it, and the nearest newest-last location wins.
+A skip beats both others, and a page's own `newest_first_pages` entry beats a
+shallow location above it.
 Covered locations are excluded before any of this.
 
 All four print the output path, then counts, then the new watermark, and send gaps

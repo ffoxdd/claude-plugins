@@ -37,20 +37,23 @@ walked, and the rest are counted, not read:
 Choose `blocks` to cover every section still being edited — the section being
 written and the one being reviewed — since an edit below them goes unseen.
 
-**A newest-last location is read from the bottom.** Its mirror image is a page
-that appends each new section below the last — a call log, one dated heading a
-call. The register lists the location such pages sit under, a database or a
-parent page, and every page beneath it at any depth walks only its last
-`blocks` top-level blocks:
+**A shallow location is read at its top level only.** The full walk exists for
+nested content: Notion moves no edit time on a block when something inside it
+changes, so only descending finds the change. A flat page — a CRM row of
+hundreds of top-level paragraphs under a heading or two — keeps its content at
+the top level, where each block's own edit time is reliable. The register lists
+the location such pages sit under, a database or a parent page, and every page
+at or under it, at any depth, walks only the top-level blocks edited since the
+watermark, with their children as usual:
 
-    "newest_last_locations": [{"name": "CRM", "id": "<database id>", "blocks": 2}]
+    "shallow_locations": [{"name": "CRM", "id": "<database id>"}]
 
 Either way the whole top level is listed, which is cheap, and the page's own
-comments are still asked for; only the blocks outside the window go unread.
-An exact `newest_first_pages` entry beats a newest-last location above it, and
-the nearest newest-last location beats one further up. A location found by
-parent chain (`notion_search.Ancestry`) whose chain cannot be followed applies
-no window: the page is read whole, which costs time but misses nothing.
+comments are still asked for; an unchanged top-level block is asked for nothing,
+so an edit nested under one, or a comment on one, goes unseen. A page's own
+`newest_first_pages` entry beats a shallow location above it. A location found
+by parent chain (`notion_search.Ancestry`) whose chain cannot be followed
+applies nothing: the page is read whole, which costs time but misses nothing.
 
 The sweep's `skipped_locations` are not read here: a page asked for by hand is
 read, wherever it sits.
@@ -245,30 +248,30 @@ def fetch_page(notion, page_id):
         raise Refused(f"page {page_id} could not be read ({error})") from None
 
 
-NEWEST_FIRST = "first"
-NEWEST_LAST = "last"
+class NewestFirst:
+    """The first few top-level blocks of a page that grows at the top."""
 
-
-class Window:
-    """Which end of a page's top level to walk, and how many blocks of it."""
-
-    def __init__(self, end, blocks):
-        self.end = end
+    def __init__(self, blocks):
         self.blocks = blocks
 
-    def select(self, top_level):
-        if self.end == NEWEST_FIRST:
-            return top_level[:self.blocks]
+    def select(self, top_level, since):
+        return top_level[:self.blocks]
 
-        return top_level[-self.blocks:]
+    def note(self, walked, listed):
+        return [f"*Listed as newest-first: only the first {walked} top-level block(s) were "
+                f"walked; {listed - walked} older one(s) were not read.*", ""]
 
-    def note(self, walked, unread):
-        if self.end == NEWEST_FIRST:
-            return [f"*Listed as newest-first: only the first {walked} top-level block(s) were "
-                    f"walked; {unread} older one(s) were not read.*", ""]
 
-        return [f"*Listed as newest-last: only the last {walked} top-level block(s) were walked; "
-                f"{unread} earlier one(s) were not read.*", ""]
+class Shallow:
+    """The top-level blocks edited since the watermark, of a page that is flat."""
+
+    def select(self, top_level, since):
+        return [block for block in top_level if edited_since(block, since)]
+
+    def note(self, walked, listed):
+        return [f"*Read shallow: only top-level blocks edited since the watermark were walked "
+                f"({walked} of {listed}); an edit nested under an unchanged block, or a comment "
+                "on one, is not seen.*", ""]
 
 
 def entries_of(source, key):
@@ -284,17 +287,22 @@ def entry_label(entry):
     return entry.get("name", entry.get("id", "?"))
 
 
-def window_blocks(source, key):
-    """How many top-level blocks to walk, by the id each entry under `key` names."""
+def has_id(entry):
+    return isinstance(entry.get("id"), str) and bool(entry["id"])
+
+
+def newest_first_blocks(source):
+    """How many top-level blocks to walk, by page, for the pages the source lists
+    as newest-first."""
     limits = {}
 
-    for entry in entries_of(source, key):
+    for entry in entries_of(source, "newest_first_pages"):
         blocks = entry.get("blocks")
 
-        if "id" not in entry or not isinstance(blocks, int) or isinstance(blocks, bool) \
+        if not has_id(entry) or not isinstance(blocks, int) or isinstance(blocks, bool) \
                 or blocks < 1:
             raise configuration.ConfigurationError(
-                f"{key} entry {entry_label(entry)!r} needs an "
+                f"newest_first_pages entry {entry_label(entry)!r} needs an "
                 '"id" and a positive whole number of "blocks"'
             )
 
@@ -303,14 +311,14 @@ def window_blocks(source, key):
     return limits
 
 
-def skipped_location_names(source):
-    """The name of each location the source lists as skipped, by its id."""
+def location_names(source, key):
+    """The name of each location the source lists under `key`, by its id."""
     names = {}
 
-    for entry in entries_of(source, "skipped_locations"):
-        if not entry.get("id") or not entry.get("name"):
+    for entry in entries_of(source, key):
+        if not has_id(entry) or not entry.get("name"):
             raise configuration.ConfigurationError(
-                f"skipped_locations entry {entry_label(entry)!r} needs a \"name\" and an \"id\""
+                f"{key} entry {entry_label(entry)!r} needs a \"name\" and an \"id\""
             )
 
         names[notion_search.normalize(entry["id"])] = entry["name"]
@@ -325,46 +333,43 @@ def nearest(lineage, identifiers):
 
 class ReadingRules:
     """How much of a page the register says to read: none of it, under a skipped
-    location; one end of its top level, under a window; otherwise all of it.
+    location; part of its top level, when newest-first or under a shallow
+    location; otherwise all of it.
 
     Covered locations are not among them: those are excluded before any rule is
     asked, and no rule here can bring one back."""
 
-    def __init__(self, newest_first, newest_last, skipped):
+    def __init__(self, newest_first, shallow, skipped):
         self.newest_first = newest_first
-        self.newest_last = newest_last
+        self.shallow = shallow
         self.skipped = skipped
 
     @classmethod
     def from_source(cls, source):
         """The source's rules, refused before any request when an entry is malformed."""
-        return cls(window_blocks(source, "newest_first_pages"),
-                   window_blocks(source, "newest_last_locations"),
-                   skipped_location_names(source))
+        return cls(newest_first_blocks(source),
+                   location_names(source, "shallow_locations"),
+                   location_names(source, "skipped_locations"))
 
     def skipped_by(self, page, ancestry):
         """The name of the skipped location the page sits at or under, or None."""
         if not self.skipped:
             return None
 
-        location = nearest(ancestry.lineage(page), self.skipped)
+        return self.skipped.get(nearest(ancestry.lineage(page), self.skipped))
 
-        return self.skipped.get(location)
-
-    def window_for(self, page, ancestry):
-        """The page's window, or None to walk it whole. Its own newest-first entry
-        wins; then the nearest newest-last location at or above it."""
+    def scope_for(self, page, ancestry):
+        """Which of the page's top-level blocks to walk, or None for all of them.
+        Its own newest-first entry wins over a shallow location above it."""
         identifier = notion_search.normalize(page["id"])
 
         if identifier in self.newest_first:
-            return Window(NEWEST_FIRST, self.newest_first[identifier])
+            return NewestFirst(self.newest_first[identifier])
 
-        if not self.newest_last:
-            return None
+        if self.shallow and nearest(ancestry.lineage(page), self.shallow):
+            return Shallow()
 
-        location = nearest(ancestry.lineage(page), self.newest_last)
-
-        return Window(NEWEST_LAST, self.newest_last[location]) if location else None
+        return None
 
 
 class PageReport:
@@ -376,10 +381,10 @@ class PageReport:
         self.comments = comments
 
 
-def page_report(notion, page, since, gaps, heading="#", authors=None, window=None):
-    """The page's changes. A `window` walks only one end of its top level."""
+def page_report(notion, page, since, gaps, heading="#", authors=None, scope=None):
+    """The page's changes. A `scope` walks only the top-level blocks it selects."""
     top_level = notion.children(page["id"])
-    walked = window.select(top_level) if window else top_level
+    walked = scope.select(top_level, since) if scope else top_level
     nodes = nodes_of(notion, walked, since, gaps)
     attach_comments(notion, nodes, since, gaps)
     authors = authors or Authors(notion)
@@ -399,8 +404,8 @@ def page_report(notion, page, since, gaps, heading="#", authors=None, window=Non
         "",
     ]
 
-    if window:
-        lines += window.note(len(walked), len(top_level) - len(walked))
+    if scope:
+        lines += scope.note(len(walked), len(top_level))
 
     lines += [render_comment(comment, authors) for comment in page_comments]
     lines += render_nodes(nodes, authors)
@@ -444,7 +449,7 @@ def main(argv=None):
         ancestry = notion_search.Ancestry(notion)
         place(notion, locations, page, ancestry)
         text = page_report(notion, page, since, gaps,
-                           window=rules.window_for(page, ancestry)).text
+                           scope=rules.scope_for(page, ancestry)).text
 
     except Refused as refusal:
         print(f"notion_page_changes: {refusal}", file=sys.stderr)
