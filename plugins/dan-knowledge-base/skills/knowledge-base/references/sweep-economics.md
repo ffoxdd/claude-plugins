@@ -95,16 +95,22 @@ That is a fact about one source, so it belongs in the register, not here.
 Where the source stamps each child, a script can do the descent and hand back
 only what changed. The shipped `notion_page_changes.py` is that for Notion: it
 walks a page's blocks, prints those edited since the watermark with their
-unchanged ancestors as context, and adds the comments left since. The main
+unchanged ancestors as context, and, on a page the register lists for them,
+adds the comments left since. The main
 session then reads a section rather than paging through the tree itself, and
 the position question goes away, because every block carries its own edit time.
 
 The descent cannot prune, though. Notion leaves a block's edit time alone when a
-block inside it changes, and a comment moves no edit time at all, so the walk
-lists every block and asks each for its comments: requests in proportion to the
-page's size, not its change. That is a script's cost, paid in minutes and no
-tokens, so the sweep runs it on every changed page itself, with no time limit.
+block inside it changes, so the walk lists every block: requests in proportion
+to the page's size, not its change. That is a script's cost, paid in minutes and
+no tokens, so the sweep runs it on every changed page itself, with no time limit.
 A shortened walk would cost the same tokens and miss things.
+
+Comments are where that arithmetic turns. A comment moves no edit time at all,
+so finding one costs a request for every walked block, more than the walk
+itself, and comments rarely hold what a note keeps. So they are read only on the
+pages the register lists for them, where a comment thread is the content, and
+nowhere else.
 
 ## A deterministic script beats a model for the mechanical half
 

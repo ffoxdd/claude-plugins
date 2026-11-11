@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Print the blocks of one Notion page edited since a watermark, with their
-ancestors for context and any comments left on them since.
+ancestors for context and, on a page listed for them, the comments left since.
 
 The page-changes tool. The sweep (`notion_sweep.py`) runs it on every page it
 lists and writes the result to its output file; run it here by hand for one
@@ -13,19 +13,30 @@ URLs included, to read one new section. This prints the new section instead:
   * an unchanged ancestor is printed as **one line of context**, marked as such,
     so a new bullet still reads under its heading;
   * an unchanged block that is nobody's ancestor is not printed at all;
-  * **comments** created since the watermark are printed under the block they
-    sit on, with the author's name. The page's own comments come first. Comments
-    are fetched for the page and for every block, because leaving one changes
-    nothing about the block;
+  * on a page the register lists for comments (below), the **comments** created
+    since the watermark are printed under the block they sit on, with the
+    author's name, and the page's own comments come first. Any other page says
+    in one line that its comments were not read;
   * images and files are named, never linked: a signed file URL is a few
     hundred characters that say nothing.
 
 **The walk is complete, so its cost is the page's size, not its change count.**
-Notion does not move a block's edit time when a block inside it is edited, nor
-when a comment is left on it, so no branch can be skipped: every block with
-children is listed and every block is asked for its comments, about two requests
-a block. A page of several hundred blocks takes minutes, which is the price of
-missing nothing; run it in the background rather than cutting it short.
+Notion does not move a block's edit time when a block inside it is edited, so no
+branch can be skipped: every block with children is listed. A page of several
+hundred blocks takes a minute or more; run it in the background rather than
+cutting it short.
+
+**Comments are read only on pages listed for them.** A comment moves no edit
+time, not even its block's, so finding one means asking every walked block for
+its comments, a request a block, which more than doubles the walk. Comments are
+rarely where durable content lands, so that cost is paid only where the register
+asks for it: a page listed under `comment_pages`, or one at or under a listed
+page or database, at any depth, has every walked block asked, and the page's own
+list too. Notion's page-level list leaves out most comments anchored to blocks,
+so it cannot stand in for the per-block requests. Every other page makes no
+comment request at all. With no `comment_pages`, comments are read nowhere:
+
+    "comment_pages": [{"name": "Design reviews", "id": "<page id>"}]
 
 **A newest-first page is read from the top only.** A page the register lists
 under `newest_first_pages` grows by inserting each new section above the last,
@@ -48,10 +59,12 @@ watermark, with their children as usual:
 
     "shallow_locations": [{"name": "CRM", "id": "<database id>"}]
 
-Either way the whole top level is listed, which is cheap, and the page's own
-comments are still asked for; an unchanged top-level block is asked for nothing,
-so an edit nested under one, or a comment on one, goes unseen. A page's own
-`newest_first_pages` entry beats a shallow location above it. A location found
+Either way the whole top level is listed, which is cheap, and on a page listed
+for comments the page's own comments are still asked for; an unchanged top-level
+block is asked for nothing, so an edit nested under one, or a comment on one,
+goes unseen. A page's own `newest_first_pages` entry beats a shallow location
+above it. `comment_pages` combines with either: it decides whether comments are
+asked for, and they are asked of the blocks the other rules walk. A location found
 by parent chain (`notion_search.Ancestry`) whose chain cannot be followed
 applies nothing: the page is read whole, which costs time but misses nothing.
 
@@ -60,11 +73,14 @@ read, wherever it sits.
 
 **What it cannot read is a gap, never a silence.** A comment request that
 fails, or blocks nested deeper than it walks, is reported on stderr and makes
-the exit status 3, so a caller holding a watermark keeps the old one.
+the exit status 3, so a caller holding a watermark keeps the old one. A comment
+on a page not listed for comments is not a gap: the page's report says it was
+not asked for.
 
 **One thing no poll can see:** a comment left on a page nobody edited. The
 comment moves no edit time, not even the page's, so no search returns the page
-and nothing runs this on it. Only a full walk of the workspace would find it.
+and nothing runs this on it, listed or not. Only a full walk of the workspace
+would find it.
 
 **It refuses a page under a covered location**, or one it cannot place, and
 prints nothing of it. The `notion` adapter is the route for those, through the
@@ -251,6 +267,8 @@ def fetch_page(notion, page_id):
 class NewestFirst:
     """The first few top-level blocks of a page that grows at the top."""
 
+    mode = "newest-first"
+
     def __init__(self, blocks):
         self.blocks = blocks
 
@@ -264,6 +282,8 @@ class NewestFirst:
 
 class Shallow:
     """The top-level blocks edited since the watermark, of a page that is flat."""
+
+    mode = "shallow"
 
     def select(self, top_level, since):
         return [block for block in top_level if edited_since(block, since)]
@@ -334,22 +354,32 @@ def nearest(lineage, identifiers):
 class ReadingRules:
     """How much of a page the register says to read: none of it, under a skipped
     location; part of its top level, when newest-first or under a shallow
-    location; otherwise all of it.
+    location; otherwise all of it. And, separately, whether its comments are
+    read: only at or under a page or database listed under `comment_pages`.
 
     Covered locations are not among them: those are excluded before any rule is
     asked, and no rule here can bring one back."""
 
-    def __init__(self, newest_first, shallow, skipped):
+    def __init__(self, newest_first, shallow, skipped, commented=None):
         self.newest_first = newest_first
         self.shallow = shallow
         self.skipped = skipped
+        self.commented = commented or {}
 
     @classmethod
     def from_source(cls, source):
         """The source's rules, refused before any request when an entry is malformed."""
         return cls(newest_first_blocks(source),
                    location_names(source, "shallow_locations"),
-                   location_names(source, "skipped_locations"))
+                   location_names(source, "skipped_locations"),
+                   location_names(source, "comment_pages"))
+
+    def reads_comments(self, page, ancestry):
+        """Whether the page sits at or under a location listed for comments."""
+        if not self.commented:
+            return False
+
+        return nearest(ancestry.lineage(page), self.commented) is not None
 
     def skipped_by(self, page, ancestry):
         """The name of the skipped location the page sits at or under, or None."""
@@ -372,37 +402,76 @@ class ReadingRules:
         return None
 
 
+def count_nodes(nodes):
+    return sum(1 + count_nodes(node.children) for node in nodes)
+
+
+COMMENTS_NOT_READ = "Comments not read: the page is not listed under `comment_pages`."
+
+
 class PageReport:
     """One page's changes, rendered, with the counts a caller reports."""
 
-    def __init__(self, text, changed, comments):
+    def __init__(self, text, changed, comments, comments_read, walked):
         self.text = text
         self.changed = changed
         self.comments = comments
+        self.comments_read = comments_read
+        self.walked = walked
 
 
-def page_report(notion, page, since, gaps, heading="#", authors=None, scope=None):
-    """The page's changes. A `scope` walks only the top-level blocks it selects."""
-    top_level = notion.children(page["id"])
-    walked = scope.select(top_level, since) if scope else top_level
-    nodes = nodes_of(notion, walked, since, gaps)
-    attach_comments(notion, nodes, since, gaps)
-    authors = authors or Authors(notion)
-
-    # Asked by page id, Notion can return comments anchored to blocks too, which
-    # are already printed under their block. The page's own list keeps the rest.
+def page_comments_since(notion, page, nodes, since, gaps):
+    """The page's own comments. Asked by page id, Notion can return comments
+    anchored to blocks too, which are already printed under their block."""
     placed = comment_ids(nodes)
-    page_comments = [comment for comment in comments_since(notion, page["id"], since, gaps)
-                     if comment["id"] not in placed]
 
-    lines = [
+    return [comment for comment in comments_since(notion, page["id"], since, gaps)
+            if comment["id"] not in placed]
+
+
+def report_header(page, since, heading, comments):
+    described = ("; comments left since the watermark under the blocks they sit on"
+                 if comments else "")
+
+    return [
         f"{heading} {page_title(page)} — changes since {format_time(since)}",
         "",
         f"*Page `{page['id']}`, last edited {page['last_edited_time']}. Blocks edited since the "
-        "watermark, with unchanged ancestors for context; comments left since the watermark "
-        "under the blocks they sit on.*",
+        f"watermark, with unchanged ancestors for context{described}.*",
         "",
     ]
+
+
+def report_footer(changed, comments, comments_read):
+    lines = []
+
+    if not changed and not comments:
+        left = " and no comment left" if comments_read else ""
+        lines.append(f"No block edited{left} since the watermark. The page's own edit time "
+                     "moved, so a property or something this does not read changed.")
+
+    if comments_read:
+        return lines + ["", f"*{changed} changed block(s), {comments} comment(s).*"]
+
+    return lines + ["", f"*{changed} changed block(s).* {COMMENTS_NOT_READ}"]
+
+
+def page_report(notion, page, since, gaps, heading="#", authors=None, scope=None,
+                comments=False):
+    """The page's changes. A `scope` walks only the top-level blocks it selects;
+    `comments` asks every walked block, and the page, for comments, and without
+    it no comment request is made."""
+    top_level = notion.children(page["id"])
+    walked = scope.select(top_level, since) if scope else top_level
+    nodes = nodes_of(notion, walked, since, gaps)
+    page_comments = []
+
+    if comments:
+        attach_comments(notion, nodes, since, gaps)
+        page_comments = page_comments_since(notion, page, nodes, since, gaps)
+
+    authors = authors or Authors(notion)
+    lines = report_header(page, since, heading, comments)
 
     if scope:
         lines += scope.note(len(walked), len(top_level))
@@ -411,15 +480,10 @@ def page_report(notion, page, since, gaps, heading="#", authors=None, scope=None
     lines += render_nodes(nodes, authors)
 
     changed = count_changed(nodes)
-    comments = len(page_comments) + count_comments(nodes)
+    found = len(page_comments) + count_comments(nodes)
+    lines += report_footer(changed, found, comments)
 
-    if not changed and not comments:
-        lines.append("No block edited and no comment left since the watermark. The page's own "
-                     "edit time moved, so a property or something this does not read changed.")
-
-    lines += ["", f"*{changed} changed block(s), {comments} comment(s).*"]
-
-    return PageReport("\n".join(lines) + "\n", changed, comments)
+    return PageReport("\n".join(lines) + "\n", changed, found, comments, count_nodes(nodes))
 
 
 def main(argv=None):
@@ -449,7 +513,8 @@ def main(argv=None):
         ancestry = notion_search.Ancestry(notion)
         place(notion, locations, page, ancestry)
         text = page_report(notion, page, since, gaps,
-                           scope=rules.scope_for(page, ancestry)).text
+                           scope=rules.scope_for(page, ancestry),
+                           comments=rules.reads_comments(page, ancestry)).text
 
     except Refused as refusal:
         print(f"notion_page_changes: {refusal}", file=sys.stderr)

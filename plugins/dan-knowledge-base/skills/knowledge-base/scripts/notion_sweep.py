@@ -17,13 +17,19 @@ search runs over Notion's REST API, and each result is placed in the page tree
     edit time and title;
   * every page in the manifest but those the register skips (below) is then
     **read with the page-changes walk** (`notion_page_changes.py`), and its
-    changed blocks and new comments are written below the manifest, one section
-    per page. The session reads this one file; it never runs the walk page by
+    changed blocks, and its new comments where the register lists the page for
+    them, are written below the manifest, one section per page. The session reads this one file; it never runs the walk page by
     page. A database in the manifest is listed only: its edited rows are pages,
     and arrive as their own results;
   * **stdout** carries the output path, counts and the new watermark, and
-    **stderr** carries gaps, a request path and a status only. Neither carries a
-    title.
+    **stderr** carries progress, gaps, a request path and a status only. Neither
+    carries a title.
+
+**Progress goes to stderr, a line as each page starts and one as it ends**, so a
+long walk does not read as a hang: the page's position in the run, its id and
+how it is read (`full`, `shallow`, `newest-first` or `skipped`, plus `comments`
+when listed for them), then the blocks it walked and the seconds it took. A
+title can be a person's name, so no progress line carries one.
 
 The covered locations are the `covered_locations` of the source this one names
 with `covered_by`, so the register lists them once:
@@ -42,7 +48,7 @@ watermark.
 **It reads everything, so it takes as long as the pages are long.** The walk
 cannot skip a branch (see `notion_page_changes.py`), so a sync whose changed
 pages hold a few thousand blocks takes several minutes. There is no time limit
-to cut it short. Run it in the background. The register narrows it three ways,
+to cut it short. Run it in the background. The register shapes it four ways,
 each resolved by the same parent-chain walk as the covered placement, which
 fetches no ancestor twice:
 
@@ -55,13 +61,18 @@ fetches no ancestor twice:
     descends; a flat page has nothing nested, so its top-level times suffice;
   * a page at or under a `skipped_locations` entry is **not read at all**: it
     stays in the manifest and is named in a skipped section, for locations whose
-    pages are edited often and never yield anything. A skip is not a gap.
+    pages are edited often and never yield anything. A skip is not a gap;
+  * a page at or under a `comment_pages` entry has its comments read; every
+    other page makes no comment request, since a comment costs a request per
+    walked block to find and rarely carries anything durable.
 
     "shallow_locations": [{"name": "CRM", "id": "<database id>"}],
-    "skipped_locations": [{"name": "Recruiting", "id": "<page id>"}]
+    "skipped_locations": [{"name": "Recruiting", "id": "<page id>"}],
+    "comment_pages": [{"name": "Design reviews", "id": "<page id>"}]
 
-A skip beats both others, and a page's own newest-first entry beats a shallow
-location above it. Covered locations are excluded before any of this, so no rule
+A skip beats every other rule, and a page's own newest-first entry beats a
+shallow location above it. `comment_pages` combines with either of those two,
+and its comments are asked of the blocks they walk. Covered locations are excluded before any of this, so no rule
 reaches one. See `notion_page_changes.py` for what each reads.
 
 **A gap withholds the watermark.** A search page that could not be read, a
@@ -77,6 +88,7 @@ written, with gaps, watermark withheld.
 
 import argparse
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -140,6 +152,43 @@ class Readings:
         self.pages = 0
         self.changed = 0
         self.comments = 0
+        self.commented = 0
+
+
+class Progress:
+    """A line on stderr as each page starts and ends. Ids, modes and numbers
+    only: a title can be a person's name, and stderr reaches transcripts."""
+
+    def __init__(self, total):
+        self.total = total
+        self.position = 0
+        self.page_id = None
+        self.started = None
+
+    def next(self, page):
+        """Count the page, before anything about it is asked."""
+        self.position += 1
+        self.page_id = page["id"]
+        self.started = None
+
+    def start(self, mode):
+        self.started = time.monotonic()
+        self.emit(mode)
+
+    def finish(self, outcome):
+        """The page's closing line, if its opening one was printed."""
+        if self.started is not None:
+            self.emit(f"{outcome} in {time.monotonic() - self.started:.1f} s")
+
+    def emit(self, message):
+        print(f"page {self.position}/{self.total} {self.page_id}: {message}", file=sys.stderr,
+              flush=True)
+
+
+def reading_mode(scope, comments):
+    mode = scope.mode if scope else "full"
+
+    return f"{mode}, comments" if comments else mode
 
 
 def read_changes(notion, changes, since, gaps, rules, ancestry):
@@ -148,29 +197,40 @@ def read_changes(notion, changes, since, gaps, rules, ancestry):
     readings = Readings()
     authors = Authors(notion)
     pages = [item for item in changes.outside if item.get("object") == "page"]
+    progress = Progress(len(pages))
 
     for page in sorted(pages, key=lambda entry: entry["last_edited_time"], reverse=True):
+        progress.next(page)
+
         try:
             location = rules.skipped_by(page, ancestry)
 
             if location is not None:
+                progress.emit("skipped")
                 readings.skipped.append((page, location))
                 continue
 
+            scope = rules.scope_for(page, ancestry)
+            comments = rules.reads_comments(page, ancestry)
+            progress.start(reading_mode(scope, comments))
             report = page_report(notion, page, since, gaps, heading="##", authors=authors,
-                                 scope=rules.scope_for(page, ancestry))
+                                 scope=scope, comments=comments)
 
         except Exception as error:  # noqa: BLE001 — reduced to a type, as everywhere here
             gaps.add(f"page {page['id']} could not be read ({type(error).__name__})")
             readings.sections.append(f"## {item_title(page)} — not read\n\n"
                                      f"Page `{page['id']}` failed part-way; the next run "
                                      "re-reads it.\n")
+
+            progress.finish(f"failed ({type(error).__name__})")
             continue
 
+        progress.finish(f"{report.walked} block(s) walked")
         readings.sections.append(report.text)
         readings.pages += 1
         readings.changed += report.changed
         readings.comments += report.comments
+        readings.commented += 1 if report.comments_read else 0
 
     return readings
 
@@ -240,8 +300,9 @@ def main(argv=None):
     print(f"{len(changes.outside)} changed outside covered locations, "
           f"{sum(len(items) for items in changes.under.values())} under covered locations, "
           f"{changes.unplaced} unplaced")
-    print(f"{readings.pages} page(s) read: {readings.changed} changed block(s), "
-          f"{readings.comments} new comment(s); {len(readings.skipped)} skipped")
+    print(f"{readings.pages} page(s) read: {readings.changed} changed block(s); comments read "
+          f"on {readings.commented} page(s) listed under comment_pages, "
+          f"{readings.comments} new; {len(readings.skipped)} skipped")
 
     if gaps:
         print("Watermark not advanced: keep the previous one, so the next run re-covers "

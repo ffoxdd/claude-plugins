@@ -1517,6 +1517,9 @@ class NotionSweepTest(unittest.TestCase):
                                   "covered_locations": [{"name": "Operations hub", "id": "hub"}]}},
         ))
 
+    def list_for_comments(self, *entries):
+        self.write_register({"covered_by": "notion-covered", "comment_pages": list(entries)})
+
     def sweep(self, watermark=StubNotionSearch.WATERMARK):
         return support.run_script(
             adapter("notion_sweep.py"),
@@ -1622,6 +1625,8 @@ class NotionSweepTest(unittest.TestCase):
         self.assertIn("Jane PERSON-TITLE", self.manifest())
 
     def test_every_listed_page_is_read_into_the_output_and_only_counts_reach_stdout(self):
+        self.list_for_comments({"name": "Roadmap", "id": "open-page"})
+
         result = self.sweep()
 
         self.assertEqual(result.returncode, 0)
@@ -1632,7 +1637,8 @@ class NotionSweepTest(unittest.TestCase):
 
         self.assertNotIn("QUIET-BULLET", self.manifest())
         self.assertNotIn("SIGNED-URL-MARKER", self.manifest())
-        self.assertIn("3 page(s) read: 2 changed block(s), 1 new comment(s)", result.stdout)
+        self.assertIn("3 page(s) read: 2 changed block(s); comments read on 1 page(s) listed "
+                      "under comment_pages, 1 new; 0 skipped", result.stdout)
 
         for text in ("NEW-BULLET", "COMMENT-TEXT", "Roadmap"):
             with self.subTest(stdout=text):
@@ -1641,6 +1647,7 @@ class NotionSweepTest(unittest.TestCase):
     def test_a_comment_request_that_fails_withholds_the_watermark(self):
         """It used to read as "no comments", which is the silent loss this pins."""
         self.start_stub(failing_comments={"quiet-bullet"})
+        self.list_for_comments({"name": "Roadmap", "id": "open-page"})
 
         result = self.sweep()
 
@@ -1666,7 +1673,8 @@ class NotionSweepTest(unittest.TestCase):
         past the limit, so it is neither printed nor asked for comments."""
         self.write_register({"covered_by": "notion-covered",
                              "newest_first_pages": [{"name": "Roadmap", "id": "open-page",
-                                                     "blocks": 1}]})
+                                                     "blocks": 1}],
+                             "comment_pages": [{"name": "Roadmap", "id": "open-page"}]})
 
         result = self.sweep()
 
@@ -1675,7 +1683,9 @@ class NotionSweepTest(unittest.TestCase):
         self.assertNotIn("*(image: )*", self.manifest())
         self.assertIn("only the first 1 top-level block(s) were walked; 2 older one(s) were not "
                       "read", self.manifest())
-        self.assertIn("3 page(s) read: 1 changed block(s), 1 new comment(s)", result.stdout)
+        self.assertIn("3 page(s) read: 1 changed block(s); comments read on 1 page(s) listed "
+                      "under comment_pages, 1 new", result.stdout)
+        self.assertNotIn("new-image", self.stub.commented)
 
     def test_a_newest_first_entry_without_a_block_count_is_refused(self):
         self.write_register({"covered_by": "notion-covered",
@@ -1697,7 +1707,8 @@ class NotionSweepTest(unittest.TestCase):
         """call-notes is a row of crm-db. Its unchanged heading is asked for neither
         children nor comments, so the new bullet under it goes unseen; the new
         heading is walked into as usual, and the page's own comments still read."""
-        result = self.sweep_call_notes(shallow_locations=[{"name": "CRM", "id": "crm-db"}])
+        result = self.sweep_call_notes(shallow_locations=[{"name": "CRM", "id": "crm-db"}],
+                                       comment_pages=[{"name": "CRM", "id": "crm-db"}])
 
         self.assertEqual(result.returncode, 0)
 
@@ -1715,7 +1726,8 @@ class NotionSweepTest(unittest.TestCase):
 
     def test_a_shallow_read_walks_a_block_edited_in_the_watermarks_own_minute(self):
         """The watermark is inclusive at minute granularity, top-level blocks too."""
-        self.sweep_call_notes(shallow_locations=[{"name": "CRM", "id": "crm-db"}])
+        self.sweep_call_notes(shallow_locations=[{"name": "CRM", "id": "crm-db"}],
+                              comment_pages=[{"name": "CRM", "id": "crm-db"}])
 
         self.assertIn("MINUTE-CALL text", self.manifest())
         self.assertIn("minute-call", self.stub.commented)
@@ -1763,7 +1775,7 @@ class NotionSweepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
         self.assertIn("New watermark", result.stdout)
-        self.assertEqual(result.stderr, "")
+        self.assertNotIn("Gaps", result.stderr)
 
     def test_a_skip_beats_a_shallow_location_and_a_newest_first_entry(self):
         self.sweep_call_notes(
@@ -1829,6 +1841,74 @@ class NotionSweepTest(unittest.TestCase):
 
     def test_a_newest_first_entry_with_a_non_string_id_is_refused(self):
         self.assert_refused("newest_first_pages", {"name": "X", "id": 123, "blocks": 1}, "X")
+
+    def test_a_comment_pages_entry_without_a_name_and_an_id_is_refused(self):
+        self.assert_refused("comment_pages", {"id": "open-page"}, "open-page")
+
+    def test_an_unlisted_page_makes_no_comment_request(self):
+        """No comment_pages at all: every page is walked, and none asked for
+        comments, per block or as a page, so no author is looked up either."""
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(self.stub.commented, [])
+        self.assertFalse([path for path in self.stub.requested if path[0] == "users"])
+        self.assertIn("NEW-BULLET text", self.manifest())
+        self.assertNotIn("COMMENT-TEXT", self.manifest())
+        self.assertIn("*2 changed block(s).* Comments not read: the page is not listed under "
+                      "`comment_pages`.", self.manifest())
+        self.assertIn("comments read on 0 page(s) listed under comment_pages, 0 new",
+                      result.stdout)
+
+    def test_a_listed_page_is_asked_for_comments_per_block_and_as_a_page(self):
+        self.list_for_comments({"name": "Roadmap", "id": "open-page"})
+
+        self.sweep()
+
+        for block in ("open-page", "old-heading", "commented-bullet", "quiet-bullet",
+                      "new-image"):
+            with self.subTest(block=block):
+                self.assertIn(block, self.stub.commented)
+
+        self.assertNotIn("same-minute", self.stub.commented)
+        self.assertIn("COMMENT-TEXT", self.manifest())
+
+    def test_a_page_under_a_listed_parent_is_asked_for_comments(self):
+        """call-notes and pinned-notes are rows of crm-db; the open page is not."""
+        result = self.sweep_call_notes(comment_pages=[{"name": "CRM", "id": "crm-db"}])
+
+        self.assertEqual(result.returncode, 0)
+
+        for block in ("call-notes", "old-call", "nested-call", "pinned-notes", "pinned-old"):
+            with self.subTest(block=block):
+                self.assertIn(block, self.stub.commented)
+
+        for block in ("open-page", "commented-bullet"):
+            with self.subTest(unlisted=block):
+                self.assertNotIn(block, self.stub.commented)
+
+        self.assertIn("comments read on 2 page(s) listed under comment_pages", result.stdout)
+
+    def test_progress_names_each_page_by_id_and_mode_and_never_by_title(self):
+        result = self.sweep_call_notes(
+            shallow_locations=[{"name": "CRM", "id": "crm-db"}],
+            newest_first_pages=[{"name": "Globex calls", "id": "pinned-notes", "blocks": 1}],
+            skipped_locations=[{"name": "Recruiting", "id": "recruiting"}],
+            comment_pages=[{"name": "Acme calls", "id": "call-notes"}])
+        progress = [line for line in result.stderr.splitlines() if line.startswith("page ")]
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("page 1/6 open-page: full", progress)
+        self.assertIn("page 2/6 call-notes: shallow, comments", progress)
+        self.assertIn("page 3/6 pinned-notes: newest-first", progress)
+        self.assertIn("page 4/6 candidate: skipped", progress)
+        self.assertTrue(any(re.fullmatch(r"page 2/6 call-notes: \d+ block\(s\) walked in "
+                                         r"\d+\.\d s", line) for line in progress), progress)
+
+        for title in ("Roadmap", "Acme calls", "Globex calls", "Candidate notes", "Same minute",
+                      "Team"):
+            with self.subTest(title=title):
+                self.assertNotIn(title, result.stderr)
 
 
 class NotionAdapterSearchTest(unittest.TestCase):
@@ -1966,6 +2046,10 @@ class NotionPageChangesTest(unittest.TestCase):
                                   "covered_locations": [{"name": "Operations hub", "id": "hub"}]}},
         ))
 
+    def list_for_comments(self, **options):
+        self.start_stub(rules={"comment_pages": [{"name": "Roadmap", "id": "open-page"}]},
+                        **options)
+
     def changes(self, page_id):
         return support.run_script(
             adapter("notion_page_changes.py"),
@@ -1974,6 +2058,8 @@ class NotionPageChangesTest(unittest.TestCase):
         )
 
     def test_only_edited_blocks_print_and_ancestors_are_marked_context(self):
+        self.list_for_comments()
+
         result = self.changes("open-page")
 
         self.assertEqual(result.returncode, 0)
@@ -1983,6 +2069,8 @@ class NotionPageChangesTest(unittest.TestCase):
         self.assertIn("2 changed block(s), 1 comment(s)", result.stdout)
 
     def test_a_comment_prints_under_its_block_even_when_the_block_is_unchanged(self):
+        self.list_for_comments()
+
         result = self.changes("open-page")
 
         self.assertIn("COMMENTED-BULLET text *(unchanged, for context)*", result.stdout)
@@ -2023,7 +2111,7 @@ class NotionPageChangesTest(unittest.TestCase):
         self.assertNotIn("TOKEN-MARKER", result.stdout + result.stderr)
 
     def test_a_comment_request_that_fails_is_a_gap_not_an_empty_list(self):
-        self.start_stub(failing_comments={"commented-bullet"})
+        self.list_for_comments(failing_comments={"commented-bullet"})
 
         result = self.changes("open-page")
 
@@ -2042,6 +2130,29 @@ class NotionPageChangesTest(unittest.TestCase):
         self.assertIn("NEW-CALL text", result.stdout)
         self.assertNotIn("NESTED-CALL", result.stdout)
         self.assertIn("Read shallow", result.stdout)
+
+    def test_an_unlisted_page_makes_no_comment_request_and_says_so(self):
+        result = self.changes("open-page")
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(self.stub.commented, [])
+        self.assertNotIn("COMMENT-TEXT", result.stdout)
+        self.assertIn("*2 changed block(s).* Comments not read: the page is not listed under "
+                      "`comment_pages`.", result.stdout)
+
+    def test_a_page_under_a_listed_parent_is_asked_for_comments(self):
+        self.start_stub(rules={"comment_pages": [{"name": "CRM", "id": "crm-db"}]},
+                        call_notes=True)
+
+        result = self.changes("call-notes")
+
+        self.assertEqual(result.returncode, 0)
+
+        for block in ("call-notes", "old-call", "nested-call"):
+            with self.subTest(block=block):
+                self.assertIn(block, self.stub.commented)
+
+        self.assertIn("comment(s).*", result.stdout)
 
     def test_a_page_asked_for_by_hand_is_read_under_a_skipped_location(self):
         self.start_stub(rules={"skipped_locations": [{"name": "Recruiting", "id": "recruiting"}]},

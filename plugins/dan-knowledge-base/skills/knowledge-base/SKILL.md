@@ -224,13 +224,14 @@ page**, read by the page-changes walk below and written into the same file:
 python3 <SKILL_DIR>/scripts/notion_sweep.py <watermark> <output>
 ```
 
-It reads every block of every changed page and asks every block for its comments,
-because Notion moves no edit time for an edit nested inside a block or for a new
-comment, so nothing can be skipped. That takes minutes when the changed pages are
-long. **Run it in the background, never under a time limit**, and read the one
-file it writes. A page it could not read fully is a gap, like any other.
+It reads every block of every changed page, because Notion moves no edit time on
+a block for an edit nested inside it, so no branch can be skipped. That takes
+minutes when the changed pages are long. **Run it in the background, never under
+a time limit**, and read the one file it writes. It names each page on stderr by
+position, id and reading mode as it starts, and its block count and seconds as it
+ends, never by title. A page it could not read fully is a gap, like any other.
 
-The register narrows the walk three ways. A long page that grows by inserting
+The register shapes the walk four ways. A long page that grows by inserting
 each new section above the last goes under `newest_first_pages`, with the number
 of top-level `blocks` still being edited, and the walk reads only those, saying
 in the output how many older ones it left unread:
@@ -259,8 +260,24 @@ skipped section, but are not read; a skip is not a gap:
 "skipped_locations": [{"name": "Recruiting", "id": "<page id>"}]
 ```
 
-A skip beats both others, and a page's own `newest_first_pages` entry beats a
-shallow location above it.
+Comments are read only where the register asks for them. A comment moves no edit
+time, not even its block's, so finding one means asking every walked block, a
+request a block, which more than doubles the walk; and comments rarely carry
+anything durable. Notion's page-level comment list leaves out most comments
+anchored to blocks, so it cannot stand in for the per-block requests. A page
+under `comment_pages`, or at or under a listed page or database, at any depth,
+has every walked block and the page itself asked for comments. Every other page
+makes no comment request, and its section says so in one line. With no
+`comment_pages`, comments are read nowhere:
+
+```
+"comment_pages": [{"name": "Design reviews", "id": "<page id>"}]
+```
+
+A skip beats all three others: a skipped page is not read, comments included. A
+page's own `newest_first_pages` entry beats a shallow location above it.
+`comment_pages` combines with either: it decides whether comments are asked
+for, and they are asked of the blocks those rules walk.
 Covered locations are excluded before any of this.
 
 All four print the output path, then counts, then the new watermark, and send gaps
@@ -278,8 +295,8 @@ python3 <SKILL_DIR>/scripts/notion_page_changes.py <page id> <watermark>
 ```
 
 It prints the blocks edited since the watermark, each unchanged ancestor as one
-marked line of context, and any comment left since the watermark under the
-block it sits on, with images and files named rather than linked. A page that
+marked line of context, and, on a page `comment_pages` covers, any comment left
+since the watermark under the block it sits on, with images and files named rather than linked. A page that
 has been appended to weekly for a year comes back as its newest section. Unlike
 the adapters its stdout is content, so it reads the register and **refuses a
 page under a covered location**, or one it cannot place, before printing
@@ -289,9 +306,12 @@ held and a few hundred characters of signed URL per image. It exits 3 when a
 comment request failed or blocks nested too deep to read, and names them on
 stderr.
 
-**One change no poll can see:** a comment left on a page nobody edited. It moves
-no edit time, so no search returns the page. Say so when a sync's completeness
-matters; only Notion's webhooks report it.
+**Comments are a deliberate blind spot.** On a page outside `comment_pages` a
+comment is not asked for, and a comment left on a page nobody edited moves no
+edit time, so no search returns the page, listed or not. List a page under
+`comment_pages` where its comments are the content — a review thread, a page
+whose decisions are made in the margin — and say when a sync's completeness
+rests on comments elsewhere; only Notion's webhooks report those.
 
 ### The chat sequence, which is not one step
 

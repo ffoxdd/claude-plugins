@@ -77,7 +77,8 @@ every page with `--walk` as the periodic check, and writes their text only to
 side files for an isolated agent. The `notion-sweep` adapter covers the rest of
 the workspace on the same token: a search for what changed that counts, rather
 than lists, anything under those locations, and then reads each page it lists
-as only its blocks edited since the watermark, with the comments left since. The
+as only its blocks edited since the watermark, with the comments left since on
+the pages the register lists for them. The
 page-changes tool is that walk for one page by hand, and refuses any page under
 those locations.
 
