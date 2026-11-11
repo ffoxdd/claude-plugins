@@ -252,8 +252,8 @@ def check_interactive_setup(adapters, root, document):
     if "chat" in adapters and not chat_session_captured():
         notes.append(
             "no captured Slack session, so the chat adapter cannot read anything: "
-            "run `slack-client login` once (it opens a real browser), and "
-            "`uv run --with playwright playwright install chromium` first if that fails."
+            "run `slack-client login` once (it downloads its browser the first time, "
+            "then opens it for you to sign in)."
         )
 
     if "email" in adapters and not mail_credential_cache_present(document):

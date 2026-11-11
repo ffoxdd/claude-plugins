@@ -23,6 +23,7 @@
 import argparse
 import json
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -139,9 +140,22 @@ def team_host(team):
     return workspace_host(team["domain"]) if team.get("domain") else None
 
 
+def install_matching_browser():
+    """Download the Chromium this environment's Playwright drives, if it is missing.
+
+    Each Playwright release pins its own Chromium build, and this script's
+    environment takes whichever release is current when uv builds it, so a
+    browser installed by any other command can be the wrong build. Installing
+    from this interpreter always fetches the right one, and is a quick no-op
+    when it is already there.
+    """
+    subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+
+
 def command_login(arguments):
     from playwright.sync_api import sync_playwright
 
+    install_matching_browser()
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=False)
         context = browser.new_context()

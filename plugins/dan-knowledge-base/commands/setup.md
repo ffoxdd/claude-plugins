@@ -33,11 +33,11 @@ to confirm before moving on.
 4. **The chat adapter's one-off setup**, if the register declares it, in this
    order — each step's failure looks like the previous step's success:
 
-   - `uv run --with playwright playwright install chromium` — downloads the
-     browser the login flow drives. Needs a desktop session; a headless
-     container or GUI-less WSL cannot complete the next step.
-   - `slack-client login` — opens a real browser and waits for the user to sign
-     in, capturing the session to `~/.cache/slack-client/session.json`. Only
+   - `slack-client login` — first downloads the Chromium its own Playwright
+     drives if missing (a few minutes, once), then opens it and waits for the
+     user to sign in, in whatever tab or popup sign-in leads to, capturing the
+     session to `~/.cache/slack-client/session.json`. Needs a desktop session;
+     a headless container or GUI-less WSL cannot complete it. Only
      they can do this, and from **inside a Claude Code session** —
      `! slack-client login` — since the launcher is on PATH only there. Say
      plainly what it captures: a credential as sensitive as their Slack login,

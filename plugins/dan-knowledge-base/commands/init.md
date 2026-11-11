@@ -44,8 +44,8 @@ sequences the work.
      Needs `uv` and a mail MCP server already signed in, whose token cache it
      borrows read-only.
    - **`chat`** — sweeps every conversation you are a member of, tiered by the
-     platform's privacy flags. Needs `uv`, the bundled `slack-client`, a one-off
-     `playwright install chromium`, and a captured session. It authenticates as
+     platform's privacy flags. Needs `uv`, the bundled `slack-client`, and a session
+     captured by its `login`, which fetches its own browser. It authenticates as
      you, not as an app — read `references/chat-sources.md` before adopting it.
    - **No adapter** — a source the model queries directly through its MCP
      server or CLI. The right default for anything with a server-side watermark
