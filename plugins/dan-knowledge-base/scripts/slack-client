@@ -24,15 +24,20 @@ import argparse
 import json
 import re
 import sys
+import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 
 MENTION_PATTERN = re.compile(r"<@([UW][A-Z0-9]+)>")
 
 SESSION_FILE = Path.home() / ".cache" / "slack-client" / "session.json"
-LOGIN_URL = "https://slack.com/signin#/domain-signin"
-LOGIN_TIMEOUT_MILLISECONDS = 5 * 60 * 1000
+SIGNIN_URL = "https://slack.com/signin#/domain-signin"
+CLIENT_URL = "https://app.slack.com/client"
+SESSION_COOKIE = "d"
+LOGIN_TIMEOUT_SECONDS = 5 * 60
+POLL_MILLISECONDS = 500
 
 
 def load_session():
@@ -42,42 +47,126 @@ def load_session():
     return session["token"], session["cookie"]
 
 
+def workspace_host(workspace):
+    """`acme` and `acme.slack.com` both name the workspace at acme.slack.com."""
+    host = workspace.strip().lower().removeprefix("https://").split("/")[0]
+    return host if "." in host else f"{host}.slack.com"
+
+
+def signin_url(workspace):
+    """A named workspace's own sign-in page skips Slack's 'which workspace?' step."""
+    return f"https://{workspace_host(workspace)}/" if workspace else SIGNIN_URL
+
+
+def is_web_client(url):
+    parsed = urlparse(url)
+    return parsed.hostname is not None and parsed.hostname.endswith(".slack.com") and parsed.path.startswith("/client")
+
+
+def session_cookie(context):
+    return next(
+        (cookie["value"] for cookie in context.cookies() if cookie["name"] == SESSION_COOKIE),
+        None,
+    )
+
+
+def read_local_config(page):
+    """The web client's stored config, or None while the page is still loading."""
+    from playwright.sync_api import Error
+
+    try:
+        local_config = page.evaluate("() => localStorage.getItem('localConfig_v2')")
+    except Error:
+        return None
+    return json.loads(local_config) if local_config else None
+
+
+def wait_for_web_client(context):
+    """Wait, across every tab and popup, until one shows the signed-in web client.
+
+    Sign-in can wander: an SSO provider opens a popup, a link opens a new tab,
+    and once signed in Slack lands on a page offering to launch the desktop app
+    rather than the web client. So every page in the browser is watched, not
+    only the first, and once the session cookie exists the newest page is sent
+    to the web client directly, which skips the desktop-app offer. Returns the
+    page and its stored config.
+    """
+    from playwright.sync_api import Error
+
+    deadline = time.monotonic() + LOGIN_TIMEOUT_SECONDS
+    sent_to_client = False
+    while time.monotonic() < deadline:
+        pages = context.pages
+        if not pages:
+            raise SystemExit("the browser window was closed before sign-in finished; run 'slack-client login' again")
+        for page in pages:
+            if is_web_client(page.url):
+                local_config = read_local_config(page)
+                if local_config:
+                    return local_config
+        newest = pages[-1]
+        try:
+            if not sent_to_client and session_cookie(context):
+                sent_to_client = True
+                newest.goto(CLIENT_URL)
+            newest.wait_for_timeout(POLL_MILLISECONDS)
+        except Error:
+            # A popup closing itself mid-wait (SSO does) is ordinary; look again.
+            continue
+    raise SystemExit("sign-in did not finish within five minutes; run 'slack-client login' again")
+
+
+def choose_team(teams, workspace):
+    """The named workspace's entry, or the only one, or the first when unnamed."""
+    entries = list(teams.values())
+    if not workspace:
+        return entries[0]
+    wanted = workspace_host(workspace)
+    for team in entries:
+        if team_host(team) == wanted:
+            return team
+    if len(entries) == 1 and team_host(entries[0]) is None:
+        # The stored config named no host to check against; one team is the one signed in to.
+        return entries[0]
+    raise SystemExit(f"signed in, but not to {wanted}; run 'slack-client login' again and sign in to that workspace")
+
+
+def team_host(team):
+    """The team's host from its stored url or domain, or None when it carries neither."""
+    host = urlparse(team.get("url") or "").hostname
+    if host:
+        return host
+    return workspace_host(team["domain"]) if team.get("domain") else None
+
+
 def command_login(arguments):
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=False)
         context = browser.new_context()
-        page = context.new_page()
-        page.goto(LOGIN_URL)
+        context.new_page().goto(signin_url(arguments.workspace))
 
-        print("complete login in the opened browser window...", file=sys.stderr)
-        page.wait_for_url("https://*.slack.com/client/*", timeout=LOGIN_TIMEOUT_MILLISECONDS)
-
-        workspace_host = page.url.split("/")[2]
-
-        local_config = page.evaluate("() => localStorage.getItem('localConfig_v2')")
-        if not local_config:
-            raise SystemExit("could not find localConfig_v2 in the logged-in page")
-        teams = json.loads(local_config)["teams"]
-        token = next(iter(teams.values()))["token"]
-
-        cookie_value = None
-        for cookie in context.cookies():
-            if cookie["name"] == "d":
-                cookie_value = cookie["value"]
-                break
+        print(
+            "sign in to Slack in the browser window that opened; any tab or popup "
+            "the sign-in opens is fine, and the window closes by itself when done...",
+            file=sys.stderr,
+        )
+        local_config = wait_for_web_client(context)
+        team = choose_team(local_config["teams"], arguments.workspace)
+        cookie_value = session_cookie(context)
         if not cookie_value:
-            raise SystemExit("could not find the 'd' session cookie")
+            raise SystemExit(f"could not find the '{SESSION_COOKIE}' session cookie")
 
         browser.close()
 
+    host = team_host(team) or workspace_host(arguments.workspace or "unknown")
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
     SESSION_FILE.write_text(
-        json.dumps({"token": token, "cookie": cookie_value, "workspace_host": workspace_host})
+        json.dumps({"token": team["token"], "cookie": cookie_value, "workspace_host": host})
     )
     SESSION_FILE.chmod(0o600)
-    print(f"session saved for {workspace_host}", file=sys.stderr)
+    print(f"session saved for {host}", file=sys.stderr)
 
 
 def call_api(method, **params):
@@ -293,7 +382,15 @@ def main():
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("login", help="capture a session by logging in via a real browser")
+    login_parser = subparsers.add_parser(
+        "login", help="capture a session by logging in via a real browser"
+    )
+    login_parser.add_argument(
+        "--workspace",
+        default=None,
+        help="the workspace to sign in to (acme or acme.slack.com); opens its own "
+        "sign-in page and saves that workspace's session",
+    )
 
     channels_parser = subparsers.add_parser(
         "channels", help="list conversations visible to your session"
