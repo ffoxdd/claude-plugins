@@ -22,7 +22,7 @@ import json
 import os
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 SERVICE = "ms-365-mcp-server"
 CACHE_FILE = ".token-cache.json"
@@ -84,7 +84,8 @@ def config_directory(environ, platform, home):
 
     xdg = (environ.get("XDG_CONFIG_HOME") or "").strip()
 
-    if xdg and Path(xdg).is_absolute():
+    # XDG paths are POSIX paths, judged absolute by POSIX rules whatever the host.
+    if xdg and PurePosixPath(xdg).is_absolute():
         return Path(xdg) / SERVICE
 
     return home / ".config" / SERVICE
