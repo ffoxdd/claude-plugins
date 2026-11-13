@@ -31,8 +31,8 @@ well-written charter is not.
    filter, and its whole job is to travel without the history that produced it.
 
 4. **Delegate it.** Spawn an agent at the cheapest tier that can do the work and
-   **set the model explicitly** — an omitted model silently inherits this
-   session's, which is the tier you are trying not to spend. Hand it the charter,
+   **set the model explicitly** — an omitted model takes the configured
+   default, a fallback rather than the tier this work needs. Hand it the charter,
    not the programme. Tell it how to treat a long wait: dispatch the work, commit,
    and end its turn naming what it waits on. It must not arm a Monitor or poll,
    because a stopped sub-agent cannot be woken by anything it armed. You hold

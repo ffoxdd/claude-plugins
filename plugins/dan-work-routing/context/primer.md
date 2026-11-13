@@ -31,40 +31,25 @@ Interactive work, with a person blocked at the terminal, may promote wall time
 above total tokens — never above top-tier spend.
 
 Delegate to the least powerful model the task accepts — which is not the
-cheapest: checking another agent's work needs a model at least as capable as
-the one that produced it. Three tiers. The **top** tier is the session's own
-model, the orchestrator's: reserve it for design, specification, review of
-top-tier work, and triage, and run one of it at a time. The **strong** tier
-is `opus`: a build from a specification, a review of strong-tier work, and
-several of them run side by side as the normal shape. The **cheap** tier is
-`sonnet` and `haiku`: reading, searching, convention checks, mechanical
-edits. **Set the model explicitly on every spawned agent.** An omitted model
-inherits the session's, the most expensive tier; the session model needs a
-stated reason. And never choose a model below what the task needs in order
-to fit the guard: a denial is answered by waiting, by folding, or by the
-person widening the limit, never by a weaker builder.
+cheapest. Never choose a model below what the task needs in order to save cost:
+checking another agent's work needs a model at least as capable as the one that
+produced it. Three tiers. The **top** tier is the session's own model, the
+orchestrator's: reserve it for design, specification, review of top-tier work,
+and triage, and run one of it at a time, as a matter of judgment. The **strong**
+tier is `opus`: a build from a specification or a review of strong-tier work,
+several of them side by side as the normal shape. The **cheap** tier is `sonnet`
+and `haiku`: reading, searching, convention checks, mechanical edits. **Name the
+model on every spawn, as a stated choice.** An omitted model takes the
+configured default sub-agent model, which is a fallback, not a decision. One
+rule is enforced by a hook: a spawn that names no model is refused unless a
+default sub-agent model is configured, the spawn is a fork, or its agent type's
+definition declares one.
 
-A hook — the spawn guard — enforces three rules on every Agent call, inside
-forks and skills this plugin does not own as much as here. A call with no
-`model` is denied unless it is a fork, which runs on the parent's model
-regardless, or its agent type's definition declares one. One top-tier agent
-runs at a time: a top-tier spawn is denied while another top-tier agent is in
-flight (the spawner and its ancestors excepted); strong-tier spawns are
-denied past their own, wider limit; and any spawn is denied past
-a width ceiling. A sub-agent nobody asked for may spawn only a few helpers in
-total, and fewer of them top-tier, because its fan-out is nobody's choice and
-every helper re-reads its material; the root session's spawns are the
-person's, and so are the helpers of a skill the person invoked, such as
-`/code-review`, and neither carries that budget. In-flight state is read from
-the harness's own subagent records, with the guard's approvals standing in
-until the harness records the agent, so spawns issued in one batch see each
-other. A denial names what is in flight; the answer is to end the turn and
-continue on the completion notification, or to fold the work into a helper
-already running, with the tier as the task chose it — never to re-issue the
-call unchanged. The limits are plugin options, and
-`/dan-work-routing:session-limits` is how the person widens one for the
-current session alone, for a batch of reviews to run side by side; that is
-the person's call, made by typing the command.
+Concurrent spend is agents generating at the same time. A parent that has ended
+its turn to wait on a sub-agent it started is not spending; a builder that
+pauses for its own reviewer is one stream of tokens, not two. Forks run on the
+session's model, so a skill that forks and fans out — `/code-review` at high
+effort — is top-tier spend however its angles are named.
 
 Model is one of two dials. **Effort** is the other: how long a model reasons per
 step, `low` through `max`, set per agent and per skill in frontmatter and per
@@ -107,31 +92,29 @@ one reason, each marked mechanical (renames, symbol promotions, doc moves,
 test-only edits) or logic (runtime behavior), with the logic slices ranked by
 blast radius. Then dispatch by class. The built-in `/code-review` forks at the
 session's model and, at high effort, fans out to several finder angles and a
-verify pass, spawned with no model of their own. The spawn guard makes each
-of those a stated choice, and the fork chooses per angle by this rule: a
-correctness or verification angle over top-tier work stays on the session's
-model, since a weaker model checking a stronger one's output is not a task it
-accepts; a convention, reuse or mechanical-shape angle takes `sonnet`. The
-angles are the skill's own design at the effort the person set, so they carry
-no helper budget; only the top-tier concurrency holds them, and a denial
-there is answered by waiting or folding. It still goes to the
-slices whose blast radius justifies it, one at a time, with nothing else
-top-tier running beside it, because the fork and its correctness angles read
-the whole slice at the session's tier — and the guard holds that sequence
-unless the person has widened it for the session with
-`/dan-work-routing:session-limits`, which is what several PRs reviewed side
-by side call for. Other logic slices go to the `reviewer`
-agent at the tier that wrote them, `opus` for a strong-tier build, at high
-effort, one pass, no fan-out.
-Mechanical slices go to `reviewer` with a cheaper `model` passed on the call;
-prose to a path-independence pass at the cheapest tier. Diff against the upstream base (`origin/main...HEAD`), never a local
-branch that may be stale. The expensive tier still reads every line that needs
-judgment; it stops paying to read the lines that do not.
+verify pass. Choose each angle's model by this rule: a correctness or
+verification angle over top-tier work stays on the session's model, since a
+weaker model checking a stronger one's output is not a task it accepts; a
+convention, reuse or mechanical-shape angle takes `sonnet`. Give `/code-review`
+only the slices whose blast radius justifies it, one at a time, with nothing
+else top-tier running beside it, because the fork and its correctness angles
+read the whole slice at the session's tier. Other logic slices go to the
+`reviewer` agent at the tier that wrote them, `opus` for a strong-tier build, at
+high effort, one pass, no fan-out. Mechanical slices go to `reviewer` with a
+cheaper `model` passed on the call; prose to a path-independence pass at the
+cheapest tier. Diff against the upstream base (`origin/main...HEAD`), never a
+local branch that may be stale. The expensive tier still reads every line that
+needs judgment; it stops paying to read the lines that do not.
 
 ## Agents already spawned
 
-- **Reuse warm agents.** A follow-on task in the same area goes to the existing
-  agent as a message, not a cold respawn that re-reads what it already holds.
+- **Reuse is a token decision, made from context.** A follow-on task goes to a
+  warm agent when the context it already holds is the context the task needs,
+  rather than to a cold respawn that re-reads it. A task that needs none of that
+  context goes to a fresh agent, because resuming an agent re-sends everything
+  it holds on every step. So a review of someone else's change belongs with a
+  fresh reviewer, not with a builder carrying a long build in context, even
+  though the builder is already running.
 - **Never kill in-flight work to fix its tier.** The sunk reading cost usually
   exceeds the remaining premium; fix the next spawn instead.
 - **Launch, end the turn, resume on notification.** Never poll tracked

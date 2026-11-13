@@ -7,56 +7,5 @@
   "keywords": [
     "preference"
   ],
-  "workflows": "./workflows/",
-  "userConfig": {
-    "top_tier_concurrency": {
-      "type": "number",
-      "title": "Top-tier agents in flight",
-      "description": "How many top-tier sub-agents may run at once across the session. The spawner and its ancestors are not counted. 0 lifts the limit.",
-      "default": 1,
-      "min": 0
-    },
-    "strong_tier_concurrency": {
-      "type": "number",
-      "title": "Strong-tier agents in flight",
-      "description": "How many opus sub-agents may run at once across the session: the builders a specification is handed to, which run side by side as the normal shape. 0 lifts the limit.",
-      "default": 4,
-      "min": 0
-    },
-    "agent_width": {
-      "type": "number",
-      "title": "Agents in flight, any tier",
-      "description": "How many sub-agents may run at once in total. 0 lifts the limit.",
-      "default": 8,
-      "min": 0
-    },
-    "nested_top_tier_budget": {
-      "type": "number",
-      "title": "Top-tier helpers per sub-agent",
-      "description": "How many top-tier agents one sub-agent \u2014 a fork, a review \u2014 may spawn in total, finished ones included. The root session is not budgeted. 0 lifts the limit.",
-      "default": 2,
-      "min": 0
-    },
-    "nested_agent_budget": {
-      "type": "number",
-      "title": "Helpers per sub-agent, any tier",
-      "description": "How many agents one sub-agent \u2014 a fork, a review \u2014 may spawn in total, finished ones included, whatever their tier. The root session is not budgeted. 0 lifts the limit.",
-      "default": 3,
-      "min": 0
-    },
-    "idle_minutes": {
-      "type": "number",
-      "title": "Silence before an agent counts as gone",
-      "description": "Minutes without a transcript write after which a sub-agent with no terminal stop is taken for killed. 0 never expires one.",
-      "default": 30,
-      "min": 0
-    },
-    "settle_seconds": {
-      "type": "number",
-      "title": "Silence before an unstamped final message counts as the end",
-      "description": "Seconds without a transcript write after which a sub-agent whose newest assistant record carries no stop reason and awaits no tool result is taken for finished. 0 waits for the idle window instead.",
-      "default": 120,
-      "min": 0
-    }
-  }
+  "workflows": "./workflows/"
 }

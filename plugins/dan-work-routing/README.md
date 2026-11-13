@@ -11,29 +11,21 @@ routing happens before the work rather than being remembered mid-task.
 ## What it carries
 
 - **The routing primer** — the cost ordering (top-tier spend, then total
-  tokens, then wall time), the two cost dials (model and effort), the sub-agent
-  spawn test, the fan-out rules, and how to review a large diff by classifying
-  it first.
-- **The spawn guard** — a hook on every Agent call, so the primer's spawn
-  rules hold inside skills and forks this plugin does not own. It denies a
-  call naming no `model` (a fork passes, as does an agent type whose
-  definition declares one, `inherit` included); a top-tier spawn (the
-  session's own model) while another top-tier agent is in flight; a
-  strong-tier spawn (`opus`, the builders) past their own wider limit; any
-  spawn past a width ceiling; and
-  the helpers of a sub-agent nobody asked for past a small total budget,
-  fewer of them top-tier. The root session's spawns and the helpers of a
-  skill the person invoked — a `/code-review`'s finder angles — are the
-  person's choice and carry no such budget. In-flight state comes from the harness's own
-  subagent records, with the guard's approvals standing in until the harness
-  records the agent, so spawns issued in one batch see each other; each
-  denial names what is in flight and offers waiting or folding, with the
-  tier as the task chose it. The seven
-  limits are plugin options (`/plugin` → configure).
-- **`/dan-work-routing:session-limits`** — widens or restores a guard limit
-  for the current session alone (`top_tier_concurrency=3`, `reset`), so a
-  batch of top-tier reviews the person asked for runs side by side. It is the
-  person's call, not an answer to a denial.
+  tokens, then wall time), the tiers and the two cost dials (model and effort),
+  when to reuse a warm agent and when to start a fresh one, the sub-agent spawn
+  test, the fan-out rules, and how to review a large diff by classifying it
+  first. At session start it adds one line for each paired setting below that
+  is unset.
+- **The model guard** — one stateless hook on every Agent call, so a spawn
+  says which model it runs on even inside skills and forks this plugin does not
+  own. It refuses a call that names no `model` unless
+  `CLAUDE_CODE_SUBAGENT_MODEL` is set, the call is a fork, or the agent type's
+  definition declares a model (`inherit` included). It reads only the call,
+  the hook process's environment and agent definition files. The hooks
+  reference says a hook process inherits Claude Code's environment; it does not
+  say in so many words that a settings `env` block reaches a hook, so the check
+  reads the variable from the hook's own process, which is set either way when
+  the variable is exported in the shell that starts Claude Code.
 - **Secret-handling rules** — never materialize a credential; reference it and
   let it resolve at runtime.
 - **Agents** — `explorer` (bounded questions over many files), `reviewer`
@@ -49,6 +41,46 @@ routing happens before the work rather than being remembered mid-task.
   about rather than just do: generated instead of assigned, cited by number,
   carrying verdicts that outlive the session. On demand, because in an ordinary
   session the charter is just the prompt and needs no name.
+
+## Design stance
+
+A hook earns its place only where the platform does not enforce a rule and
+judgment cannot be trusted with it. Claude Code enforces the mechanical limits
+itself: `CLAUDE_CODE_SUBAGENT_MODEL` gives a spawn that names no model a
+default other than the session's model (a per-call `model` and an agent
+definition's `model:` take precedence over it), `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`
+caps how many sub-agents run at once (default 20), and
+`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` caps nesting (default 3 layers). What
+matters most cannot be hooked: reasoning about token spend, including whether
+to reuse a warm agent. So the plugin states its priorities, enforces the one
+rule the platform leaves open, and reads no undocumented format, such as a
+session's transcripts.
+
+Nothing hard-stops a deliberate top-tier fan-out — several top-tier agents, or
+a fork that fans out to finder angles on the session's model. Forks pass the
+guard and run on the session's model. The statement of priorities in the
+primer is the defence there.
+
+## Settings to pair with it
+
+A plugin cannot set Claude Code's environment, so these go in the `env` block
+of `~/.claude/settings.json` (or are exported in the shell). The values are the
+author's preference:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_SUBAGENT_MODEL": "opus",
+    "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "8"
+  }
+}
+```
+
+- `CLAUDE_CODE_SUBAGENT_MODEL` — the model a spawn that names none runs on;
+  `opus` makes that the strong tier, never the session's top tier. Setting it
+  to `inherit` is the same as leaving it unset.
+- `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` — how many sub-agents may run at once
+  before the Agent tool refuses another; `8` keeps a fan-out narrow.
 
 ## Safety regimes live elsewhere
 

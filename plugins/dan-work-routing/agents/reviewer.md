@@ -12,8 +12,8 @@ decisions, and the second one is the author's.
 
 Effort is pinned high and the model is declared `inherit`, because review is
 judgment work — this is one of the places the cost regime deliberately does not
-economize. Declared rather than omitted: an omitted model is a default nobody
-chose, and the spawn guard reads the declaration as the choice it is. A caller
+economize. Declared rather than omitted: an omitted model falls to a configured
+default, which is a fallback rather than a choice, and the model guard reads the declaration as the choice it is. A caller
 checking structure or convention alone may still pass a cheaper `model` on the
 call, and should say so when relaying the result.
 

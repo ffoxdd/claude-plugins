@@ -10,6 +10,7 @@ present as silence.
 import json
 import os
 import re
+import shlex
 import subprocess
 import unittest
 
@@ -382,6 +383,85 @@ class InjectorTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), "")
+
+
+class SubagentSettingsNoticeTest(unittest.TestCase):
+    """The routing primer's session-start hook appends a line for each sub-agent
+    setting the plugin pairs with that is missing. Run as hooks.json wires it, so
+    a notice renamed out from under the command fails here rather than going
+    silent."""
+
+    VARIABLES = ("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "CLAUDE_CODE_SUBAGENT_MODEL")
+
+    def context(self, **environment):
+        root = support.plugin_root("dan-work-routing")
+        hooks = support.read_json(root / "hooks" / "hooks.json")["hooks"]["SessionStart"]
+        command = next(
+            hook["command"]
+            for matcher in hooks
+            for hook in matcher["hooks"]
+            if "primer.md" in hook["command"]
+        )
+        arguments = shlex.split(command.replace("${CLAUDE_PLUGIN_ROOT}", str(root)))[2:]
+
+        result = support.run_script(
+            support.script("dan-work-routing", "inject_context.py"),
+            arguments=arguments,
+            **environment,
+        )
+
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def primer(self):
+        return (support.plugin_root("dan-work-routing") / "context" / "primer.md").read_text(
+            encoding="utf-8"
+        )
+
+    def notices(self, **environment):
+        """What the hook appends after the primer."""
+        context = self.context(**environment)
+        primer = self.primer().rstrip("\n")
+
+        self.assertTrue(context.startswith(primer))
+
+        return context[len(primer) :]
+
+    def test_with_both_set_the_context_is_the_primer_alone(self):
+        self.assertEqual(
+            self.context(
+                CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS="8", CLAUDE_CODE_SUBAGENT_MODEL="opus"
+            ),
+            self.primer(),
+        )
+
+    def test_names_the_concurrency_cap_when_it_is_unset(self):
+        notices = self.notices(CLAUDE_CODE_SUBAGENT_MODEL="opus")
+
+        self.assertIn("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", notices)
+        self.assertNotIn("CLAUDE_CODE_SUBAGENT_MODEL", notices)
+        self.assertEqual(len(notices.strip().splitlines()), 1)
+
+    def test_names_the_default_model_when_it_is_unset(self):
+        notices = self.notices(CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS="8")
+
+        self.assertIn("CLAUDE_CODE_SUBAGENT_MODEL", notices)
+        self.assertIn("refused", notices)
+        self.assertNotIn("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", notices)
+        self.assertEqual(len(notices.strip().splitlines()), 1)
+
+    def test_names_both_when_neither_is_set(self):
+        notices = self.notices()
+
+        for variable in self.VARIABLES:
+            with self.subTest(variable=variable):
+                self.assertIn(variable, notices)
+
+    def test_an_empty_value_counts_as_unset(self):
+        notices = self.notices(
+            CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS="", CLAUDE_CODE_SUBAGENT_MODEL="opus"
+        )
+
+        self.assertIn("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", notices)
 
 
 class ComponentFrontmatterTest(unittest.TestCase):

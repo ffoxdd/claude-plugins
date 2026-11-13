@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Emits a context file as SessionStart additionalContext.
 
+Usage: inject_context.py <context file> [--when-unset <VARIABLE> <notice file>]...
+
+Each `--when-unset` pair appends the notice file's text when the variable is
+unset or empty in this process's environment, so a plugin can say at session
+start that a setting it pairs with is missing. With every such variable set, the
+output is the context file alone.
+
 Standing instructions ship with the plugin rather than being pasted into each
 person's CLAUDE.md, so an edit here reaches everyone on `/plugin update` instead
 of needing each copy chased down. Python rather than sh + jq, so the hook runs on
@@ -24,12 +31,13 @@ copy it over the others in the same change.
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
 
 def main(argv):
-    if len(argv) != 1:
+    if not argv or len(argv) % 3 != 1:
         return 0
 
     try:
@@ -37,6 +45,18 @@ def main(argv):
 
     except OSError:
         return 0
+
+    for index in range(1, len(argv), 3):
+        flag, variable, notice = argv[index : index + 3]
+
+        if flag != "--when-unset" or os.environ.get(variable, "").strip():
+            continue
+
+        try:
+            text = text.rstrip("\n") + "\n\n" + Path(notice).read_text(encoding="utf-8")
+
+        except OSError:
+            continue
 
     # additionalContext is only honored nested under hookSpecificOutput; at the
     # top level (or as plain stdout) it reaches the debug log, not the model.
