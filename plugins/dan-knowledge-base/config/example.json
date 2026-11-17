@@ -43,7 +43,9 @@
       "adapter": "notion-sweep",
       "covered_by": "notion-records",
       "feeds": ["notes/"],
-      "watermark": {"format": "iso-8601", "boundary": "inclusive at the minute"}
+      "watermark": {"format": "iso-8601", "boundary": "inclusive at the minute"},
+      "ledger": "notes/.notion-ledger",
+      "index_lag_hours": 72
     },
 
     "notion-records": {
@@ -54,7 +56,9 @@
         {"name": "<an operations hub whose pages list individuals>", "id": "<page id>"},
         {"name": "<a database with one row per person>", "id": "<database id>", "kind": "database"}
       ],
-      "max_depth": 4
+      "max_depth": 4,
+      "ledger": "notes/.notion-records-ledger",
+      "index_lag_hours": 72
     },
 
     "task-board": {

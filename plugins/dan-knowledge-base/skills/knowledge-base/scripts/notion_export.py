@@ -30,20 +30,36 @@ The register lists the locations under the source's `covered_locations`:
     {"name": "Practice playbooks", "id": "<db id>", "kind": "database"}
 
 **Changed pages are found by search by default, and by a tree walk on request.**
-The search asks Notion for everything edited since the watermark, newest first,
-and places each result under a location by its parent chain (`notion_search.py`).
-That is a few requests for the whole workspace, whatever its size. The walk
-(`--walk`) visits every page under every location instead, because Notion does
-not bubble an edit up to the parent: a page location is walked as a tree, the
-page, every block with children below it (toggle headings, list items and
-columns included), each child page found there, and each child database's rows,
-down to `max_depth` pages deep, and a database location lists every row. Its
-rows' own sub-pages are walked only when the location sets `"walk_rows": true`,
-because that costs a request per row. The walk is one request per page, so it
-takes minutes on a large location, and it is complete in a way the search is
-not: search covers what Notion has indexed, and an index can lag or miss an
-item. Run the walk now and then as the check on the search, and record when in
-the watermark note.
+The search asks Notion for everything edited since the lookback floor (below),
+newest first, and places each result under a location by its parent chain
+(`notion_search.py`). That is a few requests for the whole workspace, whatever
+its size. The walk (`--walk`) visits every page under every location instead,
+because Notion does not bubble an edit up to the parent: a page location is
+walked as a tree, the page, every block with children below it (toggle headings,
+list items and columns included), each child page found there, and each child
+database's rows, down to `max_depth` pages deep, and a database location lists
+every row. Its rows' own sub-pages are walked only when the location sets
+`"walk_rows": true`, because that costs a request per row.
+
+**The walk costs a request per block that has children**, not per page: finding
+the child pages means listing the children of every toggle, list item and column
+on the way. At the pacing in `notion_api.py` that is minutes on a large location
+and up to an hour on deeply nested progress logs, and no parallelism shortens
+it, since the limit is Notion's rate. So it says where it is, on stderr: a line
+as each location starts, and one per page as its blocks are listed, with the
+page's position, id, the `children` requests it took and the seconds. A title
+can be a person's name, so no line carries one. What the walk buys is the one
+case the search cannot cover, an item the index never shows at all; an edit the
+index shows late is the lookback's, below. Run the walk about monthly, and
+record when in the watermark note.
+
+**The search looks back for index lag.** Notion's index is eventually
+consistent, so the search starts at the watermark less the source's
+`index_lag_hours` (72 by default), and a page the source's `ledger` records as
+exported at its current edit time is skipped: not listed, and no side file. A
+source naming no ledger exports the whole overlap again every run, and says so
+on stderr. The walk takes no lookback, since it reads each page's edit time from
+the page itself, with no index in between. See `notion_ledger.py`.
 
 **The watermark is inclusive at minute granularity.** Notion stamps
 `last_edited_time` to the minute. A strict comparison against a seconds-precision
@@ -70,6 +86,7 @@ import argparse
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -79,6 +96,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import configuration
 import notion_credential
 import notion_search
+from notion_ledger import Ledger, index_lag
 from notion_api import EXIT_GAPS, EXIT_REFUSED, ExportError, Gaps, Notion, edited_since, \
     format_time, read_watermark
 
@@ -95,15 +113,40 @@ PAGE_BLOCK_TYPES = {"child_page", "child_database"}
 # Discovery
 
 
+class WalkProgress:
+    """A line on stderr as each location starts and as each page's blocks are
+    listed, so an hour-long walk does not read as a hang. Ids and numbers only:
+    a title can be a person's name, and stderr reaches transcripts."""
+
+    def __init__(self, locations):
+        self.locations = locations
+        self.location = 0
+        self.pages = 0
+
+    def location_started(self, location):
+        self.location += 1
+        self.emit(f"location {self.location}/{self.locations} {location['name']}: walking")
+
+    def page_listed(self, page_id, requests, seconds):
+        self.pages += 1
+        self.emit(f"page {self.pages} {page_id}: {requests} children request(s) in {seconds:.1f} s")
+
+    @staticmethod
+    def emit(message):
+        print(message, file=sys.stderr, flush=True)
+
+
 class Walk:
     """One location's traversal: every page seen, and the gaps met on the way."""
 
-    def __init__(self, notion, location, max_depth, gaps, max_block_nesting=DEFAULT_MAX_BLOCK_NESTING):
+    def __init__(self, notion, location, max_depth, gaps, progress,
+                 max_block_nesting=DEFAULT_MAX_BLOCK_NESTING):
         self.notion = notion
         self.location = location
         self.max_depth = max_depth
         self.max_block_nesting = max_block_nesting
         self.gaps = gaps
+        self.progress = progress
         self.pages = {}
 
     def gap(self, message):
@@ -113,15 +156,17 @@ class Walk:
         if page_id in self.pages:
             return
 
+        started = time.monotonic()
         self.pages[page_id] = page or self.notion.page(page_id)
+        blocks = self.listed_page_blocks(page_id, started)
 
         if depth >= self.max_depth:
-            if self.page_blocks(page_id):
+            if blocks:
                 self.gap(f"pages below depth {self.max_depth} were not walked; raise max_depth")
 
             return
 
-        for block in self.page_blocks(page_id):
+        for block in blocks:
             if block["type"] == "child_page":
                 try:
                     self.page_tree(block["id"], depth + 1)
@@ -131,6 +176,16 @@ class Walk:
 
             else:
                 self.database(block["id"], depth + 1, walk_rows=False)
+
+    def listed_page_blocks(self, page_id, started):
+        """The page's child pages and databases, reported as a progress line once
+        listed and before the walk descends into them."""
+        requests_before = self.notion.requests
+        blocks = self.page_blocks(page_id)
+        self.progress.page_listed(page_id, self.notion.requests - requests_before,
+                                  time.monotonic() - started)
+
+        return blocks
 
     def database(self, database_id, depth, walk_rows):
         try:
@@ -150,7 +205,8 @@ class Walk:
 
     def page_blocks(self, block_id, nesting=0):
         """The child pages and databases under a block, through every non-page block
-        that has children: a toggle heading, a list item, a column, a callout."""
+        that has children: a toggle heading, a list item, a column, a callout. A
+        request for each such block, which is the walk's whole cost."""
         found = []
 
         for block in self.notion.children(block_id):
@@ -170,17 +226,19 @@ class Walk:
 
 class TreeWalkDiscovery:
     """The changed pages under a location, found by visiting every page under it.
-    Complete, at a request per page."""
+    Complete, at a request per block that has children."""
 
-    def __init__(self, notion, since, max_depth, gaps):
+    def __init__(self, notion, since, max_depth, gaps, progress):
         self.notion = notion
         self.since = since
         self.max_depth = max_depth
         self.gaps = gaps
+        self.progress = progress
 
     def changed(self, location):
         """The changed pages, and how many pages were checked to find them."""
-        walk = Walk(self.notion, location, self.max_depth, self.gaps,
+        self.progress.location_started(location)
+        walk = Walk(self.notion, location, self.max_depth, self.gaps, self.progress,
                     int(location.get("max_block_nesting", DEFAULT_MAX_BLOCK_NESTING)))
 
         if location.get("kind") == "database":
@@ -194,12 +252,14 @@ class TreeWalkDiscovery:
 
 class SearchDiscovery:
     """The changed pages under a location, as Notion's search lists them and the
-    parent chain places them. One search serves every location."""
+    parent chain places them. One search serves every location, from the
+    lookback floor rather than the watermark, so an edit the index showed late
+    is still found."""
 
-    def __init__(self, notion, locations, since, gaps):
+    def __init__(self, notion, locations, floor, gaps):
         self.notion = notion
         self.locations = locations
-        self.since = since
+        self.floor = floor
         self.gaps = gaps
         self.changes = None
 
@@ -207,7 +267,7 @@ class SearchDiscovery:
         """The changed pages, and None for the checked count: a search checks the
         workspace, not a location."""
         if self.changes is None:
-            self.changes = notion_search.changes_since(self.notion, self.locations, self.since,
+            self.changes = notion_search.changes_since(self.notion, self.locations, self.floor,
                                                        self.gaps)
 
         pages = [item for item in self.changes.under.get(location["name"], [])
@@ -411,22 +471,26 @@ def checked_phrase(checked):
     return f"{checked} checked" if checked is not None else "found by search"
 
 
-def render_location(notion, location, discovery, side_files, gaps):
+def render_location(notion, location, discovery, side_files, gaps, ledger):
+    """The location's section, the pages it checked, and the changed pages it
+    exported. A page the ledger has exported at its current edit time is not
+    one of them."""
     lines = [f"## {location['name']}", ""]
 
     try:
-        changed, checked = discovery.changed(location)
+        found, checked = discovery.changed(location)
 
     except ExportError as error:
         gaps.add(f"{location['name']} could not be read: {error}")
 
-        return lines + ["**Unreadable this run**; see the gaps the adapter reported.", ""], 0, 0
+        return lines + ["**Unreadable this run**; see the gaps the adapter reported.", ""], 0, []
+
+    changed = [page for page in found if not ledger.handled(page)]
 
     if not changed:
-        return (lines + [f"No page edited since the watermark ({checked_phrase(checked)}).", ""],
-                checked or 0, 0)
+        return lines + [f"No changed page ({checked_phrase(checked)}).", ""], checked or 0, []
 
-    lines += [f"{len(changed)} page(s) edited since the watermark ({checked_phrase(checked)}).", ""]
+    lines += [f"{len(changed)} changed page(s) ({checked_phrase(checked)}).", ""]
 
     for page in sorted(changed, key=lambda item: item["last_edited_time"]):
         side_file = None
@@ -442,29 +506,40 @@ def render_location(notion, location, discovery, side_files, gaps):
 
         lines += placeholder(page, side_file)
 
-    return lines, checked or 0, len(changed)
+    return lines, checked or 0, changed
 
 
-def build_export(notion, locations, since, discovery, side_files, gaps):
+def lookback_lines(ledger):
+    if not ledger.lookback:
+        return []
+
+    return [f"Also pages edited since `{format_time(ledger.floor)}`, the lookback for search index",
+            "lag, unless already exported at their current edit time."]
+
+
+def build_export(notion, locations, discovery, side_files, gaps, ledger):
+    """The export's text, the pages checked, and the changed pages exported."""
     header = [
         f"# Notion export (record-dense locations) — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
         "",
-        f"Pages edited at or after `{format_time(since)}` (the watermark, floored to Notion's",
-        "minute granularity). Assembled mechanically by the knowledge-base notion adapter;",
-        "the summaries are not written yet.",
+        f"Pages edited at or after `{format_time(ledger.since)}` (the watermark, floored to",
+        "Notion's minute granularity). Assembled mechanically by the knowledge-base notion",
+        "adapter; the summaries are not written yet.",
+        *lookback_lines(ledger),
         "",
     ]
     body = []
     checked_total = 0
-    changed_total = 0
+    exported = []
 
     for location in locations:
-        lines, checked, changed = render_location(notion, location, discovery, side_files, gaps)
+        lines, checked, changed = render_location(notion, location, discovery, side_files, gaps,
+                                                  ledger)
         body += lines
         checked_total += checked
-        changed_total += changed
+        exported += changed
 
-    return "\n".join(header + body), checked_total, changed_total
+    return "\n".join(header + body), checked_total, exported
 
 
 def main(argv=None):
@@ -479,7 +554,9 @@ def main(argv=None):
     parser.add_argument(
         "--walk", action="store_true",
         help="find changed pages by walking every page under each location, rather than "
-             "by search; complete, and a request per page",
+             "by search; complete, at a request per block that has children, so minutes "
+             "to an hour on deeply nested pages. The monthly check for an item the search "
+             "index never shows",
     )
     arguments = parser.parse_args(argv)
 
@@ -490,6 +567,10 @@ def main(argv=None):
         source = configuration.source(arguments.source)
         locations = notion_search.read_locations(source)
         since = read_watermark(arguments.watermark)
+        # The walk searches from the watermark, but the ledger is pruned against
+        # the lookback floor either way, so a walk keeps what the next search skips.
+        ledger = Ledger.from_source(source, arguments.source, since, since - index_lag(source),
+                                    "notion_export", lookback=not arguments.walk)
         notion = Notion.from_source(source, notion_credential.authorization(source))
 
     except (configuration.ConfigurationError, notion_credential.CredentialError) as error:
@@ -505,16 +586,16 @@ def main(argv=None):
 
     if arguments.walk:
         discovery = TreeWalkDiscovery(notion, since, int(source.get("max_depth", DEFAULT_MAX_DEPTH)),
-                                      gaps)
+                                      gaps, WalkProgress(len(locations)))
 
     else:
-        discovery = SearchDiscovery(notion, locations, since, gaps)
+        discovery = SearchDiscovery(notion, locations, ledger.floor, gaps)
 
     # Past this point a failure is reported by type alone. An exception's message
     # can carry what it was handed — a header, a body — and a traceback prints it.
     try:
-        content, checked, changed = build_export(notion, locations, since, discovery, side_files,
-                                                 gaps)
+        content, checked, exported = build_export(notion, locations, discovery, side_files, gaps,
+                                                  ledger)
         Path(arguments.output).write_text(content, encoding="utf-8")
 
     except Exception as error:  # noqa: BLE001 — the point is that nothing escapes unreduced
@@ -525,6 +606,7 @@ def main(argv=None):
         return EXIT_REFUSED
 
     print(arguments.output)
+    changed = len(exported)
 
     if arguments.walk:
         print(f"{len(locations)} location(s), {checked} page(s) checked, {changed} changed")
@@ -549,6 +631,8 @@ def main(argv=None):
 
         return EXIT_GAPS
 
+    # Like the watermark, the ledger moves only when nothing could have been missed.
+    ledger.write(exported, clock)
     print(f"New watermark: {format_time(clock)}")
 
     return 0

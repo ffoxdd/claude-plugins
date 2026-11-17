@@ -80,6 +80,7 @@ class Notion:
         self.authorization = authorization
         self.request_interval = request_interval
         self.last_request = 0.0
+        self.requests = 0
 
     @classmethod
     def from_source(cls, source, authorization):
@@ -90,6 +91,10 @@ class Notion:
         )
 
     def request(self, method, path, body=None):
+        """One call, retried as needed; `requests` counts the calls, not the retries,
+        for progress lines that say what a step cost."""
+        self.requests += 1
+
         for attempt in range(RETRIES + 1):
             self.pace()
 

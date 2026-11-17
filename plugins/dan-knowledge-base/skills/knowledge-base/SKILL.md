@@ -211,10 +211,33 @@ python3 <SKILL_DIR>/scripts/notion_export.py \
 ```
 
 It finds the changed pages by search, a few requests for the whole workspace.
-Add `--walk` to visit every page under every location instead, a request per
-page and minutes on a large location, but complete where a search index can lag
-or miss an item. Run the walk about weekly as the check on the search, and say
-in the watermark note when it last ran.
+Notion's search index is eventually consistent, so an edit can surface hours
+after it was made; both search adapters, this one and the sweep below, search
+from the watermark less the source's `index_lag_hours` (72 by default) to catch
+it, and print the same watermark as ever. The lookback costs a few more search
+pages and placement requests; what it finds again is not exported or read twice
+when the source names a `ledger`: a small committed file of page ids and the
+edit times already processed, so a page already exported or read at its current
+edit time is skipped. Give each Notion source its own:
+
+```
+"ledger": "notes/.notion-covered-ledger",
+"index_lag_hours": 72
+```
+
+A source with no ledger processes the whole lookback again every run, and the
+adapter says so on stderr. The ledger, like the watermark, is written only by a
+run without gaps, and holds ids and times only, never a title.
+
+Add `--walk` to visit every page under every location instead. It costs a
+request per block that has children, not per page, since finding child pages
+means listing every toggle, list item and column on the way: minutes on a large
+location, up to an hour on deeply nested progress logs. It names each location
+on stderr as it starts, and each page as its blocks are listed, by position, id,
+`children` requests and seconds, never by title. With the lookback catching an
+edit the index shows late, the walk remains only the check for an item the index
+never shows at all. Run it about monthly, and say in the watermark note when it
+last ran.
 
 **Notion sweep** — everything else in the workspace changed since the watermark:
 a manifest of id, kind, edit time and title, then **what changed in each listed
@@ -230,6 +253,11 @@ minutes when the changed pages are long. **Run it in the background, never under
 a time limit**, and read the one file it writes. It names each page on stderr by
 position, id and reading mode as it starts, and its block count and seconds as it
 ends, never by title. A page it could not read fully is a gap, like any other.
+Each page's blocks are read from the earliest moment an edit to it could have
+gone unreported: the minute after the edit time its ledger record holds, or the
+start of the lookback without one. A page the index showed late would otherwise
+print nothing of its late edit, since a block's own edit time predates the
+watermark.
 
 The register shapes the walk four ways. A long page that grows by inserting
 each new section above the last goes under `newest_first_pages`, with the number

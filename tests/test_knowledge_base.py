@@ -1185,6 +1185,33 @@ class NotionAdapterTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("covered_locations", result.stderr)
 
+    def test_the_walk_reports_each_location_and_page_by_id_with_its_requests(self):
+        """The hub's own blocks take four `children` requests: the hub, the column
+        list, the column and the toggle heading. A title reaches no progress line."""
+        result = self.export()
+        progress = result.stderr.splitlines()
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("location 1/2 Operations hub: walking", progress)
+        self.assertIn("location 2/2 Playbooks: walking", progress)
+        self.assertTrue(any(re.fullmatch(r"page 1 hub: 4 children request\(s\) in \d+\.\d s",
+                                         line) for line in progress), progress)
+
+        for page in ("unchanged", "changed", "nested", "under-heading"):
+            with self.subTest(page=page):
+                self.assertTrue(any(re.fullmatch(rf"page \d {page}: 1 children request\(s\) in "
+                                                 r"\d+\.\d s", line) for line in progress),
+                                progress)
+
+        for title in ("UNCHANGED-TITLE", "PERSON-TITLE", "Nested page", "Grouped", "A row"):
+            with self.subTest(title=title):
+                self.assertNotIn(title, result.stderr)
+
+    def test_the_walk_takes_no_lookback_and_so_no_ledger_notice(self):
+        result = self.export()
+
+        self.assertNotIn("ledger", result.stderr)
+
 
 def search_item(identifier, edited, title, parent_type="workspace", parent_id=None, kind="page"):
     parent = {"type": parent_type, parent_type: parent_id or True}
@@ -1346,6 +1373,26 @@ class StubNotionSearch:
                                              "Recruiting"),
     }
 
+    # Opt-in results the index showed late: edited inside the 72-hour lookback but
+    # before the watermark, one outside every covered location and one under the
+    # hub. lagged-page holds the late edit's block and one older than the lookback.
+    LAGGED_RESULTS = [
+        search_item("lagged-page", "2026-09-19T12:00:00.000Z", "LAGGED-TITLE"),
+        search_item("lagged-covered", "2026-09-19T09:00:00.000Z", "LAGGED-PERSON-TITLE",
+                    "page_id", "hub"),
+    ]
+
+    LAGGED_CHILDREN = {
+        "lagged-page": [
+            search_block("lagged-block", "paragraph", "LAGGED-BLOCK text",
+                         "2026-09-19T12:00:00.000Z"),
+            search_block("pre-lookback-block", "paragraph", "PRE-LOOKBACK text",
+                         "2026-09-10T09:00:00.000Z"),
+        ],
+        "lagged-covered": [search_block("lagged-covered-paragraph", "paragraph",
+                                        "LAGGED-SENSITIVE-MARKER", "2026-09-19T09:00:00.000Z")],
+    }
+
     METADATA = {
         ("pages", "hub"): search_item("hub", "2026-09-01T09:00:00.000Z", "Operations hub"),
         ("pages", "open-page"): search_item("open-page", "2026-09-24T09:00:00.000Z", "Roadmap"),
@@ -1362,12 +1409,17 @@ class StubNotionSearch:
     }
 
     def __init__(self, restricted=False, search_status=None, failing_comments=(),
-                 failing_children=(), call_notes=False):
+                 failing_children=(), call_notes=False, lagged=False):
         import http.server
         import threading
 
         stub = self
         self.results = list(self.RESULTS)
+
+        if lagged:
+            older = [item["id"] for item in self.results].index("old-page")
+            self.results[older:older] = self.LAGGED_RESULTS
+            self.CHILDREN = {**self.CHILDREN, **self.LAGGED_CHILDREN}
         self.search_status = search_status
         self.failing_comments = set(failing_comments)
         self.failing_children = set(failing_children)
@@ -1910,6 +1962,100 @@ class NotionSweepTest(unittest.TestCase):
             with self.subTest(title=title):
                 self.assertNotIn(title, result.stderr)
 
+    LEDGER = "notes/.notion-ledger"
+
+    def sweep_lagged(self, records=None, **options):
+        """A sweep over the lagged results, with a ledger holding `records`."""
+        self.start_stub(lagged=True, **options)
+        self.write_register({"covered_by": "notion-covered", "ledger": self.LEDGER})
+
+        if records is not None:
+            write_ledger(self.root / self.LEDGER, records)
+
+        return self.sweep()
+
+    def test_a_page_the_index_showed_late_is_read_from_the_lookback(self):
+        """lagged-page was edited before the watermark, inside the lookback; read
+        from the watermark, its edit would print nothing."""
+        result = self.sweep_lagged()
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("`lagged-page`", self.manifest())
+        self.assertIn("## LAGGED-TITLE — changes since 2026-09-17T10:30:00Z", self.manifest())
+        self.assertIn("LAGGED-BLOCK text", self.manifest())
+        self.assertNotIn("PRE-LOOKBACK", self.manifest())
+
+    def test_a_page_the_ledger_holds_at_its_edit_time_is_neither_listed_nor_read(self):
+        result = self.sweep_lagged({"lagged-page": ledger_record("2026-09-19T12:00:00.000Z",
+                                                                 "2026-09-19T13:00:00Z")})
+
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("lagged-page", self.manifest())
+        self.assertNotIn("LAGGED", self.manifest())
+        self.assertNotIn(("blocks", "lagged-page", "children"), self.stub.requested)
+
+    def test_a_record_from_a_run_whose_watermark_was_not_accepted_skips_nothing(self):
+        """The record's run printed a watermark later than the one passed, so its
+        output was discarded and this run re-covers its window."""
+        self.sweep_lagged({"lagged-page": ledger_record("2026-09-19T12:00:00.000Z",
+                                                        "2026-09-21T00:00:00Z")})
+
+        self.assertIn("LAGGED-BLOCK text", self.manifest())
+
+    def test_a_page_with_an_older_record_is_read_from_the_minute_after_it(self):
+        """open-page was processed at 09-19 00:00 and edited since: whatever came
+        after that record is what may be unreported."""
+        self.sweep_lagged({"open-page": ledger_record("2026-09-19T00:00:00.000Z",
+                                                      "2026-09-19T01:00:00Z")})
+
+        self.assertIn("## Roadmap — changes since 2026-09-19T00:01:00Z", self.manifest())
+
+    def test_the_lookback_counts_nothing_more_under_a_covered_location(self):
+        result = self.sweep_lagged()
+
+        self.assertIn("- Operations hub: 3", self.manifest())
+        self.assert_nothing_covered_leaked(result)
+
+    def test_a_clean_run_writes_the_ledger_by_id_and_prunes_it(self):
+        result = self.sweep_lagged({
+            "pruned-page": ledger_record("2026-09-10T09:00:00.000Z", "2026-09-10T10:00:00Z"),
+            "kept-page": ledger_record("2026-09-18T09:00:00.000Z", "2026-09-18T10:00:00Z"),
+        })
+        watermark = re.search(r"New watermark: (\S+)", result.stdout).group(1)
+        ledger = json.loads((self.root / self.LEDGER).read_text(encoding="utf-8"))
+
+        self.assertEqual(ledger["lagged-page"], ledger_record("2026-09-19T12:00:00.000Z",
+                                                              watermark))
+        self.assertIn("open-page", ledger)
+        self.assertIn("kept-page", ledger)
+        self.assertNotIn("pruned-page", ledger)
+        self.assertNotIn("covered-child", ledger)
+
+        for title in ("LAGGED-TITLE", "Roadmap", "Same minute"):
+            with self.subTest(title=title):
+                self.assertNotIn(title, (self.root / self.LEDGER).read_text(encoding="utf-8"))
+
+    def test_a_gapped_run_writes_no_ledger(self):
+        result = self.sweep_lagged(restricted=True)
+
+        self.assertEqual(result.returncode, 3)
+        self.assertFalse((self.root / self.LEDGER).exists())
+
+    def test_a_run_without_a_ledger_says_so_once(self):
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stderr.count('names no "ledger"'), 1)
+
+
+def ledger_record(edited, watermark):
+    return {"last_edited_time": edited, "watermark": watermark}
+
+
+def write_ledger(path, records):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(records), encoding="utf-8")
+
 
 class NotionAdapterSearchTest(unittest.TestCase):
     """The notion adapter's default discovery, by search, against the search stub.
@@ -1938,7 +2084,7 @@ class NotionAdapterSearchTest(unittest.TestCase):
         self.stub.close()
         self.directory.cleanup()
 
-    def start_stub(self, **options):
+    def start_stub(self, source=None, **options):
         if self.stub:
             self.stub.close()
 
@@ -1949,6 +2095,7 @@ class NotionAdapterSearchTest(unittest.TestCase):
             "request_interval_seconds": 0,
             "credential": {"claude_config": str(self.claude_config)},
             "covered_locations": [{"name": "Operations hub", "id": "hub"}],
+            **(source or {}),
         }}))
 
     def export(self, *extra):
@@ -2007,6 +2154,108 @@ class NotionAdapterSearchTest(unittest.TestCase):
         self.assertEqual(result.returncode, 3)
         self.assertIn("a search page could not be read", result.stderr)
         self.assertNotIn("New watermark", result.stdout)
+
+    LEDGER = "notes/.notion-ledger"
+
+    def export_lagged(self, records=None, **options):
+        """An export over the lagged results, with a ledger holding `records`."""
+        self.start_stub(source={"ledger": self.LEDGER}, lagged=True, **options)
+
+        if records is not None:
+            write_ledger(self.root / self.LEDGER, records)
+
+        return self.export()
+
+    def test_a_page_the_index_showed_late_is_exported(self):
+        """lagged-covered was edited before the watermark, inside the lookback."""
+        result = self.export_lagged()
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("4 changed, found by search", result.stdout)
+        self.assertIn("### Page `lagged-covered`", self.export_text())
+        self.assertIn("LAGGED-SENSITIVE-MARKER",
+                      (self.raw / "lagged-covered.md").read_text(encoding="utf-8"))
+        self.assertNotIn("LAGGED-PERSON-TITLE", result.stdout + result.stderr + self.export_text())
+
+    def test_a_page_the_ledger_holds_at_its_edit_time_is_not_exported_again(self):
+        result = self.export_lagged({"lagged-covered": ledger_record("2026-09-19T09:00:00.000Z",
+                                                                     "2026-09-19T10:00:00Z")})
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("3 changed, found by search", result.stdout)
+        self.assertNotIn("lagged-covered", self.export_text())
+        self.assertFalse((self.raw / "lagged-covered.md").exists())
+
+    def test_a_page_the_ledger_holds_at_an_older_edit_time_is_exported(self):
+        self.export_lagged({"lagged-covered": ledger_record("2026-09-18T09:00:00.000Z",
+                                                            "2026-09-18T10:00:00Z")})
+
+        self.assertIn("### Page `lagged-covered`", self.export_text())
+
+    def test_a_clean_run_writes_the_ledger_and_prunes_what_the_lookback_passed(self):
+        result = self.export_lagged({
+            "pruned-page": ledger_record("2026-09-10T09:00:00.000Z", "2026-09-10T10:00:00Z"),
+        })
+        watermark = re.search(r"New watermark: (\S+)", result.stdout).group(1)
+        text = (self.root / self.LEDGER).read_text(encoding="utf-8")
+        ledger = json.loads(text)
+
+        self.assertEqual(set(ledger), {"lagged-covered", "covered-child", "deep-covered",
+                                       "covered-row"})
+        self.assertEqual(ledger["lagged-covered"]["watermark"], watermark)
+
+        for token in self.COVERED + ("LAGGED-PERSON-TITLE",):
+            with self.subTest(token=token):
+                self.assertNotIn(token, text)
+
+    def test_a_gapped_run_writes_no_ledger(self):
+        result = self.export_lagged(restricted=True)
+
+        self.assertEqual(result.returncode, 3)
+        self.assertFalse((self.root / self.LEDGER).exists())
+
+    def test_a_run_without_a_ledger_says_so_once_and_names_a_path_of_its_own(self):
+        result = self.export()
+
+        self.assertEqual(result.stderr.count('names no "ledger"'), 1)
+        self.assertIn('"ledger": "notes/.notion-covered-ledger"', result.stderr)
+
+    def test_a_walk_keeps_the_records_the_next_search_skips_by(self):
+        """The walk searches from the watermark, but prunes against the lookback
+        floor, so lagged-covered's record survives it."""
+        record = ledger_record("2026-09-19T09:00:00.000Z", "2026-09-19T10:00:00Z")
+        self.start_stub(source={"ledger": self.LEDGER}, lagged=True)
+        write_ledger(self.root / self.LEDGER, {"lagged-covered": record})
+
+        walked = self.export("--walk")
+        ledger = json.loads((self.root / self.LEDGER).read_text(encoding="utf-8"))
+        searched = self.export()
+
+        self.assertEqual(walked.returncode, 0)
+        self.assertEqual(ledger["lagged-covered"], record)
+        self.assertEqual(searched.returncode, 0)
+        self.assertNotIn("lagged-covered", self.export_text())
+
+    def test_a_malformed_record_is_read_as_absent_with_one_warning(self):
+        result = self.export_lagged({
+            "lagged-covered": {"last_edited_time": None, "watermark": 123},
+            "covered-child": "not a record",
+            "covered-row": ledger_record("2026-09-23T09:00:00.000Z", "no timezone"),
+        })
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stderr.count("ignoring 3 malformed record(s)"), 1)
+        self.assertIn("### Page `lagged-covered`", self.export_text())
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_an_index_lag_that_is_not_a_number_of_hours_is_refused(self):
+        self.start_stub(source={"index_lag_hours": "three days"})
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("index_lag_hours", result.stderr)
+        self.assertEqual(self.stub.search_requests, 0)
 
 
 class NotionPageChangesTest(unittest.TestCase):

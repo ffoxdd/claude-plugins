@@ -43,7 +43,28 @@ locations included.
 **The watermark is inclusive at minute granularity**, as in `notion_export.py`,
 and is the clock read before the first request. The search is sorted newest
 first, and stops after the first page whose last result is older than the
-watermark.
+lookback floor.
+
+**The search looks back for index lag.** Notion's index is eventually
+consistent, so the search starts at the watermark less the source's
+`index_lag_hours` (72 by default), and an item the source's `ledger` records as
+processed at its current edit time is dropped: not listed, not read. A source
+naming no ledger processes the whole overlap again every run, and says so on
+stderr. Results under a covered location are counted from the watermark only:
+the covered adapter takes its own lookback. See `notion_ledger.py`.
+
+**Each page's blocks are read from the earliest moment an edit to it could have
+gone unreported**, not from the watermark. The page-changes walk prints the
+blocks whose own edit time is at or after the time it is given, and a block's
+edit time is not subject to the index's lag; only the page's appearance in the
+search is. So a page whose edit the index showed late, read from the watermark,
+would print nothing of that edit, and the same holds for a page edited once
+late-indexed and again after the watermark, whose edit time then hides the
+first. The time a page is read from is the minute after the edit time the ledger
+last recorded for it, or the lookback floor when the record is older or absent.
+Everything at or before a recorded edit time was read when it was recorded;
+everything after it, up to the lookback, may not have been. With
+`index_lag_hours` at 0 that is the watermark, as without a lookback.
 
 **It reads everything, so it takes as long as the pages are long.** The walk
 cannot skip a branch (see `notion_page_changes.py`), so a sync whose changed
@@ -98,9 +119,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import configuration
 import notion_credential
 import notion_search
-from notion_api import EXIT_GAPS, EXIT_REFUSED, Gaps, Notion, format_time, parse_time, \
-    read_watermark
+from notion_api import EXIT_GAPS, EXIT_REFUSED, Gaps, Notion, edited_since, format_time, \
+    parse_time, read_watermark
 from notion_export import page_title, plain_text
+from notion_ledger import Ledger, index_lag
 from notion_page_changes import Authors, ReadingRules, page_report
 
 
@@ -115,13 +137,38 @@ def table_cell(text):
     return text.replace("|", "\\|").replace("\n", " ")
 
 
-def build_manifest(changes, since, covered_source):
+def unprocessed(changes, ledger):
+    """The search's changes, less every item the ledger has processed at its
+    current edit time. Items under a covered location are kept only from the
+    watermark: they are counted, never read, and the lookback serves the reads."""
+    kept = notion_search.Changes()
+    kept.unplaced = changes.unplaced
+    kept.outside = [item for item in changes.outside if not ledger.handled(item)]
+
+    for location, items in changes.under.items():
+        for item in items:
+            if edited_since(item, ledger.since):
+                kept.add(item, location)
+
+    return kept
+
+
+def lookback_lines(ledger):
+    if not ledger.lookback:
+        return []
+
+    return [f"Also items edited since `{format_time(ledger.floor)}`, the lookback for search index",
+            "lag, unless already processed at their current edit time."]
+
+
+def build_manifest(changes, ledger, covered_source):
     lines = [
         f"# Notion sweep — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
         "",
-        f"Pages and databases edited at or after `{format_time(since)}` (the watermark, floored",
-        "to Notion's minute granularity), outside the covered locations. Assembled",
+        f"Pages and databases edited at or after `{format_time(ledger.since)}` (the watermark,",
+        "floored to Notion's minute granularity), outside the covered locations. Assembled",
         "mechanically by the knowledge-base notion-sweep adapter.",
+        *lookback_lines(ledger),
         "",
         f"## Changed ({len(changes.outside)})",
         "",
@@ -191,9 +238,10 @@ def reading_mode(scope, comments):
     return f"{mode}, comments" if comments else mode
 
 
-def read_changes(notion, changes, since, gaps, rules, ancestry):
-    """Every listed page, newest first, but those the rules skip. One page failing
-    is a gap, not the end."""
+def read_changes(notion, changes, ledger, gaps, rules, ancestry):
+    """Every listed page, newest first, but those the rules skip, each read from
+    its own block window (see the module docstring). One page failing is a gap,
+    not the end."""
     readings = Readings()
     authors = Authors(notion)
     pages = [item for item in changes.outside if item.get("object") == "page"]
@@ -213,8 +261,8 @@ def read_changes(notion, changes, since, gaps, rules, ancestry):
             scope = rules.scope_for(page, ancestry)
             comments = rules.reads_comments(page, ancestry)
             progress.start(reading_mode(scope, comments))
-            report = page_report(notion, page, since, gaps, heading="##", authors=authors,
-                                 scope=scope, comments=comments)
+            report = page_report(notion, page, ledger.block_window(page), gaps, heading="##",
+                                 authors=authors, scope=scope, comments=comments)
 
         except Exception as error:  # noqa: BLE001 — reduced to a type, as everywhere here
             gaps.add(f"page {page['id']} could not be read ({type(error).__name__})")
@@ -271,6 +319,8 @@ def main(argv=None):
         locations, covered_source = notion_search.covered_locations(source)
         rules = ReadingRules.from_source(source)
         since = read_watermark(arguments.watermark)
+        ledger = Ledger.from_source(source, arguments.source, since, since - index_lag(source),
+                                    "notion_sweep")
         notion = Notion.from_source(source, notion_credential.authorization(source))
 
     except (configuration.ConfigurationError, notion_credential.CredentialError) as error:
@@ -283,10 +333,11 @@ def main(argv=None):
 
     # Past this point a failure is reported by type alone, as in notion_export.py.
     try:
-        changes = notion_search.changes_since(notion, locations, since, gaps, ancestry)
-        readings = read_changes(notion, changes, since, gaps, rules, ancestry)
+        changes = unprocessed(
+            notion_search.changes_since(notion, locations, ledger.floor, gaps, ancestry), ledger)
+        readings = read_changes(notion, changes, ledger, gaps, rules, ancestry)
         Path(arguments.output).write_text(
-            build_output(build_manifest(changes, since, covered_source), readings),
+            build_output(build_manifest(changes, ledger, covered_source), readings),
             encoding="utf-8",
         )
 
@@ -314,6 +365,10 @@ def main(argv=None):
 
         return EXIT_GAPS
 
+    # Like the watermark, the ledger moves only when nothing could have been missed.
+    # Every item listed was processed: read, skipped by rule, or, for a database,
+    # listed only.
+    ledger.write(changes.outside, clock)
     print(f"New watermark: {format_time(clock)}")
 
     return 0

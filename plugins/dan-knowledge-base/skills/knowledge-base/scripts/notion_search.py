@@ -2,8 +2,9 @@
 
 Shared by the `notion-sweep` adapter, the `notion` adapter's default discovery,
 and the page-changes tool. One search over Notion's REST API, sorted newest
-first and stopped at the watermark, and one placement of each result by its
-parent chain against the covered locations the register lists.
+first and stopped at the time it is given, and one placement of each result by
+its parent chain against the covered locations the register lists. The adapters
+give it their lookback floor rather than the watermark (`notion_ledger.py`).
 
 **Placement walks the parent chain**, one metadata request per ancestor not yet
 seen, cached for the run. A chain that reaches the workspace, or an ancestor the
