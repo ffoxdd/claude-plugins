@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import support
@@ -2434,3 +2435,431 @@ class NotionPageChangesTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("CANDIDATE-MARKER text", result.stdout)
 
+
+
+def fathom_time(moment):
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def fathom_meeting(identifier, created, title, summary, invitees, action_items=None):
+    return {
+        "recording_id": identifier,
+        "title": title,
+        "meeting_title": title,
+        "created_at": fathom_time(created),
+        "recording_start_time": fathom_time(created),
+        "calendar_invitees": [{"name": name, "email": email,
+                               "email_domain": email.split("@")[1], "is_external": True}
+                              for name, email in invitees],
+        "default_summary": None if summary is None else {"template_name": "General",
+                                                         "markdown_formatted": summary},
+        "action_items": [] if action_items is None else action_items,
+    }
+
+
+class StubFathom:
+    """A local stand-in for Fathom's `GET /meetings`, serving two cursor pages.
+
+    page 1: 101 ready     a summary, a person-shaped title, a customer's invitee
+            102 excluded  an invitee at a subdomain of an excluded domain
+    page 2: 103 not ready no summary yet
+            104 ledgered  the tests' ledger holds it
+
+    `broken` adds 105, whose action items the renderer cannot read; `failing_cursor`
+    answers the second page with that status; `rate_limited` answers the first
+    request with a 429.
+    """
+
+    WATERMARK_TIME = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=1)
+    WATERMARK = fathom_time(WATERMARK_TIME)
+
+    def __init__(self, broken=False, failing_cursor=None, rate_limited=False):
+        import http.server
+        import threading
+        import urllib.parse
+
+        stub = self
+        created = self.WATERMARK_TIME + timedelta(hours=2)
+        first_page = [
+            fathom_meeting(101, created, "Jane PERSON-TITLE", "SUMMARY-MARKER decided",
+                           [("Jane Member", "jane.MEMBER-EMAIL@customer.example")],
+                           [{"description": "ACTION-MARKER follow up",
+                             "assignee": {"name": "Colleague", "email": "c@us.example"},
+                             "completed": False}]),
+            fathom_meeting(102, created, "EXCLUDED-TITLE", "EXCLUDED-SUMMARY",
+                           [("Someone", "someone@Mail.FORBIDDEN.example")]),
+        ]
+        second_page = [
+            fathom_meeting(103, created, "NOT-READY-TITLE", None, []),
+            fathom_meeting(104, created, "LEDGERED-TITLE", "LEDGERED-SUMMARY", []),
+        ]
+
+        if broken:
+            second_page.append(fathom_meeting(105, created + timedelta(hours=1), "Broken",
+                                              "BROKEN-SUMMARY", [], action_items=5))
+
+        self.pages = {None: (first_page, "page-2"), "page-2": (second_page, None)}
+        self.queries = []
+        self.api_keys = []
+        self.first_request_at = None
+        self.rate_limited = rate_limited
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *arguments):
+                pass
+
+            def reply(self, status, document):
+                body = json.dumps(document).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Retry-After", "0")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                stub.first_request_at = stub.first_request_at or datetime.now(timezone.utc)
+                stub.api_keys.append(self.headers.get("X-Api-Key"))
+                path, _, query = self.path.partition("?")
+                parameters = dict(urllib.parse.parse_qsl(query))
+                stub.queries.append(parameters)
+
+                if stub.rate_limited:
+                    stub.rate_limited = False
+                    return self.reply(429, {"error": "LEAKY-ERROR-MESSAGE"})
+
+                cursor = parameters.get("cursor")
+
+                if path != "/meetings" or cursor not in stub.pages:
+                    return self.reply(404, {"error": "LEAKY-ERROR-MESSAGE"})
+
+                if cursor and failing_cursor:
+                    return self.reply(failing_cursor, {"error": "LEAKY-ERROR-MESSAGE"})
+
+                items, next_cursor = stub.pages[cursor]
+                self.reply(200, {"items": items, "next_cursor": next_cursor, "limit": 10})
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def api_base(self):
+        return f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class FathomAdapterTest(unittest.TestCase):
+    """The fathom adapter against a stub API. Pinned: a meeting's title, summary,
+    action items and invitees reach only its side file; a meeting with an excluded
+    invitee reaches nothing at all; the listing looks back from the watermark and
+    the ledger keeps the overlap from being exported twice; a summary not yet
+    written is retried rather than recorded; and without the side-file flag nothing
+    of a meeting is written and nothing advances."""
+
+    KEY = "secret-KEY-MARKER"
+    CONTENT = ("PERSON-TITLE", "SUMMARY-MARKER", "ACTION-MARKER", "MEMBER-EMAIL", "Jane",
+               "EXCLUDED-TITLE", "EXCLUDED-SUMMARY", "NOT-READY-TITLE", "LEDGERED-TITLE",
+               "LEAKY-ERROR-MESSAGE", "KEY-MARKER")
+    EXCLUDED = ("EXCLUDED-TITLE", "EXCLUDED-SUMMARY", "someone@", "forbidden")
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.output = self.root / "export.md"
+        self.raw = self.root / "raw"
+        self.ledger = self.root / "notes" / ".fathom-ledger"
+        self.key_file = self.root / "api-key"
+        self.write_key(self.KEY)
+        self.stub = None
+        self.start_stub()
+
+    def tearDown(self):
+        self.stub.close()
+        self.directory.cleanup()
+
+    def write_key(self, value, mode=0o600):
+        self.key_file.write_text(value + "\n", encoding="utf-8")
+        self.key_file.chmod(mode)
+
+    def start_stub(self, source=None, **options):
+        if self.stub:
+            self.stub.close()
+
+        self.stub = StubFathom(**options)
+        entry = {
+            "adapter": "fathom",
+            "api_base": self.stub.api_base,
+            "request_interval_seconds": 0,
+            "credential": {"key_file": str(self.key_file)},
+            "ledger": "notes/.fathom-ledger",
+            "lookback_hours": 72,
+            "excluded_invitee_domains": ["forbidden.EXAMPLE"],
+        }
+        entry.update(source or {})
+        self.config = write_register(self.root, register(fathom={
+            key: value for key, value in entry.items() if value is not None}))
+
+    def write_ledger_record(self, watermark):
+        created = fathom_time(StubFathom.WATERMARK_TIME + timedelta(hours=2))
+        write_ledger(self.ledger, {"104": {"created_at": created, "watermark": watermark}})
+
+    def export(self, *extra, watermark=StubFathom.WATERMARK, **environment):
+        return support.run_script(
+            adapter("fathom_export.py"),
+            arguments=[watermark, str(self.output), *extra],
+            KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+            **environment,
+        )
+
+    def export_with_side_files(self, **environment):
+        return self.export("--sensitive-raw-directory", str(self.raw), **environment)
+
+    def written_files(self):
+        return [path for path in self.root.rglob("*") if path.is_file()]
+
+    def everything_written(self, result):
+        return result.stdout + result.stderr + "".join(
+            path.read_text(encoding="utf-8") for path in self.written_files()
+            if path != self.config)
+
+    def test_every_page_is_read_along_the_cursor(self):
+        result = self.export_with_side_files()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([query.get("cursor") for query in self.stub.queries], [None, "page-2"])
+        self.assertIn("4 meeting(s) listed", result.stdout)
+        self.assertIn("1 summary not ready", result.stdout)
+
+    def test_the_listing_looks_back_from_the_watermark_and_asks_for_no_transcript(self):
+        self.export_with_side_files()
+        floor = StubFathom.WATERMARK_TIME.replace(second=0) - timedelta(hours=72)
+
+        for query in self.stub.queries:
+            with self.subTest(query=query):
+                self.assertEqual(query["created_after"], fathom_time(floor))
+                self.assertEqual(query["include_summary"], "true")
+                self.assertEqual(query["include_action_items"], "true")
+                self.assertNotIn("include_transcript", query)
+
+    def test_a_meeting_with_an_excluded_invitee_is_written_nowhere(self):
+        result = self.export_with_side_files()
+        written = self.everything_written(result)
+
+        self.assertIn("1 skipped by invitee domain", result.stdout)
+
+        for marker in self.EXCLUDED:
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, written)
+
+        self.assertFalse((self.raw / "fathom-102.md").exists())
+        self.assertNotIn("`102`", self.output.read_text(encoding="utf-8"))
+
+    def test_a_ready_meeting_reaches_only_its_side_file(self):
+        result = self.export_with_side_files()
+        side_file = (self.raw / "fathom-101.md").read_text(encoding="utf-8")
+        export = self.output.read_text(encoding="utf-8")
+
+        for marker in ("PERSON-TITLE", "SUMMARY-MARKER", "ACTION-MARKER"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, side_file)
+                self.assertNotIn(marker, export)
+                self.assertNotIn(marker, result.stdout + result.stderr)
+
+        self.assertIn("customer.example", side_file)
+        self.assertNotIn("MEMBER-EMAIL", side_file)
+        self.assertIn(str(self.raw / "fathom-101.md"), export)
+        self.assertIn("gated, not condensed", export)
+
+    def test_no_output_stream_carries_a_title_a_summary_an_address_or_the_key(self):
+        result = self.export_with_side_files()
+        streams = result.stdout + result.stderr + self.output.read_text(encoding="utf-8")
+
+        for marker in self.CONTENT:
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, streams)
+
+    def test_a_ledgered_meeting_is_not_exported_again(self):
+        self.write_ledger_record(fathom_time(StubFathom.WATERMARK_TIME - timedelta(hours=1)))
+
+        result = self.export_with_side_files()
+
+        self.assertIn("1 already in the ledger", result.stdout)
+        self.assertFalse((self.raw / "fathom-104.md").exists())
+
+    def test_a_record_from_a_run_whose_watermark_was_not_accepted_skips_nothing(self):
+        self.write_ledger_record(fathom_time(StubFathom.WATERMARK_TIME + timedelta(hours=1)))
+
+        result = self.export_with_side_files()
+
+        self.assertIn("0 already in the ledger", result.stdout)
+        self.assertTrue((self.raw / "fathom-104.md").exists())
+
+    def test_a_meeting_without_a_summary_is_retried_rather_than_recorded(self):
+        result = self.export_with_side_files()
+        records = json.loads(self.ledger.read_text(encoding="utf-8"))
+
+        self.assertEqual(sorted(records), ["101", "104"])
+        self.assertFalse((self.raw / "fathom-103.md").exists())
+        self.assertIn("lookback: 103", result.stdout)
+
+    def test_without_the_flag_nothing_is_written_and_nothing_advances(self):
+        self.write_ledger_record(fathom_time(StubFathom.WATERMARK_TIME - timedelta(hours=1)))
+        before = self.ledger.read_bytes()
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.raw.exists())
+        self.assertEqual(self.ledger.read_bytes(), before)
+        self.assertNotIn("New watermark", result.stdout)
+        self.assertIn("listed only", result.stdout)
+        self.assertNotIn("SUMMARY-MARKER", self.output.read_text(encoding="utf-8"))
+
+    def test_the_watermark_is_the_clock_before_the_first_request(self):
+        result = self.export_with_side_files()
+        printed = re.search(r"New watermark: (\S+)", result.stdout).group(1)
+
+        self.assertLessEqual(datetime.fromisoformat(printed.replace("Z", "+00:00")),
+                             self.stub.first_request_at)
+
+    def test_a_rate_limit_is_retried(self):
+        self.start_stub(rate_limited=True)
+
+        result = self.export_with_side_files()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.stub.queries), 3)
+
+    def test_an_unreadable_page_withholds_the_watermark_and_the_ledger(self):
+        self.start_stub(failing_cursor=403)
+
+        result = self.export_with_side_files()
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("GET /meetings returned 403", result.stderr)
+        self.assertNotIn("New watermark", result.stdout)
+        self.assertFalse(self.ledger.exists())
+        self.assertNotIn("LEAKY-ERROR-MESSAGE", result.stdout + result.stderr)
+
+    def test_a_failure_part_way_removes_the_side_files_it_wrote(self):
+        self.start_stub(broken=True)
+
+        result = self.export_with_side_files()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("failed part-way", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(list(self.raw.glob("*.md")), [])
+        self.assertFalse(self.output.exists())
+
+    def test_a_source_listing_no_excluded_domains_refuses_to_run(self):
+        self.start_stub(source={"excluded_invitee_domains": None})
+
+        result = self.export_with_side_files()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("excluded_invitee_domains", result.stderr)
+        self.assertEqual(self.stub.queries, [])
+
+    def test_a_watermark_past_the_lookback_cap_is_refused_before_any_request(self):
+        result = self.export("--sensitive-raw-directory", str(self.raw),
+                             watermark="2020-01-01T00:00:00Z")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("max_lookback_days", result.stderr)
+        self.assertEqual(self.stub.queries, [])
+
+    def test_the_environment_key_wins_over_the_file(self):
+        self.export_with_side_files(FATHOM_API_KEY="environment-KEY-MARKER")
+
+        self.assertEqual(set(self.stub.api_keys), {"environment-KEY-MARKER"})
+
+    def test_the_file_key_is_sent_and_written_nowhere(self):
+        result = self.export_with_side_files()
+
+        self.assertEqual(set(self.stub.api_keys), {self.KEY})
+        self.assertNotIn("KEY-MARKER", self.everything_written(result).replace(
+            self.key_file.read_text(encoding="utf-8"), ""))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows has no mode bits to check")
+    def test_a_key_file_others_can_read_is_refused_without_quoting_it(self):
+        self.write_key(self.KEY, mode=0o640)
+
+        result = self.export_with_side_files()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("group or other", result.stderr)
+        self.assertNotIn("KEY-MARKER", result.stderr + result.stdout)
+        self.assertEqual(self.stub.queries, [])
+
+    def test_a_malformed_key_is_refused_without_quoting_it(self):
+        result = self.export_with_side_files(FATHOM_API_KEY="secret KEY-MARKER")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("malformed", result.stderr)
+        self.assertNotIn("KEY-MARKER", result.stderr + result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_a_missing_key_names_the_variable_and_the_file(self):
+        self.key_file.unlink()
+
+        result = self.export_with_side_files()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("FATHOM_API_KEY", result.stderr)
+        self.assertIn(str(self.key_file), result.stderr)
+
+
+class FathomKeySetupTest(unittest.TestCase):
+    """The step a person runs to store a key: read without echo, written readable by
+    its owner alone, and only the path printed."""
+
+    def store(self, key, path):
+        directory = support.plugin_root(PLUGIN) / "scripts"
+        program = (
+            f"import sys; sys.path.insert(0, {str(directory)!r});"
+            "import getpass, fathom_credential;"
+            f"getpass.getpass = lambda prompt='': {key!r};"
+            f"sys.exit(fathom_credential.main(['--key-file', {str(path)!r}]))"
+        )
+
+        return subprocess.run([sys.executable, "-c", program], capture_output=True, text=True)
+
+    def test_the_key_is_stored_privately_and_only_the_path_printed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fathom" / "api-key"
+
+            result = self.store("stored-KEY-MARKER", path)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), str(path))
+            self.assertNotIn("KEY-MARKER", result.stdout + result.stderr)
+            self.assertEqual(path.read_text(encoding="utf-8").strip(), "stored-KEY-MARKER")
+
+            if sys.platform != "win32":
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_an_empty_key_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "api-key"
+
+            result = self.store("", path)
+
+            self.assertEqual(result.returncode, 1)
+            self.assertFalse(path.exists())
+
+    def test_session_start_names_the_missing_key_and_how_to_store_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_register(directory, register(meetings={"adapter": "fathom"}))
+
+            result = support.run_script(support.script(PLUGIN, "provision.py"),
+                                        KNOWLEDGE_BASE_CONFIG_FILE=str(path), HOME=directory)
+            body = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+            self.assertIn("fathom adapter cannot authenticate", body)
+            self.assertIn("FATHOM_API_KEY", body)
+            self.assertIn("fathom_credential.py", body)

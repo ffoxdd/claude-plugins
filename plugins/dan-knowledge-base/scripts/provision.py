@@ -31,6 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import configuration
+import fathom_credential
 import mail_cache
 import notion_credential
 
@@ -45,6 +46,10 @@ ADAPTER_REQUIREMENTS = {
     "email": {
         "scripts": (),
         "commands": ("uv",),
+    },
+    "fathom": {
+        "scripts": (),
+        "commands": (),
     },
     "notion": {
         "scripts": (),
@@ -270,6 +275,12 @@ def check_interactive_setup(adapters, root, document):
                 "adapter cannot authenticate: add the Notion MCP server at user scope, or name "
                 "the server under the source's \"credential\" in the register."
             )
+
+    if "fathom" in adapters:
+        problem = fathom_credential.problem(source_with_adapter(document, "fathom"))
+
+        if problem:
+            notes.append(f"the fathom adapter cannot authenticate: {problem}")
 
     return notes
 
