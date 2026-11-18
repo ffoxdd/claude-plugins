@@ -25,28 +25,27 @@ commonly, private channels only. Every channel carries a private flag, readable
 live, so the tiering needs no per-channel configuration and a newly created
 private channel is handled safely with zero config.
 
-Two independent questions decide how a conversation is handled, and neither
-is inferred from the other:
+Two independent questions decide what the isolated agent does with each
+conversation, and neither is inferred from the other:
 
-| Axis | Decided by | Yes | No |
-|---|---|---|---|
-| **Density** — is ordinary traffic per-person records? | the register's `dense_conversations`, named by hand | **summarized**: raw text never enters the export; the isolated agent writes a structural-facts-only summary | pulled verbatim, then gated |
-| **Privacy** — is personal data permitted here? | the platform's private flag, or a topic banner listed in `private_topic_markers`, both read live | **scrub-mandatory**: the agent actively removes personal data, summarizing a section only if it is dominated by it | **backstop**: the agent scans for strays |
+- **Dense?** Is its ordinary traffic per-person records? Named by hand, in the
+  register's `dense_conversations`, because nothing on the platform says so.
+- **Private?** Is personal data permitted there? Read live: the platform's
+  private flag, or a topic banner listed in `private_topic_markers` (matched
+  case-insensitively). A new private or bannered channel needs no config.
 
-Density wins where both apply: a dense channel is summarized whether or not it
-is private.
+|  | **Not private** (public, DM) | **Private** (locked or bannered) |
+|---|---|---|
+| **Not dense** | **Backstop:** pulled verbatim; the agent scans for stray personal data | **Scrubbed:** pulled verbatim; the agent removes personal data, summarizing a section only if it is dominated by it |
+| **Dense** | **Summarized:** raw text never enters the export; the agent writes a structural-facts-only summary | **Summarized**, the same way |
 
-- **Density is named by hand** because nothing on the platform says it.
-  Scrubbing a message that is nine-tenths personal detail redacts it to
-  nothing, so these channels (billing operations, eligibility, support triage)
-  lose no durable content to a summary.
-- **Privacy is read live**, so a newly created private or bannered channel is
-  handled safely with no config change. A banner (matched case-insensitively)
-  says what the lock says, and catches a bannered channel left public; it says
-  nothing about density.
-- **The backstop stays on** for public channels and direct messages, where the
-  convention says there is nothing to find. It has caught real personal data
-  in a group DM: a convention describes what people intend, not what they did.
+- **Dense means summarized** because scrubbing a message that is nine-tenths
+  personal detail redacts it to nothing, so a summary loses no durable content.
+- **A banner says what the lock says**, and catches a bannered channel left
+  public. It says nothing about density.
+- **The backstop stays on** where the convention says there is nothing to
+  find: it has caught real personal data in a group DM. A convention describes
+  what people intend, not what they did.
 
 ## Slack-specific facts
 
