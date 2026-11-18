@@ -18,16 +18,17 @@ they are fetched only far enough to advance the watermark.
 
 Three tiers, and only the first needs naming by hand:
 
-  1. conversations listed as `dense_conversations` in the register, or whose
-     topic carries one of the register's `dense_topic_markers` — summarized,
+  1. conversations listed as `dense_conversations` in the register — summarized,
      never pulled verbatim, because scrubbing text that is mostly per-person
      detail redacts it to nothing
-  2. any other private conversation — pulled verbatim, marked scrub-mandatory
+  2. any other private conversation, or one whose topic carries one of the
+     register's `private_topic_markers` — pulled verbatim, marked scrub-mandatory
   3. everything else — pulled verbatim; the gate is a backstop, since the
      workspace convention says there should be nothing to find
 
-Tier 2 is decided by the platform's own privacy flag, read live, so a newly
-created private channel is handled safely with no config change.
+Tier 2 is decided by the platform's own privacy flag and the topic, both read
+live, so a newly created private or newly bannered channel is handled safely
+with no config change.
 """
 
 import argparse
@@ -94,22 +95,26 @@ class Conversation:
 
 
 @dataclass(frozen=True)
-class DenseDesignation:
-    """What makes a conversation record-dense: its name, or a marker in its topic.
+class Handling:
+    """The register's designations, which decide each conversation's tier.
 
-    The topic route exists because a workspace that marks channels by banner
-    ("this channel may contain personal data") has already made the designation;
-    a hand-kept name list only repeats it, and drifts the first time a channel is
-    created or someone else installs the register.
+    A topic banner ("this channel may contain personal data") says the same thing
+    the private flag does — personal data is permitted here — so it earns the same
+    scrub-mandatory handling, and catches a bannered channel that was left public.
+    It says nothing about how much of the traffic is per-person records, so it
+    never makes a conversation dense; only the hand-named list does that.
     """
-    names: frozenset
-    topic_markers: tuple
+    dense_names: frozenset
+    private_topic_markers: tuple
 
-    def covers(self, conversation):
+    def is_dense(self, conversation):
+        return conversation.name.lower() in self.dense_names
+
+    def is_private(self, conversation):
         topic = conversation.topic.lower()
 
-        return conversation.name.lower() in self.names or any(
-            marker in topic for marker in self.topic_markers
+        return conversation.locked or any(
+            marker in topic for marker in self.private_topic_markers
         )
 
 
@@ -426,11 +431,11 @@ def render_message_window(client, identifier, name, posted, revived, watermark, 
     return lines
 
 
-def render_conversation(client, conversation, watermark, dense, acknowledgements,
+def render_conversation(client, conversation, watermark, handling, acknowledgements,
                         sensitive_raw_directory=None):
     """One conversation's section, its highest timestamp, and anything to report."""
-    identifier, name, locked = conversation.identifier, conversation.name, conversation.locked
-    is_dense = dense.covers(conversation)
+    identifier, name = conversation.identifier, conversation.name
+    is_dense = handling.is_dense(conversation)
     watermark = float(watermark)
     window, possibly_truncated = client.recent_window(identifier)
     posted, revived = split_by_watermark(window, watermark)
@@ -486,7 +491,7 @@ def render_conversation(client, conversation, watermark, dense, acknowledgements
 
         return lines + [""], highest, notes
 
-    if locked:
+    if handling.is_private(conversation):
         lines += [
             "**🔒 Private conversation — personal data is permitted here.** Isolated agent:",
             "scrub this section before release; if person-level detail dominates, replace it",
@@ -501,7 +506,7 @@ def render_conversation(client, conversation, watermark, dense, acknowledgements
     return lines + [""], highest, notes
 
 
-def build_export(client, watermark, dense, acknowledgements, sensitive_raw_directory=None):
+def build_export(client, watermark, handling, acknowledgements, sensitive_raw_directory=None):
     header = [
         f"# Chat export — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
         "",
@@ -516,7 +521,7 @@ def build_export(client, watermark, dense, acknowledgements, sensitive_raw_direc
 
     for conversation in client.memberships():
         lines, conversation_highest, conversation_notes = render_conversation(
-            client, conversation, watermark, dense, acknowledgements, sensitive_raw_directory,
+            client, conversation, watermark, handling, acknowledgements, sensitive_raw_directory,
         )
         body += lines
         highest = max(highest, conversation_highest)
@@ -552,12 +557,12 @@ def main(argv=None):
 
         return 1
 
-    dense = DenseDesignation(
-        names=frozenset(
+    handling = Handling(
+        dense_names=frozenset(
             name.lstrip("#").lower() for name in source.get("dense_conversations") or []
         ),
-        topic_markers=tuple(
-            marker.lower() for marker in source.get("dense_topic_markers") or []
+        private_topic_markers=tuple(
+            marker.lower() for marker in source.get("private_topic_markers") or []
         ),
     )
     acknowledgements = BARE_ACKNOWLEDGEMENTS | {
@@ -571,7 +576,7 @@ def main(argv=None):
         content, highest, notes = build_export(
             Client(source),
             arguments.watermark,
-            dense,
+            handling,
             acknowledgements,
             arguments.sensitive_raw_directory,
         )
@@ -592,9 +597,9 @@ def main(argv=None):
     if not active:
         print("Nothing to summarize or gate: skip the isolated agent.")
 
-    if (dense.names or dense.topic_markers) and not arguments.sensitive_raw_directory:
+    if handling.dense_names and not arguments.sensitive_raw_directory:
         print(
-            "Record-dense conversation(s) were fetched only to advance "
+            f"{len(handling.dense_names)} record-dense conversation(s) were fetched only to advance "
             "the watermark; pass --sensitive-raw-directory to have them summarized."
         )
 

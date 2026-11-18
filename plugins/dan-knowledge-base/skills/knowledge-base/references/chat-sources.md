@@ -32,17 +32,16 @@ Three tiers, in decreasing order of restriction:
    get a **structural-facts-only summary**, never a scrubbed verbatim pull:
    scrubbing a message that is nine-tenths personal detail redacts it to
    nothing, so a summary loses no durable content. This is the one tier named
-   in the repo's register, not in the script: by channel name
-   (`dense_conversations`), or by a marker in the channel topic
-   (`dense_topic_markers`, matched case-insensitively). Prefer the marker where
-   the workspace has a topic banner for personal-data channels — the banner is
-   the workspace's own designation, read live, so a newly marked channel and a
-   second person's install both pick it up; a name list only repeats it and
-   drifts.
+   by hand, in the repo's register (`dense_conversations`), not in the script.
 2. **Every other private channel** — where personal data is *permitted* but
    rare. Pulled verbatim, marked **scrub-mandatory**: the isolated agent
    actively scrubs the section, falling back to a structural summary if
-   personal detail dominates.
+   personal detail dominates. Where the workspace also marks such channels with
+   a topic banner, list it under `private_topic_markers` (matched
+   case-insensitively): a bannered channel then gets this tier even if it was
+   left public. A banner says personal data is permitted, the same as the lock;
+   it does not say the traffic is mostly records, so it never puts a channel in
+   tier 1.
 3. **Public channels and direct messages** — where the convention says there
    should be nothing to find. The gate here is a **backstop**, kept because it
    has caught real personal data in a group DM. A convention describes what
