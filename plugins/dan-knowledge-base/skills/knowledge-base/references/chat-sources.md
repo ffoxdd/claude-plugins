@@ -25,27 +25,28 @@ commonly, private channels only. Every channel carries a private flag, readable
 live, so the tiering needs no per-channel configuration and a newly created
 private channel is handled safely with zero config.
 
-Three tiers, in decreasing order of restriction:
+Two independent questions decide how a conversation is handled, and neither
+is inferred from the other:
 
-1. **Designated dense channels** — the handful whose ordinary traffic is
-   per-person records (billing operations, eligibility, support triage). These
-   get a **structural-facts-only summary**, never a scrubbed verbatim pull:
-   scrubbing a message that is nine-tenths personal detail redacts it to
-   nothing, so a summary loses no durable content. This is the one tier named
-   by hand, in the repo's register (`dense_conversations`), not in the script.
-2. **Every other private channel** — where personal data is *permitted* but
-   rare. Pulled verbatim, marked **scrub-mandatory**: the isolated agent
-   actively scrubs the section, falling back to a structural summary if
-   personal detail dominates. Where the workspace also marks such channels with
-   a topic banner, list it under `private_topic_markers` (matched
-   case-insensitively): a bannered channel then gets this tier even if it was
-   left public. A banner says personal data is permitted, the same as the lock;
-   it does not say the traffic is mostly records, so it never puts a channel in
-   tier 1.
-3. **Public channels and direct messages** — where the convention says there
-   should be nothing to find. The gate here is a **backstop**, kept because it
-   has caught real personal data in a group DM. A convention describes what
-   people intend, not what they did.
+| Axis | Decided by | Yes | No |
+|---|---|---|---|
+| **Density** — is ordinary traffic per-person records? | the register's `dense_conversations`, named by hand | **summarized**: raw text never enters the export; the isolated agent writes a structural-facts-only summary | pulled verbatim, then gated |
+| **Privacy** — is personal data permitted here? | the platform's private flag, or a topic banner listed in `private_topic_markers`, both read live | **scrub-mandatory**: the agent actively removes personal data, summarizing a section only if it is dominated by it | **backstop**: the agent scans for strays |
+
+Density wins where both apply: a dense channel is summarized whether or not it
+is private.
+
+- **Density is named by hand** because nothing on the platform says it.
+  Scrubbing a message that is nine-tenths personal detail redacts it to
+  nothing, so these channels (billing operations, eligibility, support triage)
+  lose no durable content to a summary.
+- **Privacy is read live**, so a newly created private or bannered channel is
+  handled safely with no config change. A banner (matched case-insensitively)
+  says what the lock says, and catches a bannered channel left public; it says
+  nothing about density.
+- **The backstop stays on** for public channels and direct messages, where the
+  convention says there is nothing to find. It has caught real personal data
+  in a group DM: a convention describes what people intend, not what they did.
 
 ## Slack-specific facts
 
