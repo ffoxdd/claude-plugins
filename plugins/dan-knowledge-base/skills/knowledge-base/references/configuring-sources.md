@@ -78,7 +78,15 @@ merely nice to have produces a note on every session that has it, which is how
 a check earns itself a reputation for crying wolf.
 
 Everything else in an entry is the adapter's own vocabulary — sender lists for
-mail, dense-conversation names for chat — and the adapter documents it.
+mail, dense-conversation names for chat, excluded invitee domains for Fathom —
+and the adapter documents it.
+
+A value that restricts what may be read at all belongs in the JSON too, where
+the adapter enforces it, rather than only in the prose: the `fathom` adapter's
+`excluded_invitee_domains` is how a client contract forbidding AI use of its
+meetings reaches the script, and the adapter refuses a source that leaves the key
+out, so an unrecorded clause stops a run instead of passing through it. The prose
+register says which contract each domain comes from.
 
 ## Adding one
 

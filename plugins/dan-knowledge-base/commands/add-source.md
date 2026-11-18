@@ -14,7 +14,7 @@ If the user named a source in the arguments, start with that one. Otherwise ask
 what it is.
 
 1. **Establish the reach.** Is it an MCP server, a CLI, or a shipped adapter
-   (`email`, `chat`)? Confirm it responds before designing a query against it.
+   (`email`, `chat`, `fathom`)? Confirm it responds before designing a query against it.
    If it is a shipped adapter, run `/dan-knowledge-base:setup` first.
 
 2. **Find the cheapest "what changed?" call.** Does it support a server-side

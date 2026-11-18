@@ -70,6 +70,27 @@ to confirm before moving on.
    location means the page is not shared with that integration, and the fix is
    in Notion's own sharing settings. Never print the token to check it.
 
+   **The fathom adapter's credential** is its own, since there is no other
+   tool's to borrow: a Fathom API key, generated under Fathom's settings, which
+   sees the meetings its owner recorded and the ones shared with them. The
+   adapter reads `FATHOM_API_KEY` first, then the key file the source names
+   under `credential.key_file`, `~/.config/fathom/api-key` by default. For "no
+   Fathom API key", have the user run, **in a terminal of their own**, not
+   through your Bash tool:
+
+   ```
+   python3 "<plugin root>/scripts/fathom_credential.py"
+   ```
+
+   with this plugin's root written out in full, and `--key-file <path>` added if
+   the register names another file. It asks for the key without echoing it,
+   writes the file readable by its owner alone, and prints only the path; it runs
+   the same on Windows. A key file others can read is refused on macOS and
+   Linux, and the fix is `chmod 600` on it. A key present but rejected (401)
+   was revoked or rotated, and needs storing again. It needs no `uv`, only
+   `python3`. Never print the key, read the key file, or echo the variable to
+   check it: `provision.py` answers whether one is usable.
+
 6. **What the directly-queried sources need.** For every source whose entry
    carries `requires.mcp`, check your own tool list for that server's tools —
    you are the only checker that can see them, which is why provisioning says

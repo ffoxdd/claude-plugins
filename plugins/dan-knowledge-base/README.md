@@ -59,6 +59,7 @@ The skill's `references/configuring-sources.md` covers the contract between them
 | `email` adapter | `uv`; a mail MCP server already signed in |
 | `chat` adapter | `uv`; bundled `slack-client`; `playwright`; a captured session |
 | `notion` and `notion-sweep` adapters, the page-changes tool | `python3`; the Notion MCP server already configured |
+| `fathom` adapter | `python3`; a Fathom API key, in `FATHOM_API_KEY` or a key file |
 
 The `email` adapter and the bundled `slack-client` the `chat` adapter drives are
 `uv run --script` files with inline dependencies, so `uv` is the one prerequisite
@@ -82,6 +83,15 @@ as only its blocks edited since an edit to it could last have gone unreported
 with the comments left since on the pages the register lists for them. The
 page-changes tool is that walk for one page by hand, and refuses any page under
 those locations.
+
+The `fathom` adapter is standard library only too, and holds the one credential
+this plugin asks for: a Fathom API key, read from `FATHOM_API_KEY` or from a key
+file that `scripts/fathom_credential.py` writes, readable by its owner alone,
+after asking for the key without echo. It lists the meeting summaries and action
+items the key can see, never transcripts, and writes each to a side file for an
+isolated agent that gates it rather than condensing it. A meeting with an
+invitee from a domain the register excludes, such as a client whose contract
+forbids AI use of its meetings, is counted and written nowhere.
 
 **Permissions.** A PreToolUse hook approves the read-only `slack-client` calls a
 sync runs, so installing the plugin is the grant and `permissions.allow` stays

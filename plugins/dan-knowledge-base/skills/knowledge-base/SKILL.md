@@ -181,7 +181,7 @@ judgment half runs under.
 
 ## Running the shipped adapters
 
-Four adapters ship in the `scripts/` directory **beside this file**. Invoke them
+Five adapters ship in the `scripts/` directory **beside this file**. Invoke them
 by absolute path built from the directory this skill was loaded from — written
 below as `<SKILL_DIR>`. Never hardcode or remember that path: it carries a
 version that changes on every plugin update.
@@ -200,6 +200,35 @@ uv run <SKILL_DIR>/scripts/email_sweep.py <watermark> <output>
 ```
 python3 <SKILL_DIR>/scripts/chat_export.py \
   <watermark> <output> --sensitive-raw-directory <scratch>/raw
+```
+
+**Fathom** — the meeting summaries a Fathom API key can see, created since the
+watermark, with their action items and never their transcripts:
+
+```
+python3 <SKILL_DIR>/scripts/fathom_export.py \
+  <watermark> <output> --sensitive-raw-directory <scratch>/raw
+```
+
+It lists from the watermark less the source's `lookback_hours` (72 by default),
+because Fathom writes a summary some time after it creates the meeting, and the
+source's `ledger` of recording ids keeps the overlap from being exported twice.
+A meeting whose summary is still empty is counted as not ready, named by
+recording id, and left out of the ledger, so the next run within the lookback
+exports it. A meeting with any calendar invitee at one of the source's
+`excluded_invitee_domains`, or a subdomain of one, is counted and written
+nowhere: that list is where a client contract forbidding AI use of its meetings
+is recorded, and the source must name it, as `[]` when there is none. A
+watermark older than `max_lookback_days` (90 by default) is refused unless
+`--allow-backfill` is passed. The key comes from `FATHOM_API_KEY`, or else the
+file `credential.key_file` names (`~/.config/fathom/api-key` by default), which
+a person stores by running `scripts/fathom_credential.py` from the plugin root
+in a terminal.
+
+```
+"ledger": "notes/.fathom-ledger",
+"lookback_hours": 72,
+"excluded_invitee_domains": ["<a client whose contract forbids AI use>"]
 ```
 
 **Notion** — the pages under record-dense locations the register lists as
@@ -308,12 +337,12 @@ page's own `newest_first_pages` entry beats a shallow location above it.
 for, and they are asked of the blocks those rules walk.
 Covered locations are excluded before any of this.
 
-All four print the output path, then counts, then the new watermark, and send gaps
+All five print the output path, then counts, then the new watermark, and send gaps
 to stderr. No message content passes through stdout, which is what makes them
 safe to run from this session directly.
 
 Add `--source <name>` when the register calls a source something other than
-`email`, `chat` or `notion`.
+`email`, `chat`, `fathom` or `notion`.
 
 **Notion page changes** — the walk the sweep runs on each page, for reading one
 page by hand, such as a page someone points at outside a sync:
@@ -390,6 +419,17 @@ everything else lands in the manifest and is read into the same file. It takes i
 exclusions from the covered source it names with `covered_by`, so the register
 lists them once. It shares the export's minute-inclusive watermark, and a result
 it cannot place withholds the watermark, since it might be record-dense.
+
+The Fathom export runs the same three steps, with the same skip when nothing is
+ready, and its placeholders name each meeting by recording id and recorded date.
+What differs is step 2's treatment: a meeting summary is the content worth
+keeping, so the isolated agent writes it **gated, not condensed**. It removes
+personal data about anyone who is not a colleague (a customer's members or
+patients: names, identifiers, per-person detail) and keeps the decisions,
+mechanics, numbers, named business entities, and colleagues' names and
+ownership. Without `--sensitive-raw-directory` the meetings are only counted,
+and neither the ledger nor the watermark advances. A listing page that could not
+be read withholds the watermark and the ledger, like a Notion gap.
 
 ### When an adapter cannot run
 

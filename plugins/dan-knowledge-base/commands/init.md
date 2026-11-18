@@ -47,6 +47,10 @@ sequences the work.
      platform's privacy flags. Needs `uv`, the bundled `slack-client`, and a session
      captured by its `login`, which fetches its own browser. It authenticates as
      you, not as an app — read `references/chat-sources.md` before adopting it.
+   - **`fathom`** — exports the meeting summaries a Fathom API key can see,
+     for an isolated agent to gate, and skips every meeting with an invitee
+     from a domain the register excludes. Needs `python3` and a key, stored
+     once with the plugin's `scripts/fathom_credential.py`.
    - **No adapter** — a source the model queries directly through its MCP
      server or CLI. The right default for anything with a server-side watermark
      filter; nothing to install.
