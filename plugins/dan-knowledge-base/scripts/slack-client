@@ -239,6 +239,13 @@ def is_lock_listed_channel(entry):
     return bool(entry.get("is_private"))
 
 
+def conversation_topic(entry):
+    """The topic line, flattened to one field. Workspaces mark data-handling rules
+    there (a banner that a channel may carry personal data), so it is listed."""
+    topic = (entry.get("topic") or {}).get("value") or ""
+    return " ".join(topic.split())
+
+
 def describe_conversation(entry, user_name_cache):
     if entry.get("is_im"):
         other_user = entry.get("user")
@@ -286,7 +293,8 @@ def command_channels(arguments):
 
 
 def command_memberships(arguments):
-    """Every conversation the authed user is a member of, in the starred format.
+    """Every conversation the authed user is a member of, one per line as
+    `id<TAB>lock<TAB>name<TAB>topic`.
 
     `users.conversations` is membership-scoped (unlike `conversations.list`,
     which returns all public channels regardless of membership), so this is
@@ -305,7 +313,8 @@ def command_memberships(arguments):
         response = call_api("users.conversations", **list_arguments)
         for entry in response["channels"]:
             lock = "locked" if is_lock_listed_channel(entry) else "-"
-            print(f"{entry['id']}\t{lock}\t{describe_conversation(entry, user_name_cache)}")
+            name = describe_conversation(entry, user_name_cache)
+            print(f"{entry['id']}\t{lock}\t{name}\t{conversation_topic(entry)}")
         cursor = response.get("response_metadata", {}).get("next_cursor")
         if not cursor:
             break

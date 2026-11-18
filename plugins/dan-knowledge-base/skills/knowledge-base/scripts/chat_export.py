@@ -18,7 +18,8 @@ they are fetched only far enough to advance the watermark.
 
 Three tiers, and only the first needs naming by hand:
 
-  1. conversations listed as `dense_conversations` in the register — summarized,
+  1. conversations listed as `dense_conversations` in the register, or whose
+     topic carries one of the register's `dense_topic_markers` — summarized,
      never pulled verbatim, because scrubbing text that is mostly per-person
      detail redacts it to nothing
   2. any other private conversation — pulled verbatim, marked scrub-mandatory
@@ -36,6 +37,7 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -83,6 +85,34 @@ BARE_ACKNOWLEDGEMENTS = {
 QUIET_SECTION = "No new messages since the watermark."
 
 
+@dataclass(frozen=True)
+class Conversation:
+    identifier: str
+    name: str
+    locked: bool
+    topic: str
+
+
+@dataclass(frozen=True)
+class DenseDesignation:
+    """What makes a conversation record-dense: its name, or a marker in its topic.
+
+    The topic route exists because a workspace that marks channels by banner
+    ("this channel may contain personal data") has already made the designation;
+    a hand-kept name list only repeats it, and drifts the first time a channel is
+    created or someone else installs the register.
+    """
+    names: frozenset
+    topic_markers: tuple
+
+    def covers(self, conversation):
+        topic = conversation.topic.lower()
+
+        return conversation.name.lower() in self.names or any(
+            marker in topic for marker in self.topic_markers
+        )
+
+
 class ExportError(Exception):
     """A condition that should stop the export rather than write a partial file."""
 
@@ -120,20 +150,24 @@ class Client:
         """Read memberships live, so joining a conversation needs no config change.
 
         The scope is every conversation the session's user is a member of —
-        channels, DMs, and group DMs. Each line is `id<TAB>lock<TAB>name`, where
-        `locked` marks a private conversation. A two-field line (an older client)
-        degrades to unlocked, leaving the register's named set as the safety net.
+        channels, DMs, and group DMs. Each line is `id<TAB>lock<TAB>name<TAB>topic`,
+        where `locked` marks a private conversation. A shorter line (an older
+        client) degrades to unlocked with no topic, leaving the register's named
+        set as the safety net.
         """
         conversations = []
 
         for line in self.run("memberships").splitlines():
-            if line.count("\t") >= 2:
-                identifier, lock, name = line.split("\t", 2)
-                conversations.append((identifier.strip(), name.strip(), lock.strip() == "locked"))
+            fields = [field.strip() for field in line.split("\t", 3)]
 
-            elif "\t" in line:
-                identifier, name = line.split("\t", 1)
-                conversations.append((identifier.strip(), name.strip(), False))
+            if len(fields) == 2:
+                fields = [fields[0], "-", fields[1]]
+
+            if len(fields) >= 3:
+                identifier, lock, name, *topic = fields
+                conversations.append(
+                    Conversation(identifier, name, lock == "locked", topic[0] if topic else "")
+                )
 
         if not conversations:
             raise ExportError(f"`{self.command} memberships` returned nothing")
@@ -392,10 +426,11 @@ def render_message_window(client, identifier, name, posted, revived, watermark, 
     return lines
 
 
-def render_conversation(client, identifier, name, watermark, dense_names, acknowledgements,
-                        sensitive_raw_directory=None, locked=False):
+def render_conversation(client, conversation, watermark, dense, acknowledgements,
+                        sensitive_raw_directory=None):
     """One conversation's section, its highest timestamp, and anything to report."""
-    is_dense = name.lower() in dense_names
+    identifier, name, locked = conversation.identifier, conversation.name, conversation.locked
+    is_dense = dense.covers(conversation)
     watermark = float(watermark)
     window, possibly_truncated = client.recent_window(identifier)
     posted, revived = split_by_watermark(window, watermark)
@@ -466,7 +501,7 @@ def render_conversation(client, identifier, name, watermark, dense_names, acknow
     return lines + [""], highest, notes
 
 
-def build_export(client, watermark, dense_names, acknowledgements, sensitive_raw_directory=None):
+def build_export(client, watermark, dense, acknowledgements, sensitive_raw_directory=None):
     header = [
         f"# Chat export — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
         "",
@@ -479,10 +514,9 @@ def build_export(client, watermark, dense_names, acknowledgements, sensitive_raw
     highest = float(watermark)
     notes = []
 
-    for identifier, name, locked in client.memberships():
+    for conversation in client.memberships():
         lines, conversation_highest, conversation_notes = render_conversation(
-            client, identifier, name, watermark, dense_names, acknowledgements,
-            sensitive_raw_directory, locked,
+            client, conversation, watermark, dense, acknowledgements, sensitive_raw_directory,
         )
         body += lines
         highest = max(highest, conversation_highest)
@@ -518,7 +552,14 @@ def main(argv=None):
 
         return 1
 
-    dense_names = {name.lstrip("#").lower() for name in source.get("dense_conversations") or []}
+    dense = DenseDesignation(
+        names=frozenset(
+            name.lstrip("#").lower() for name in source.get("dense_conversations") or []
+        ),
+        topic_markers=tuple(
+            marker.lower() for marker in source.get("dense_topic_markers") or []
+        ),
+    )
     acknowledgements = BARE_ACKNOWLEDGEMENTS | {
         text.lower() for text in source.get("extra_acknowledgements") or []
     }
@@ -530,7 +571,7 @@ def main(argv=None):
         content, highest, notes = build_export(
             Client(source),
             arguments.watermark,
-            dense_names,
+            dense,
             acknowledgements,
             arguments.sensitive_raw_directory,
         )
@@ -551,9 +592,9 @@ def main(argv=None):
     if not active:
         print("Nothing to summarize or gate: skip the isolated agent.")
 
-    if dense_names and not arguments.sensitive_raw_directory:
+    if (dense.names or dense.topic_markers) and not arguments.sensitive_raw_directory:
         print(
-            f"{len(dense_names)} record-dense conversation(s) were fetched only to advance "
+            "Record-dense conversation(s) were fetched only to advance "
             "the watermark; pass --sensitive-raw-directory to have them summarized."
         )
 

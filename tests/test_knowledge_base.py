@@ -417,6 +417,7 @@ if command == "memberships":
     print("C001\\tunlocked\\tgeneral")
     print("C002\\tlocked\\tbilling-ops")
     print("C003\\tlocked\\tengineering")
+    print("C004\\tlocked\\tcase-review\\t:lock: THIS CHANNEL MAY CONTAIN PHI/PII")
 elif command == "history":
     per = {
         "C001": [
@@ -429,6 +430,7 @@ elif command == "history":
         "C002": [{"ts": "1700.0", "user_name": "dee", "text": "SENSITIVE-MARKER refund"}],
         "C003": [{"ts": "1800.0", "user_name": "eli",
                   "text": "see <https://x.test|the doc> for #general"}],
+        "C004": [{"ts": "1750.0", "user_name": "fay", "text": "TOPIC-MARKER case"}],
     }
     for message in per[sys.argv[2]]:
         print(json.dumps(message))
@@ -713,6 +715,27 @@ class ChatAdapterTest(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertNotIn(token, result.stdout)
 
+    def test_a_topic_marked_conversation_is_dense_without_being_named(self):
+        """A banner in the topic is the workspace's own designation; the name list
+        should not have to repeat it."""
+        self.config.write_text(json.dumps(register(chat={
+            "adapter": "chat",
+            "client_command": str(self.client),
+            "dense_conversations": ["#billing-ops"],
+            "dense_topic_markers": ["May Contain PHI"],
+        })), encoding="utf-8")
+
+        self.export("--sensitive-raw-directory", str(self.raw))
+        content = self.output.read_text(encoding="utf-8")
+
+        self.assertNotIn("TOPIC-MARKER", content)
+        self.assertEqual(content.count("NOT pulled verbatim"), 2)
+
+    def test_without_a_marker_the_topic_changes_nothing(self):
+        self.export()
+
+        self.assertIn("TOPIC-MARKER", self.output.read_text(encoding="utf-8"))
+
     def test_a_private_conversation_is_marked_scrub_mandatory(self):
         self.export()
 
@@ -757,7 +780,7 @@ class ChatAdapterTest(unittest.TestCase):
     def test_an_active_window_does_not_say_to_skip(self):
         result = self.export()
 
-        self.assertIn("3 conversation(s) with new messages", result.stdout)
+        self.assertIn("4 conversation(s) with new messages", result.stdout)
         self.assertNotIn("skip the isolated agent", result.stdout)
 
     def test_the_watermark_advances_to_the_newest_activity(self):
