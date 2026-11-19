@@ -33,14 +33,15 @@ Nothing sensitive reaches a session merely from running this:
     transcripts, `## Transcript`. The isolated agent scrubs each file in place
     and replaces that first line as its last edit. Without the flag, meetings
     are listed and counted, nothing of theirs is written, and neither the ledger
-    nor the watermark advances. A run that fails part-way deletes the meeting
-    files it wrote, since no export would point at them.
+    nor the watermark advances. A run that fails part-way, or is interrupted
+    or terminated, deletes the meeting files it wrote, since no export would
+    point at them.
 
 **The meeting files live in the repository, git-ignored.** The isolated agent's
 file tools are confined to the repository, so the files cannot live outside it.
 A `--sensitive-raw-directory` inside a git work tree is refused before any
 request unless git ignores it; one outside any work tree, or on a machine without
-git, is accepted.
+git, is accepted; and one git fails to judge for any other reason is refused.
 
 The register entry:
 
@@ -118,6 +119,7 @@ import http.client
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -155,18 +157,23 @@ TRANSCRIPT_UNAVAILABLE = "Transcript unavailable."
 class Fathom:
     """The listing and the transcripts the adapter reads, over the standard library."""
 
-    def __init__(self, api_base, api_key, request_interval=DEFAULT_REQUEST_INTERVAL_SECONDS):
+    def __init__(self, api_base, api_key, request_interval=DEFAULT_REQUEST_INTERVAL_SECONDS,
+                 retry_wait=None):
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key
         self.request_interval = request_interval
+        self.retry_wait = retry_wait
         self.last_request = 0.0
 
     @classmethod
     def from_source(cls, source, api_key):
+        retry_wait = source.get("retry_wait_seconds")
+
         return cls(
             source.get("api_base", DEFAULT_API_BASE),
             api_key,
             float(source.get("request_interval_seconds", DEFAULT_REQUEST_INTERVAL_SECONDS)),
+            None if retry_wait is None else float(retry_wait),
         )
 
     def meetings_created_after(self, floor):
@@ -213,7 +220,12 @@ class Fathom:
                     raise ExportError(f"GET {path} still failing after {RETRIES} retries "
                                       f"({retryable.description})") from None
 
-                time.sleep(retryable.wait_seconds * (attempt + 1))
+                time.sleep(self.wait_seconds(retryable) * (attempt + 1))
+
+    def wait_seconds(self, retryable):
+        """The wait before a retry: what the server asked for, unless the source
+        names a fixed one."""
+        return retryable.wait_seconds if self.retry_wait is None else self.retry_wait
 
     def pace(self):
         wait = self.last_request + self.request_interval - time.monotonic()
@@ -512,11 +524,18 @@ def existing_ancestor(path):
     return path
 
 
+# git's own answer when no repository encloses the path. Only this failure means
+# "outside any work tree"; any other is a repository git could not judge.
+OUTSIDE_ANY_REPOSITORY = re.compile(
+    r"not a git repository \(or any (of the parent directories|parent up to mount point)")
+
+
 def git(directory, *arguments):
-    """A git command's result, or None on a machine without git."""
+    """A git command's result, or None on a machine without git. Messages in the C
+    locale, so a failure can be classified by its words."""
     try:
-        return subprocess.run(["git", "-C", str(directory), *arguments],
-                              capture_output=True, text=True)
+        return subprocess.run(["git", "-C", str(directory), *arguments], capture_output=True,
+                              text=True, env={**os.environ, "LC_ALL": "C"})
 
     except OSError:
         return None
@@ -527,19 +546,20 @@ def directory_refusal(directory):
     may. The isolated agent scrubs them in place inside the repository, so a
     directory in a work tree must be one git ignores."""
     path = Path(directory).resolve()
-    ancestor = existing_ancestor(path)
-    inside = git(ancestor, "rev-parse", "--is-inside-work-tree")
+    ignored = git(existing_ancestor(path), "check-ignore", "--quiet", f"{path}{os.sep}")
 
-    if inside is None or inside.returncode != 0 or inside.stdout.strip() != "true":
+    if ignored is None or ignored.returncode == 0:
         return None
 
-    ignored = git(ancestor, "check-ignore", "--quiet", f"{path}{os.sep}")
+    if ignored.returncode == 1:
+        return (f"--sensitive-raw-directory {directory} is inside a git work tree and not "
+                "git-ignored; it must be git-ignored because it holds ungated meeting text")
 
-    if ignored is not None and ignored.returncode == 0:
+    if OUTSIDE_ANY_REPOSITORY.search(ignored.stderr):
         return None
 
-    return (f"--sensitive-raw-directory {directory} is inside a git work tree and not "
-            "git-ignored; it must be git-ignored because it holds ungated meeting text")
+    return (f"--sensitive-raw-directory {directory}: git could not confirm that it is "
+            "git-ignored, and it must be because it holds ungated meeting text")
 
 
 # ---------------------------------------------------------------------------
@@ -673,8 +693,12 @@ class MeetingFiles:
         name = re.sub(r"[^A-Za-z0-9-]+", "_", recording_id(meeting))
         path = self.directory / f"fathom-{name}.md"
         text = meeting_text(meeting, self.transcripts.section(meeting))
-        path.write_text(text, encoding="utf-8")
+
+        # Recorded before the write, so a write that fails part-way is still
+        # taken back; and an unencodable character is replaced rather than
+        # failing every run that reaches this meeting.
         self.written.append(path)
+        path.write_text(text, encoding="utf-8", errors="replace")
 
         return path
 
@@ -837,21 +861,19 @@ def main(argv=None):
     meeting_files = MeetingFiles(arguments.sensitive_raw_directory, transcripts)
     gaps = Gaps()
     sorting = Sorting()
+    signal.signal(signal.SIGTERM, terminate)
+    completed = False
 
     # Past this point a failure is reported by type alone. An exception's message
     # can carry what it was handed — a header, a body — and a traceback prints it.
+    # Any exit before the export is written, an interruption included, takes back
+    # the meeting files, since no export would point at them.
     try:
-        try:
-            sorting.sort(fathom.meetings_created_after(floor), excluded, ledger, gaps)
-
-        except ExportError as error:
-            gaps.add(f"the meeting listing stopped part-way: {error}")
-
-        content = build_export(sorting, floor, lookback_hours, meeting_files)
-        Path(arguments.output).write_text(content, encoding="utf-8")
+        write_export(arguments, fathom, sorting, excluded, ledger, gaps, floor, lookback_hours,
+                     meeting_files)
+        completed = True
 
     except TranscriptGap as error:
-        meeting_files.remove_all()
         gaps.add(f"a transcript could not be read: {error}")
         print("No export written: a transcript could not be read, and the meeting files this "
               "run wrote were removed.")
@@ -859,13 +881,34 @@ def main(argv=None):
         return report_gaps(gaps)
 
     except Exception as error:  # noqa: BLE001 — the point is that nothing escapes unreduced
-        meeting_files.remove_all()
         print(f"fathom_export: failed part-way ({type(error).__name__}); meeting files "
               "removed, no export written", file=sys.stderr)
 
         return EXIT_REFUSED
 
+    finally:
+        if not completed:
+            meeting_files.remove_all()
+
     return report(arguments, sorting, transcripts, gaps, ledger, clock, lookback_hours)
+
+
+def write_export(arguments, fathom, sorting, excluded, ledger, gaps, floor, lookback_hours,
+                 meeting_files):
+    try:
+        sorting.sort(fathom.meetings_created_after(floor), excluded, ledger, gaps)
+
+    except ExportError as error:
+        gaps.add(f"the meeting listing stopped part-way: {error}")
+
+    content = build_export(sorting, floor, lookback_hours, meeting_files)
+    Path(arguments.output).write_text(content, encoding="utf-8")
+
+
+def terminate(signal_number, frame):
+    """A termination, such as a tool's time limit, unwinds like an interruption, so
+    the cleanup runs."""
+    raise SystemExit(128 + signal_number)
 
 
 def utf8_streams():

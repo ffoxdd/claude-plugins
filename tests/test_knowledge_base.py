@@ -17,9 +17,11 @@ silently in production:
 import json
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2486,14 +2488,15 @@ class StubFathom:
     `broken` adds 105, whose action items the renderer cannot read; `failing_cursor`
     answers the second page with that status; `rate_limited` answers the first
     request with a 429; `transcript_statuses` answers a recording's transcript with
-    that status, and `transcripts` replaces the served transcripts.
+    that status, and `transcripts` replaces the served transcripts; `held_transcript`
+    names a recording whose transcript request is held open until the stub closes.
     """
 
     WATERMARK_TIME = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=1)
     WATERMARK = fathom_time(WATERMARK_TIME)
 
     def __init__(self, broken=False, failing_cursor=None, rate_limited=False,
-                 transcript_statuses=None, transcripts=None):
+                 transcript_statuses=None, transcripts=None, held_transcript=None):
         import http.server
         import threading
         import urllib.parse
@@ -2523,6 +2526,9 @@ class StubFathom:
         self.transcript_requests = []
         self.transcripts = TRANSCRIPTS if transcripts is None else transcripts
         self.transcript_statuses = transcript_statuses or {}
+        self.held_transcript = held_transcript
+        self.holding = threading.Event()
+        self.release = threading.Event()
         self.api_keys = []
         self.first_request_at = None
         self.rate_limited = rate_limited
@@ -2570,6 +2576,10 @@ class StubFathom:
             def serve_transcript(self, identifier, query):
                 stub.transcript_requests.append((identifier, query))
 
+                if identifier == stub.held_transcript:
+                    stub.holding.set()
+                    stub.release.wait(timeout=60)
+
                 if identifier in stub.transcript_statuses:
                     return self.reply(stub.transcript_statuses[identifier],
                                       {"error": "LEAKY-ERROR-MESSAGE"})
@@ -2588,6 +2598,7 @@ class StubFathom:
         return f"http://127.0.0.1:{self.server.server_address[1]}"
 
     def close(self):
+        self.release.set()
         self.server.shutdown()
         self.server.server_close()
 
@@ -2644,6 +2655,7 @@ class FathomAdapterTest(unittest.TestCase):
             "lookback_hours": 72,
             "excluded_invitee_domains": ["forbidden.EXAMPLE"],
             "transcripts": True,
+            "retry_wait_seconds": 0,
         }
         entry.update(source or {})
         self.config = write_register(self.root, register(fathom={
@@ -2737,6 +2749,7 @@ class FathomAdapterTest(unittest.TestCase):
 
         self.assertIn("1 already in the ledger", result.stdout)
         self.assertFalse((self.raw / "fathom-104.md").exists())
+        self.assertNotIn("104", self.transcript_ids())
 
     def test_a_record_from_a_run_whose_watermark_was_not_accepted_skips_nothing(self):
         self.write_ledger_record(fathom_time(StubFathom.WATERMARK_TIME + timedelta(hours=1)))
@@ -2803,6 +2816,9 @@ class FathomAdapterTest(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(list(self.raw.glob("*.md")), [])
         self.assertFalse(self.output.exists())
+
+    def transcript_ids(self):
+        return [identifier for identifier, _ in self.stub.transcript_requests]
 
     def meeting_file(self, identifier):
         return (self.raw / f"fathom-{identifier}.md").read_text(encoding="utf-8")
@@ -2878,12 +2894,42 @@ class FathomAdapterTest(unittest.TestCase):
         self.assertFalse(self.ledger.exists())
         self.assertEqual(list(self.raw.glob("*.md")), [])
         self.assertFalse(self.output.exists())
-        self.assertNotIn("LEAKY-ERROR-MESSAGE", result.stdout + result.stderr)
+        self.assertEqual(self.transcript_ids().count("104"), 7)
+
+        for marker in self.CONTENT:
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, result.stdout + result.stderr)
 
     def test_an_excluded_meeting_has_no_transcript_requested(self):
         self.export_with_side_files()
 
-        self.assertNotIn("102", [identifier for identifier, _ in self.stub.transcript_requests])
+        self.assertEqual(sorted(self.transcript_ids()), ["101", "104"])
+
+    def test_an_unencodable_character_is_replaced_rather_than_failing_the_run(self):
+        self.start_stub(transcripts={"101": [transcript_line("Pat Speaker", "before\ud800after")]})
+
+        result = self.export_with_side_files()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Pat Speaker: before?after", self.meeting_file("101"))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows has no SIGTERM to send")
+    def test_a_terminated_run_removes_the_meeting_files_it_wrote(self):
+        self.start_stub(held_transcript="104")
+        process = subprocess.Popen(
+            [sys.executable, str(adapter("fathom_export.py")), StubFathom.WATERMARK,
+             str(self.output), "--sensitive-raw-directory", str(self.raw)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=support.environment(KNOWLEDGE_BASE_CONFIG_FILE=str(self.config)))
+
+        self.assertTrue(self.stub.holding.wait(timeout=60))
+        self.assertTrue((self.raw / "fathom-101.md").exists())
+        process.send_signal(signal.SIGTERM)
+        process.communicate(timeout=60)
+
+        self.assertEqual(process.returncode, 128 + signal.SIGTERM)
+        self.assertEqual(list(self.raw.glob("*.md")), [])
+        self.assertFalse(self.output.exists())
 
     def make_work_tree(self, ignored):
         subprocess.run(["git", "-C", str(self.root), "init", "--quiet"], check=True)
@@ -2909,6 +2955,39 @@ class FathomAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.raw / "fathom-101.md").exists())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_a_directory_a_nested_ignore_rule_covers_is_accepted(self):
+        self.make_work_tree(ignored=False)
+        intake = self.root / "intake"
+        intake.mkdir()
+        (intake / ".gitignore").write_text("fathom/\n", encoding="utf-8")
+
+        result = self.export("--sensitive-raw-directory", str(intake / "fathom"))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((intake / "fathom" / "fathom-101.md").exists())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_the_work_tree_root_is_refused(self):
+        self.make_work_tree(ignored=True)
+
+        result = self.export("--sensitive-raw-directory", str(self.root))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("must be git-ignored", result.stderr)
+        self.assertEqual(self.stub.queries, [])
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_a_directory_git_cannot_judge_is_refused(self):
+        result = self.export_with_side_files(GIT_DIR=str(self.root / "missing-repository"))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(str(self.raw), result.stderr)
+        self.assertIn("git could not confirm", result.stderr)
+        self.assertNotIn("fatal", result.stderr)
+        self.assertEqual(self.stub.queries, [])
+        self.assertFalse(self.raw.exists())
 
     def test_a_source_listing_no_excluded_domains_refuses_to_run(self):
         self.start_stub(source={"excluded_invitee_domains": None})

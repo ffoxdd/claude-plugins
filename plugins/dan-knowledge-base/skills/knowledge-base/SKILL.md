@@ -40,6 +40,13 @@ unprocessed queue, which is the one thing you need to see whole.
 `inbox/processed/`. Moving a file after distilling it is what marks it done;
 there is no status field to drift.
 
+**A subdirectory of `inbox/` other than `processed/` is working space, not
+intake.** An adapter whose files an isolated agent must edit in place writes
+them there, as the Fathom adapter does to `inbox/fathom/`, because the agent's
+file tools are confined to the repository and the intake tree is already
+gitignored. Those files never join the queue or `inbox/processed/`; the sync
+deletes them once it is done with them.
+
 **Raw intake is never committed.** It is an order of magnitude larger than what
 it yields, it rots, and it is the material most likely to carry what must never
 enter a repo — personal data, a pasted credential, a third party's numbers.
@@ -209,12 +216,14 @@ meeting:
 
 ```
 python3 <SKILL_DIR>/scripts/fathom_export.py \
-  <watermark> <output> --sensitive-raw-directory <inbox>/fathom
+  <watermark> <output> --sensitive-raw-directory inbox/fathom
 ```
 
-The meeting files are scrubbed in place by an isolated agent whose file tools
-are confined to the repository, so the directory is inside it and git-ignored;
-one inside a work tree that git does not ignore is refused before any request.
+`inbox/` stands for the intake directory the register's `layout` names. The
+meeting files are scrubbed in place by an isolated agent whose file tools are
+confined to the repository, so the directory is inside it and git-ignored; one
+inside a work tree that git does not ignore, or that git cannot judge, is
+refused before any request.
 It lists from the watermark less the source's `lookback_hours` (72 by default),
 because Fathom writes a summary some time after it creates the meeting, and the
 source's `ledger` of recording ids keeps the overlap from being exported twice.
@@ -432,15 +441,16 @@ it cannot place withholds the watermark, since it might be record-dense.
 
 A transcript is passed **verbatim**, with the recap beside it, because the only
 safe edit to one is removing personal data; `references/transcripts.md` has the
-measurements and how to read one. So the files are the intake, and the export
-holds only a placeholder per meeting naming its file, recording id and recorded
-date. Each meeting file opens with the line `UNGATED: not to be read until the
-isolated agent has scrubbed it`.
+measurements and how to read one. The meeting files are working files, not
+intake: the export, which holds only a placeholder per meeting naming its file,
+recording id and recorded date, is the intake record. Each meeting file opens
+with the line `UNGATED: not to be read until the isolated agent has scrubbed
+it`.
 
 1. **This session runs the script**, with `--sensitive-raw-directory` pointing
-   at a git-ignored directory inside the repository's intake area (for example
-   `<inbox>/fathom/`), because the isolated agent edits the files in place and
-   its file tools are confined to the repository.
+   at the intake directory's `fathom/` subdirectory (`inbox/fathom/` under the
+   default layout), because the isolated agent edits the files in place and its
+   file tools are confined to the repository.
 2. **The isolated agent scrubs each meeting file in place, one run per meeting
    file**, with file reading and editing only. It replaces every mention that
    identifies an individual who is not speaking as a colleague, and any named
@@ -454,7 +464,7 @@ isolated agent has scrubbed it`.
    sync saves money.
 3. **This session confirms no meeting file still starts with `UNGATED:`**, with a
    search that prints filenames only (`grep -l` or `grep -L`, never content),
-   re-runs the agent on any that do, and only then treats the files as intake.
+   re-runs the agent on any that do, and only then hands the files on.
 4. **This session does not read the transcripts itself.** It hands each day's
    meeting files to a sub-agent on the session's own model, which reads each
    file once and returns only the durable knowledge, following
@@ -462,9 +472,14 @@ isolated agent has scrubbed it`.
    on every later turn of the sync. And the sub-agent is not a cheaper model:
    it writes the notes, and a weaker reader reintroduces the attribution errors
    the verbatim transcript exists to avoid.
+5. **Once the sub-agents have returned their notes, this session deletes the
+   meeting files**, and moves the export to `inbox/processed/` like any other
+   intake. A scrubbed transcript still holds whatever the scrub missed, and
+   Fathom keeps the original, so a later question re-fetches one meeting by
+   recording id rather than relying on a pile at rest.
 
 When nothing is ready the script prints `Nothing to summarize: skip the isolated
-agent.`, writes no meeting files, and steps 2 to 4 do not run. Without
+agent.`, writes no meeting files, and steps 2 to 5 do not run. Without
 `--sensitive-raw-directory` the meetings are only counted, no transcript is
 requested, and neither the ledger nor the watermark advances. A listing page
 that could not be read withholds the watermark and the ledger, like a Notion
