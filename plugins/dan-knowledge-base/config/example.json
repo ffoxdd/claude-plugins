@@ -38,6 +38,7 @@
       "lookback_hours": 72,
       "max_lookback_days": 90,
       "excluded_invitee_domains": ["<a client whose contract forbids AI use of its meetings>"],
+      "transcripts": true,
       "credential": {"key_file": "~/.config/fathom/api-key"}
     },
 

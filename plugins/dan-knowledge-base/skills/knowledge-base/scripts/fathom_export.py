@@ -1,33 +1,46 @@
 #!/usr/bin/env python3
-"""Export the Fathom meeting summaries created since a watermark.
+"""Export the Fathom meetings created since a watermark: recap and transcript.
 
 The `fathom` adapter, and the **mechanical half only**, the way
-`notion_export.py` is for record-dense Notion locations. A meeting summary is
-written for its attendees, and a meeting with a customer can name that
-customer's members or patients in passing: the decision worth keeping sits next
-to the case that prompted it. So the summaries are fetched over Fathom's public
-API and written to places the session never reads, for an isolated agent to
-gate. Fetching them costs no model tokens at all.
+`notion_export.py` is for record-dense Notion locations. A meeting is held for
+its attendees, and a meeting with a customer can name that customer's members or
+patients in passing: the decision worth keeping sits next to the case that
+prompted it. So each meeting is fetched over Fathom's public API and written to a
+file the session does not read until an isolated agent has scrubbed it.
+Fetching costs no model tokens at all.
+
+**The transcript is passed verbatim, with the recap beside it.** Measured on 15
+meetings (2026-11), Fathom's recap carries about 56% of a transcript's
+substantive facts, and a model-written compaction of the transcript misattributes
+speakers, reverses who asks whom and firms up hedges several times a meeting. A
+verbatim transcript scrubbed in place keeps every fact, so the only model that
+edits it removes personal data and changes nothing else.
 
 Nothing sensitive reaches a session merely from running this:
 
   * **stdout** carries the output path, counts, the recording ids of meetings
-    whose summary is not ready yet, and the new watermark. Never a title, a name,
-    an address or a word of a summary;
+    whose summary is not ready yet or whose transcript is unavailable, and the
+    new watermark. Never a title, a name, an address or a word of a meeting;
   * **stderr** carries gaps: a request path and a status or error type, never a
     response body or a header;
   * **the output file** carries one placeholder per exported meeting, naming it
-    by recording id and recorded date only. Titles stay out, because a title can
-    be a person's name;
-  * **the meeting itself**, title, invitee domains (never addresses), summary
-    and action items, goes only to a side file under
-    `--sensitive-raw-directory`, for the isolated agent that replaces each
-    placeholder with the summary **gated, not condensed**. Without the flag,
-    meetings are listed and counted, nothing of theirs is written, and neither
-    the ledger nor the watermark advances. A run that fails part-way deletes the
-    side files it wrote, since no export would point at them.
+    by recording id and recorded date and pointing at its meeting file. Titles
+    stay out, because a title can be a person's name;
+  * **the meeting itself** goes only to its meeting file under
+    `--sensitive-raw-directory`: first the line `UNGATED: not to be read until
+    the isolated agent has scrubbed it`, then the title, invitee domains (never
+    addresses), `## Summary`, `## Action items` and, when the source asks for
+    transcripts, `## Transcript`. The isolated agent scrubs each file in place
+    and replaces that first line as its last edit. Without the flag, meetings
+    are listed and counted, nothing of theirs is written, and neither the ledger
+    nor the watermark advances. A run that fails part-way deletes the meeting
+    files it wrote, since no export would point at them.
 
-Transcripts are never requested.
+**The meeting files live in the repository, git-ignored.** The isolated agent's
+file tools are confined to the repository, so the files cannot live outside it.
+A `--sensitive-raw-directory` inside a git work tree is refused before any
+request unless git ignores it; one outside any work tree, or on a machine without
+git, is accepted.
 
 The register entry:
 
@@ -38,6 +51,7 @@ The register entry:
       "lookback_hours": 72,
       "max_lookback_days": 90,
       "excluded_invitee_domains": ["client.example"],
+      "transcripts": true,
       "credential": {"key_file": "~/.config/fathom/api-key"}
     }
 
@@ -45,8 +59,19 @@ The register entry:
 contracts forbid AI use of their meetings. A meeting any of whose calendar
 invitees has an address at one of `excluded_invitee_domains`, or at a subdomain
 of one, compared case-insensitively, is counted and dropped before anything of
-it is written. The key is required, so a forgotten clause is a refusal rather
-than an export; `[]` says there is none.
+it is written or its transcript requested. The key is required, so a forgotten
+clause is a refusal rather than an export; `[]` says there is none.
+
+**Transcripts are requested when `transcripts` is true** (false by default;
+anything but a boolean is a configuration error), one request per meeting the
+run exports. A turn is one speaker's consecutive lines merged, written as
+`Name: text`, with turns separated by a blank line; a missing name is
+`Unknown`, and timestamps and speaker addresses are not written. The words are
+Fathom's, unaltered. A transcript that comes back empty, or a 404, is
+**unavailable**: the meeting is exported with `Transcript unavailable.` under
+its heading, counted, and named by recording id on stdout. Any other failure
+that outlasts the retries is a gap that takes the export back: the meeting
+files the run wrote are removed, no export is written, and the run exits 3.
 
 **The query looks back, because a summary finishes after its meeting is
 created.** Meetings are listed from the watermark less `lookback_hours` (72 by
@@ -62,7 +87,7 @@ and committed, like the Notion ledger. A recording id carries no personal data.
 Each record holds the meeting's creation time and the watermark of the run that
 exported it, and counts only once the caller has passed a watermark at or after
 that one, so a run whose output was discarded leaves records its rerun ignores.
-It is written only by a run without gaps that wrote side files, and pruned to
+It is written only by a run without gaps that wrote meeting files, and pruned to
 meetings the lookback still reaches.
 
 **A far-back watermark is refused**, as the email adapter refuses one: a window
@@ -71,16 +96,18 @@ Fathom's heavy-request rate. Narrow the watermark and record the gap, or pass
 `--allow-backfill`.
 
 **Requests are paced** below Fathom's limit for requests that include a
-summary, 30 a minute, which Fathom says it may lower under load; a 429 or a
-transient 5xx is retried after the `Retry-After` it sends. The new watermark is
-the clock read before the first request (rule 1).
+summary, 30 a minute, which Fathom says it may lower under load; transcript
+requests share the same pacing. A 429 or a transient 5xx is retried after the
+`Retry-After` it sends. The new watermark is the clock read before the first
+request (rule 1).
 
-**A gap withholds the watermark.** A listing page that could not be read, or a
-meeting with no recording id, is named on stderr, and the run exits 3 without
-printing a new watermark or writing the ledger.
+**A gap withholds the watermark.** A listing page that could not be read, a
+meeting with no recording id, or a transcript that could not be read is named on
+stderr, and the run exits 3 without printing a new watermark or writing the
+ledger.
 
 Exit status: 0 complete; 1 refused before any request, or failed part-way; 3
-written, with gaps, watermark withheld.
+gaps, watermark withheld.
 
 Authenticates with a Fathom API key (see `fathom_credential.py`), which it never
 prints.
@@ -91,6 +118,7 @@ import http.client
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -116,13 +144,16 @@ DEFAULT_MAX_LOOKBACK_DAYS = 90
 # `Retry-After` for the rest, including the lower limit Fathom applies under load.
 DEFAULT_REQUEST_INTERVAL_SECONDS = 2.1
 
+UNGATED_LINE = "UNGATED: not to be read until the isolated agent has scrubbed it"
+TRANSCRIPT_UNAVAILABLE = "Transcript unavailable."
+
 
 # ---------------------------------------------------------------------------
 # The API
 
 
 class Fathom:
-    """The one listing the adapter makes, over the standard library."""
+    """The listing and the transcripts the adapter reads, over the standard library."""
 
     def __init__(self, api_base, api_key, request_interval=DEFAULT_REQUEST_INTERVAL_SECONDS):
         self.api_base = api_base.rstrip("/")
@@ -164,6 +195,12 @@ class Fathom:
 
         return query
 
+    def transcript(self, identifier):
+        """A recording's transcript lines, as Fathom serves them."""
+        path = f"/recordings/{urllib.parse.quote(identifier, safe='')}/transcript"
+
+        return self.request(path, {}).get("transcript") or []
+
     def request(self, path, query):
         for attempt in range(RETRIES + 1):
             self.pace()
@@ -187,8 +224,13 @@ class Fathom:
         self.last_request = time.monotonic()
 
     def send(self, path, query):
+        address = f"{self.api_base}{path}"
+
+        if query:
+            address += f"?{urllib.parse.urlencode(query)}"
+
         request = urllib.request.Request(
-            f"{self.api_base}{path}?{urllib.parse.urlencode(query)}",
+            address,
             method="GET",
             headers={"X-Api-Key": self.api_key, "Accept": "application/json"},
         )
@@ -238,6 +280,15 @@ def excluded_domains(source):
         )
 
     return {domain.strip().lower().lstrip("@") for domain in domains if domain.strip()}
+
+
+def transcripts_setting(source):
+    value = source.get("transcripts", False)
+
+    if not isinstance(value, bool):
+        raise configuration.ConfigurationError('"transcripts" must be true or false')
+
+    return value
 
 
 def lookback_refusal(since, max_lookback_days, allowed):
@@ -410,7 +461,7 @@ class Ledger:
 
     def write(self, meetings, clock):
         """Record the meetings this run exported. Call only on a run without gaps
-        whose side files were written."""
+        whose meeting files were written."""
         if self.path is None:
             return
 
@@ -451,7 +502,130 @@ def read_records(path):
 
 
 # ---------------------------------------------------------------------------
-# The side files, the only place a meeting's content is written
+# Where the meeting files may go
+
+
+def existing_ancestor(path):
+    while not path.exists() and path != path.parent:
+        path = path.parent
+
+    return path
+
+
+def git(directory, *arguments):
+    """A git command's result, or None on a machine without git."""
+    try:
+        return subprocess.run(["git", "-C", str(directory), *arguments],
+                              capture_output=True, text=True)
+
+    except OSError:
+        return None
+
+
+def directory_refusal(directory):
+    """Why the meeting files may not be written to `directory`, or None when they
+    may. The isolated agent scrubs them in place inside the repository, so a
+    directory in a work tree must be one git ignores."""
+    path = Path(directory).resolve()
+    ancestor = existing_ancestor(path)
+    inside = git(ancestor, "rev-parse", "--is-inside-work-tree")
+
+    if inside is None or inside.returncode != 0 or inside.stdout.strip() != "true":
+        return None
+
+    ignored = git(ancestor, "check-ignore", "--quiet", f"{path}{os.sep}")
+
+    if ignored is not None and ignored.returncode == 0:
+        return None
+
+    return (f"--sensitive-raw-directory {directory} is inside a git work tree and not "
+            "git-ignored; it must be git-ignored because it holds ungated meeting text")
+
+
+# ---------------------------------------------------------------------------
+# Transcripts
+
+
+class TranscriptGap(Exception):
+    """A transcript request that failed for a reason other than its absence. The
+    message names the path and a status, nothing else."""
+
+
+def speaker_name(line):
+    return ((line.get("speaker") or {}).get("display_name") or "").strip() or "Unknown"
+
+
+def speaker_turns(lines):
+    """(speaker, text) per turn: one speaker's consecutive lines merged."""
+    turns = []
+
+    for line in lines:
+        text = (line.get("text") or "").strip()
+
+        if not text:
+            continue
+
+        speaker = speaker_name(line)
+
+        if turns and turns[-1][0] == speaker:
+            turns[-1] = (speaker, f"{turns[-1][1]} {text}")
+
+        else:
+            turns.append((speaker, text))
+
+    return turns
+
+
+def rendered_transcript(lines):
+    """The transcript as `Name: text` turns separated by blank lines, or None when
+    it holds no words."""
+    turns = speaker_turns(lines)
+
+    if not turns:
+        return None
+
+    return "\n\n".join(f"{speaker}: {text}" for speaker, text in turns)
+
+
+class Transcripts:
+    """The transcripts this run fetched, and the meetings that had none."""
+
+    def __init__(self, fathom, requested):
+        self.fathom = fathom
+        self.requested = requested
+        self.fetched = 0
+        self.unavailable = []
+
+    def section(self, meeting):
+        """The meeting file's transcript section, or no lines when the source does
+        not ask for transcripts."""
+        if not self.requested:
+            return []
+
+        return ["", "## Transcript", "", self.rendered(recording_id(meeting))]
+
+    def rendered(self, identifier):
+        try:
+            text = rendered_transcript(self.fathom.transcript(identifier))
+
+        except ExportError as error:
+            if error.status != 404:
+                raise TranscriptGap(str(error)) from None
+
+            text = None
+
+        if text is None:
+            self.unavailable.append(identifier)
+
+            return TRANSCRIPT_UNAVAILABLE
+
+        self.fetched += 1
+
+        return text
+
+
+# ---------------------------------------------------------------------------
+# The meeting files, the only place a meeting's content is written
 
 
 def action_item_line(item):
@@ -462,8 +636,10 @@ def action_item_line(item):
     return f"- [{done}] {(item.get('description') or '').strip()}{owner}"
 
 
-def meeting_text(meeting):
+def meeting_text(meeting, transcript_section):
     lines = [
+        UNGATED_LINE,
+        "",
         f"# {meeting.get('title') or meeting.get('meeting_title') or '(untitled)'}",
         "",
         f"*Recording {recording_id(meeting)} · recorded {recorded_date(meeting)} · raw text for "
@@ -480,21 +656,24 @@ def meeting_text(meeting):
     ]
     items = meeting.get("action_items") or []
     lines += [action_item_line(item) for item in items] or ["None listed."]
+    lines += transcript_section
 
     return "\n".join(lines) + "\n"
 
 
-class SideFiles:
-    """The side files this run wrote, so a failed run can take them back."""
+class MeetingFiles:
+    """The meeting files this run wrote, so a failed run can take them back."""
 
-    def __init__(self, directory):
+    def __init__(self, directory, transcripts):
         self.directory = Path(directory) if directory else None
+        self.transcripts = transcripts
         self.written = []
 
     def write(self, meeting):
         name = re.sub(r"[^A-Za-z0-9-]+", "_", recording_id(meeting))
         path = self.directory / f"fathom-{name}.md"
-        path.write_text(meeting_text(meeting), encoding="utf-8")
+        text = meeting_text(meeting, self.transcripts.section(meeting))
+        path.write_text(text, encoding="utf-8")
         self.written.append(path)
 
         return path
@@ -508,26 +687,21 @@ class SideFiles:
 # The export
 
 
-def placeholder(meeting, side_file):
-    lines = [
-        f"### Meeting `{recording_id(meeting)}`, recorded {recorded_date(meeting)}",
+def placeholder(meeting, meeting_file):
+    lines = [f"### Meeting `{recording_id(meeting)}`, recorded {recorded_date(meeting)}", ""]
+
+    if not meeting_file:
+        return lines + ["Listed only: no meeting file was written.", ""]
+
+    return lines + [
+        f"Meeting file: `{meeting_file}`. The isolated agent scrubs it in place, removing",
+        "personal data and changing nothing else; read it only once its first line no",
+        "longer starts `UNGATED:`.",
         "",
-        "**Meeting summary — NOT pulled verbatim.** Replace this section with the meeting's",
-        "summary and action items, **gated, not condensed**: remove personal data about",
-        "anyone who is not a colleague (a customer's members or patients: names,",
-        "identifiers, per-person detail), and keep decisions, mechanics, numbers, named",
-        "business entities, and colleagues' names and ownership. Give the section a heading",
-        "that names the meeting's subject, never a person outside the company.",
     ]
 
-    if side_file:
-        lines.append(f"Raw text: `{side_file}` — local scratch, deleted once the section is "
-                     "written.")
 
-    return lines + [""]
-
-
-def build_export(sorting, floor, lookback_hours, side_files):
+def build_export(sorting, floor, lookback_hours, meeting_files):
     lines = [
         f"# Fathom export — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
         "",
@@ -541,8 +715,8 @@ def build_export(sorting, floor, lookback_hours, side_files):
         lines += ["No meeting to export.", ""]
 
     for meeting in sorted(sorting.ready, key=lambda item: item.get("created_at") or ""):
-        side_file = side_files.write(meeting) if side_files.directory else None
-        lines += placeholder(meeting, side_file)
+        meeting_file = meeting_files.write(meeting) if meeting_files.directory else None
+        lines += placeholder(meeting, meeting_file)
 
     return "\n".join(lines)
 
@@ -555,10 +729,34 @@ def counts_line(sorting, exporting):
             f"ready, {sorting.already_exported} already in the ledger")
 
 
-def report(arguments, sorting, gaps, ledger, clock, lookback_hours):
+def report_transcripts(transcripts, exporting):
+    if not (transcripts.requested and exporting):
+        return
+
+    print(f"Transcripts: {transcripts.fetched} fetched, {len(transcripts.unavailable)} "
+          "unavailable")
+
+    if transcripts.unavailable:
+        print(f"Transcript unavailable, meeting exported without it: "
+              f"{', '.join(transcripts.unavailable)}")
+
+
+def report_gaps(gaps):
+    print("Watermark not advanced: keep the previous one, so the next run re-covers this "
+          "window.")
+    print("\nGaps — each may hide a meeting:", file=sys.stderr)
+
+    for message in gaps.messages:
+        print(f"  - {message}", file=sys.stderr)
+
+    return EXIT_GAPS
+
+
+def report(arguments, sorting, transcripts, gaps, ledger, clock, lookback_hours):
     exporting = bool(arguments.sensitive_raw_directory)
     print(arguments.output)
     print(counts_line(sorting, exporting))
+    report_transcripts(transcripts, exporting)
 
     if sorting.not_ready:
         print(f"Summary not ready, retried by each run within the {lookback_hours:g}-hour "
@@ -568,14 +766,7 @@ def report(arguments, sorting, gaps, ledger, clock, lookback_hours):
         print("Nothing to summarize: skip the isolated agent.")
 
     if gaps:
-        print("Watermark not advanced: keep the previous one, so the next run re-covers this "
-              "window.")
-        print("\nGaps — each may hide a meeting:", file=sys.stderr)
-
-        for message in gaps.messages:
-            print(f"  - {message}", file=sys.stderr)
-
-        return EXIT_GAPS
+        return report_gaps(gaps)
 
     if not exporting:
         print("Meetings were listed only, and the ledger and watermark were not advanced: pass "
@@ -603,10 +794,17 @@ def read_settings(arguments):
     if refusal:
         raise configuration.ConfigurationError(refusal)
 
+    requested = transcripts_setting(source)
+    directory = arguments.sensitive_raw_directory
+    refusal = directory and directory_refusal(directory)
+
+    if refusal:
+        raise configuration.ConfigurationError(refusal)
+
     ledger = Ledger.from_source(source, arguments.source, since, floor)
     fathom = Fathom.from_source(source, fathom_credential.api_key(source))
 
-    return fathom, ledger, floor, excluded, lookback_hours
+    return fathom, ledger, floor, excluded, lookback_hours, Transcripts(fathom, requested)
 
 
 def main(argv=None):
@@ -615,7 +813,8 @@ def main(argv=None):
     parser.add_argument("output", help="path to write the intake file to")
     parser.add_argument("--source", default="fathom", help="register entry to read (default: fathom)")
     parser.add_argument("--sensitive-raw-directory",
-                        help="write each exported meeting's summary here for the isolated agent")
+                        help="write each exported meeting's file here, for the isolated agent "
+                             "to scrub in place; inside a git work tree it must be git-ignored")
     parser.add_argument("--allow-backfill", action="store_true",
                         help="export a window older than the register's max_lookback_days, "
                              "deliberately")
@@ -625,7 +824,7 @@ def main(argv=None):
     clock = datetime.now(timezone.utc)
 
     try:
-        fathom, ledger, floor, excluded, lookback_hours = read_settings(arguments)
+        fathom, ledger, floor, excluded, lookback_hours, transcripts = read_settings(arguments)
 
     except (configuration.ConfigurationError, fathom_credential.CredentialError) as error:
         print(f"fathom_export: {error}", file=sys.stderr)
@@ -635,7 +834,7 @@ def main(argv=None):
     if arguments.sensitive_raw_directory:
         os.makedirs(arguments.sensitive_raw_directory, exist_ok=True)
 
-    side_files = SideFiles(arguments.sensitive_raw_directory)
+    meeting_files = MeetingFiles(arguments.sensitive_raw_directory, transcripts)
     gaps = Gaps()
     sorting = Sorting()
 
@@ -648,17 +847,25 @@ def main(argv=None):
         except ExportError as error:
             gaps.add(f"the meeting listing stopped part-way: {error}")
 
-        content = build_export(sorting, floor, lookback_hours, side_files)
+        content = build_export(sorting, floor, lookback_hours, meeting_files)
         Path(arguments.output).write_text(content, encoding="utf-8")
 
+    except TranscriptGap as error:
+        meeting_files.remove_all()
+        gaps.add(f"a transcript could not be read: {error}")
+        print("No export written: a transcript could not be read, and the meeting files this "
+              "run wrote were removed.")
+
+        return report_gaps(gaps)
+
     except Exception as error:  # noqa: BLE001 — the point is that nothing escapes unreduced
-        side_files.remove_all()
-        print(f"fathom_export: failed part-way ({type(error).__name__}); side files removed, "
-              "no export written", file=sys.stderr)
+        meeting_files.remove_all()
+        print(f"fathom_export: failed part-way ({type(error).__name__}); meeting files "
+              "removed, no export written", file=sys.stderr)
 
         return EXIT_REFUSED
 
-    return report(arguments, sorting, gaps, ledger, clock, lookback_hours)
+    return report(arguments, sorting, transcripts, gaps, ledger, clock, lookback_hours)
 
 
 def utf8_streams():

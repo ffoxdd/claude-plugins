@@ -87,11 +87,13 @@ those locations.
 The `fathom` adapter is standard library only too, and holds the one credential
 this plugin asks for: a Fathom API key, read from `FATHOM_API_KEY` or from a key
 file that `scripts/fathom_credential.py` writes, readable by its owner alone,
-after asking for the key without echo. It lists the meeting summaries and action
-items the key can see, never transcripts, and writes each to a side file for an
-isolated agent that gates it rather than condensing it. A meeting with an
-invitee from a domain the register excludes, such as a client whose contract
-forbids AI use of its meetings, is counted and written nowhere.
+after asking for the key without echo. It lists the meetings the key can see and
+writes each one's summary, action items and, when the register asks for them,
+verbatim transcript to a meeting file in a git-ignored directory of the
+repository, where an isolated agent scrubs personal data in place and changes
+nothing else. A meeting with an invitee from a domain the register excludes,
+such as a client whose contract forbids AI use of its meetings, is counted,
+written nowhere, and has no transcript requested.
 
 **Permissions.** A PreToolUse hook approves the read-only `slack-client` calls a
 sync runs, so installing the plugin is the grant and `permissions.allow` stays

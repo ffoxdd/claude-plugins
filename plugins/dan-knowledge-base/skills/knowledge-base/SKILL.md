@@ -202,24 +202,31 @@ python3 <SKILL_DIR>/scripts/chat_export.py \
   <watermark> <output> --sensitive-raw-directory <scratch>/raw
 ```
 
-**Fathom** — the meeting summaries a Fathom API key can see, created since the
-watermark, with their action items and never their transcripts:
+**Fathom** — the meetings a Fathom API key can see, created since the
+watermark: each one's summary and action items and, when the source sets
+`"transcripts": true`, its verbatim transcript, written as one meeting file per
+meeting:
 
 ```
 python3 <SKILL_DIR>/scripts/fathom_export.py \
-  <watermark> <output> --sensitive-raw-directory <scratch>/raw
+  <watermark> <output> --sensitive-raw-directory <inbox>/fathom
 ```
 
+The meeting files are scrubbed in place by an isolated agent whose file tools
+are confined to the repository, so the directory is inside it and git-ignored;
+one inside a work tree that git does not ignore is refused before any request.
 It lists from the watermark less the source's `lookback_hours` (72 by default),
 because Fathom writes a summary some time after it creates the meeting, and the
 source's `ledger` of recording ids keeps the overlap from being exported twice.
 A meeting whose summary is still empty is counted as not ready, named by
 recording id, and left out of the ledger, so the next run within the lookback
 exports it. A meeting with any calendar invitee at one of the source's
-`excluded_invitee_domains`, or a subdomain of one, is counted and written
-nowhere: that list is where a client contract forbidding AI use of its meetings
-is recorded, and the source must name it, as `[]` when there is none. A
-watermark older than `max_lookback_days` (90 by default) is refused unless
+`excluded_invitee_domains`, or a subdomain of one, is counted, written nowhere,
+and has no transcript requested: that list is where a client contract forbidding
+AI use of its meetings is recorded, and the source must name it, as `[]` when
+there is none. A transcript that comes back empty or not found is written as
+`Transcript unavailable.`, and the meeting is exported and named by recording
+id. A watermark older than `max_lookback_days` (90 by default) is refused unless
 `--allow-backfill` is passed. The key comes from `FATHOM_API_KEY`, or else the
 file `credential.key_file` names (`~/.config/fathom/api-key` by default), which
 a person stores by running `scripts/fathom_credential.py` from the plugin root
@@ -228,7 +235,8 @@ in a terminal.
 ```
 "ledger": "notes/.fathom-ledger",
 "lookback_hours": 72,
-"excluded_invitee_domains": ["<a client whose contract forbids AI use>"]
+"excluded_invitee_domains": ["<a client whose contract forbids AI use>"],
+"transcripts": true
 ```
 
 **Notion** — the pages under record-dense locations the register lists as
@@ -420,16 +428,49 @@ exclusions from the covered source it names with `covered_by`, so the register
 lists them once. It shares the export's minute-inclusive watermark, and a result
 it cannot place withholds the watermark, since it might be record-dense.
 
-The Fathom export runs the same three steps, with the same skip when nothing is
-ready, and its placeholders name each meeting by recording id and recorded date.
-What differs is step 2's treatment: a meeting summary is the content worth
-keeping, so the isolated agent writes it **gated, not condensed**. It removes
-personal data about anyone who is not a colleague (a customer's members or
-patients: names, identifiers, per-person detail) and keeps the decisions,
-mechanics, numbers, named business entities, and colleagues' names and
-ownership. Without `--sensitive-raw-directory` the meetings are only counted,
-and neither the ledger nor the watermark advances. A listing page that could not
-be read withholds the watermark and the ledger, like a Notion gap.
+### The Fathom sequence
+
+A transcript is passed **verbatim**, with the recap beside it, because the only
+safe edit to one is removing personal data; `references/transcripts.md` has the
+measurements and how to read one. So the files are the intake, and the export
+holds only a placeholder per meeting naming its file, recording id and recorded
+date. Each meeting file opens with the line `UNGATED: not to be read until the
+isolated agent has scrubbed it`.
+
+1. **This session runs the script**, with `--sensitive-raw-directory` pointing
+   at a git-ignored directory inside the repository's intake area (for example
+   `<inbox>/fathom/`), because the isolated agent edits the files in place and
+   its file tools are confined to the repository.
+2. **The isolated agent scrubs each meeting file in place, one run per meeting
+   file**, with file reading and editing only. It replaces every mention that
+   identifies an individual who is not speaking as a colleague, and any named
+   person's own care, health detail or membership whatever their role,
+   colleagues and business contacts included, with a neutral phrase such as "a
+   member". It changes nothing else: no rewording, no summarizing, no correcting
+   a garbled passage; every other word, number, speaker label and business name
+   stays as written. Its last edit replaces the `UNGATED:` first line with
+   `Gated.` Run it on the strongest model the covered launcher offers: this is
+   the step that keeps personal data out of the session, and it is not where a
+   sync saves money.
+3. **This session confirms no meeting file still starts with `UNGATED:`**, with a
+   search that prints filenames only (`grep -l` or `grep -L`, never content),
+   re-runs the agent on any that do, and only then treats the files as intake.
+4. **This session does not read the transcripts itself.** It hands each day's
+   meeting files to a sub-agent on the session's own model, which reads each
+   file once and returns only the durable knowledge, following
+   `references/transcripts.md`. A transcript held in the main context is re-sent
+   on every later turn of the sync. And the sub-agent is not a cheaper model:
+   it writes the notes, and a weaker reader reintroduces the attribution errors
+   the verbatim transcript exists to avoid.
+
+When nothing is ready the script prints `Nothing to summarize: skip the isolated
+agent.`, writes no meeting files, and steps 2 to 4 do not run. Without
+`--sensitive-raw-directory` the meetings are only counted, no transcript is
+requested, and neither the ledger nor the watermark advances. A listing page
+that could not be read withholds the watermark and the ledger, like a Notion
+gap. A transcript that could not be read, other than one not found, is a gap
+that takes the run back: the meeting files it wrote are removed, no export is
+written, and the next run re-covers the window.
 
 ### When an adapter cannot run
 
@@ -447,3 +488,4 @@ means it expired and needs a fresh sign-in.
 - `references/adding-a-source.md` — interrogating a new source before trusting it
 - `references/configuring-sources.md` — where per-repo configuration lives
 - `references/chat-sources.md` — chat, and the split that makes it safe
+- `references/transcripts.md` — reading a meeting transcript when distilling
