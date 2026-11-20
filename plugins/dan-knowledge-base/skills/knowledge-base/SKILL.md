@@ -392,7 +392,10 @@ rests on comments elsewhere; only Notion's webhooks report those.
 1. **This session runs the script.**
 2. **An isolated agent edits the file** — replacing each record-dense section's
    placeholder with a structural-facts-only summary read from the side file that
-   placeholder names, and gating the rest for stray personal data. Give it file
+   placeholder names, and gating the rest for stray personal data. A described
+   case counts as personal data even without a name in it (the rule is written
+   out in the Fathom sequence's step 2), and that holds for every gate,
+   Notion's included. Give it file
    reading and editing only; it must run no commands, and confirm that its
    launcher *enforces* that rather than merely recording it —
    `references/chat-sources.md` explains why the constraint is what makes the
@@ -451,35 +454,65 @@ it`.
    at the intake directory's `fathom/` subdirectory (`inbox/fathom/` under the
    default layout), because the isolated agent edits the files in place and its
    file tools are confined to the repository.
-2. **The isolated agent scrubs each meeting file in place, one run per meeting
-   file**, with file reading and editing only. It replaces every mention that
-   identifies an individual who is not speaking as a colleague, and any named
-   person's own care, health detail or membership whatever their role,
-   colleagues and business contacts included, with a neutral phrase such as "a
-   member". It changes nothing else: no rewording, no summarizing, no correcting
-   a garbled passage; every other word, number, speaker label and business name
-   stays as written. Its last edit replaces the `UNGATED:` first line with
-   `Gated.` Run it on the strongest model the covered launcher offers: this is
-   the step that keeps personal data out of the session, and it is not where a
-   sync saves money.
-3. **This session confirms no meeting file still starts with `UNGATED:`**, with a
-   search that prints filenames only (`grep -l` or `grep -L`, never content),
-   re-runs the agent on any that do, and only then hands the files on.
-4. **This session does not read the transcripts itself.** It hands each day's
+2. **The isolated agent gates each meeting file in place, one run per meeting
+   file**, with file reading and editing only. It first decides what kind of
+   meeting it is:
+   - **Case-dense**, where the meeting mostly walks through individual people's
+     situations one by one (a clinic's monthly ops review, a support escalation
+     call). The agent replaces the whole transcript with a summary of structural
+     facts only: policies, mechanics, decisions and owners, and defect patterns
+     with counts. The summary's first line names it as one. A scrub cannot make
+     such a meeting safe, because the cases are the content.
+   - **Any other meeting** is scrubbed. The agent replaces every mention that
+     identifies an individual who is not speaking as a colleague, and any named
+     person's own care, health detail or membership whatever their role,
+     colleagues and business contacts included, with a neutral phrase such as "a
+     member". **A case is identifying without a name.** A passage that describes
+     one person's situation is rewritten as a generic case ("one member whose
+     dependent was missing"): dates finer than the year tied to that person, an
+     age, family make-up, the person's employer or group tied to the case, and
+     life events (a name change, a move, a death). Taking out the name and
+     identifiers while leaving that story does not de-identify it. The agent
+     changes nothing else: no rewording, no summarizing, no correcting a garbled
+     passage, and every other word, number, speaker label and business name
+     stays as written.
+
+   Its last edit replaces the `UNGATED:` first line with `Gated.` Run it on the
+   strongest model the covered launcher offers: this is the step that keeps
+   personal data out of the session, and it is not where a sync saves money.
+3. **A second isolated run checks each gated file**, under the same isolation,
+   with fresh context and file reading and editing only. It reads the file and
+   looks only for what the gate missed: any passage that still identifies or
+   describes an individual by the rule above. If it finds none, its one edit
+   replaces the `Gated.` first line with `Verified.` If it finds any, it edits
+   nothing and reports each finding by line number and category, never the
+   content. That file goes back to step 2 with the findings named, then to this
+   check again. A checker is reliable where a self-check is not because it never
+   saw the gate's reasoning. Its cost is about the gate's again, and it is not
+   where a sync saves money either.
+4. **This session confirms every meeting file starts with `Verified.`**, with a
+   search that prints filenames only (`grep -L '^Verified\.'`, never content),
+   re-runs steps 2 and 3 on any that don't, and only then hands the files on.
+5. **This session does not read the transcripts itself.** It hands each day's
    meeting files to a sub-agent on the session's own model, which reads each
    file once and returns only the durable knowledge, following
    `references/transcripts.md`. A transcript held in the main context is re-sent
    on every later turn of the sync. And the sub-agent is not a cheaper model:
    it writes the notes, and a weaker reader reintroduces the attribution errors
-   the verbatim transcript exists to avoid.
-5. **Once the sub-agents have returned their notes, this session deletes the
+   the verbatim transcript exists to avoid. **Its brief includes a stop rule.**
+   If a file still describes an individual's case, the reader stops reading
+   that file, carries nothing from it, and reports only the filename and the
+   category. That meeting goes back through steps 2 and 3, and whoever is
+   responsible for the data hears about it, because this reader runs outside the
+   isolation and has already seen what it read.
+6. **Once the sub-agents have returned their notes, this session deletes the
    meeting files**, and moves the export to `inbox/processed/` like any other
    intake. A scrubbed transcript still holds whatever the scrub missed, and
    Fathom keeps the original, so a later question re-fetches one meeting by
    recording id rather than relying on a pile at rest.
 
 When nothing is ready the script prints `Nothing to summarize: skip the isolated
-agent.`, writes no meeting files, and steps 2 to 5 do not run. Without
+agent.`, writes no meeting files, and steps 2 to 6 do not run. Without
 `--sensitive-raw-directory` the meetings are only counted, no transcript is
 requested, and neither the ledger nor the watermark advances. A listing page
 that could not be read withholds the watermark and the ledger, like a Notion
