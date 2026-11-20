@@ -27,21 +27,21 @@ Nothing sensitive reaches a session merely from running this:
     by recording id and recorded date and pointing at its meeting file. Titles
     stay out, because a title can be a person's name;
   * **the meeting itself** goes only to its meeting file under
-    `--sensitive-raw-directory`: first the line `UNGATED: not to be read until
+    `<intake>/<source name>/`: first the line `UNGATED: not to be read until
     the isolated agent has scrubbed it`, then the title, invitee domains (never
     addresses), `## Summary`, `## Action items` and, when the source asks for
     transcripts, `## Transcript`. The isolated agent scrubs each file in place
-    and replaces that first line as its last edit. Without the flag, meetings
+    and replaces that first line as its last edit. With `--count-only`, meetings
     are listed and counted, nothing of theirs is written, and neither the ledger
     nor the watermark advances. A run that fails part-way, or is interrupted
     or terminated, deletes the meeting files it wrote, since no export would
     point at them.
 
-**The meeting files live in the repository, git-ignored.** The isolated agent's
-file tools are confined to the repository, so the files cannot live outside it.
-A `--sensitive-raw-directory` inside a git work tree is refused before any
-request unless git ignores it; one outside any work tree, or on a machine without
-git, is accepted; and one git fails to judge for any other reason is refused.
+**The meeting files live in the repository, git-ignored**, where the isolated
+agent edits them in place.
+The folder is the register's intake folder joined with `--source`, and the run is
+refused before any request unless git ignores it and it is absent or empty (see
+`raw_directory.py`).
 
 The register entry:
 
@@ -117,10 +117,8 @@ prints.
 import argparse
 import http.client
 import json
-import os
 import re
 import signal
-import subprocess
 import sys
 import time
 import urllib.error
@@ -134,6 +132,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import configuration
 import fathom_credential
+import raw_directory
 from notion_api import EXIT_GAPS, EXIT_REFUSED, RETRIES, RETRYABLE_STATUSES, ExportError, Gaps, \
     Retryable, floor_to_minute, format_time, parse_time, read_watermark, retry_after_seconds
 
@@ -514,55 +513,6 @@ def read_records(path):
 
 
 # ---------------------------------------------------------------------------
-# Where the meeting files may go
-
-
-def existing_ancestor(path):
-    while not path.exists() and path != path.parent:
-        path = path.parent
-
-    return path
-
-
-# git's own answer when no repository encloses the path. Only this failure means
-# "outside any work tree"; any other is a repository git could not judge.
-OUTSIDE_ANY_REPOSITORY = re.compile(
-    r"not a git repository \(or any (of the parent directories|parent up to mount point)")
-
-
-def git(directory, *arguments):
-    """A git command's result, or None on a machine without git. Messages in the C
-    locale, so a failure can be classified by its words."""
-    try:
-        return subprocess.run(["git", "-C", str(directory), *arguments], capture_output=True,
-                              text=True, env={**os.environ, "LC_ALL": "C"})
-
-    except OSError:
-        return None
-
-
-def directory_refusal(directory):
-    """Why the meeting files may not be written to `directory`, or None when they
-    may. The isolated agent scrubs them in place inside the repository, so a
-    directory in a work tree must be one git ignores."""
-    path = Path(directory).resolve()
-    ignored = git(existing_ancestor(path), "check-ignore", "--quiet", f"{path}{os.sep}")
-
-    if ignored is None or ignored.returncode == 0:
-        return None
-
-    if ignored.returncode == 1:
-        return (f"--sensitive-raw-directory {directory} is inside a git work tree and not "
-                "git-ignored; it must be git-ignored because it holds ungated meeting text")
-
-    if OUTSIDE_ANY_REPOSITORY.search(ignored.stderr):
-        return None
-
-    return (f"--sensitive-raw-directory {directory}: git could not confirm that it is "
-            "git-ignored, and it must be because it holds ungated meeting text")
-
-
-# ---------------------------------------------------------------------------
 # Transcripts
 
 
@@ -685,7 +635,7 @@ class MeetingFiles:
     """The meeting files this run wrote, so a failed run can take them back."""
 
     def __init__(self, directory, transcripts):
-        self.directory = Path(directory) if directory else None
+        self.directory = directory
         self.transcripts = transcripts
         self.written = []
 
@@ -777,7 +727,7 @@ def report_gaps(gaps):
 
 
 def report(arguments, sorting, transcripts, gaps, ledger, clock, lookback_hours):
-    exporting = bool(arguments.sensitive_raw_directory)
+    exporting = not arguments.count_only
     print(arguments.output)
     print(counts_line(sorting, exporting))
     report_transcripts(transcripts, exporting)
@@ -793,8 +743,8 @@ def report(arguments, sorting, transcripts, gaps, ledger, clock, lookback_hours)
         return report_gaps(gaps)
 
     if not exporting:
-        print("Meetings were listed only, and the ledger and watermark were not advanced: pass "
-              "--sensitive-raw-directory to export them.")
+        print("Meetings were listed only, and the ledger and watermark were not advanced: run "
+              "without --count-only to export them.")
 
         return 0
 
@@ -819,16 +769,12 @@ def read_settings(arguments):
         raise configuration.ConfigurationError(refusal)
 
     requested = transcripts_setting(source)
-    directory = arguments.sensitive_raw_directory
-    refusal = directory and directory_refusal(directory)
-
-    if refusal:
-        raise configuration.ConfigurationError(refusal)
-
+    directory = None if arguments.count_only else raw_directory.checked(arguments.source)
     ledger = Ledger.from_source(source, arguments.source, since, floor)
     fathom = Fathom.from_source(source, fathom_credential.api_key(source))
 
-    return fathom, ledger, floor, excluded, lookback_hours, Transcripts(fathom, requested)
+    return (fathom, ledger, floor, excluded, lookback_hours, Transcripts(fathom, requested),
+            directory)
 
 
 def main(argv=None):
@@ -836,9 +782,9 @@ def main(argv=None):
     parser.add_argument("watermark", help="ISO-8601 UTC time; meetings created after it")
     parser.add_argument("output", help="path to write the intake file to")
     parser.add_argument("--source", default="fathom", help="register entry to read (default: fathom)")
-    parser.add_argument("--sensitive-raw-directory",
-                        help="write each exported meeting's file here, for the isolated agent "
-                             "to scrub in place; inside a git work tree it must be git-ignored")
+    parser.add_argument("--count-only", action="store_true",
+                        help="list and count meetings without writing any meeting file; the "
+                             "ledger and watermark do not advance")
     parser.add_argument("--allow-backfill", action="store_true",
                         help="export a window older than the register's max_lookback_days, "
                              "deliberately")
@@ -848,17 +794,18 @@ def main(argv=None):
     clock = datetime.now(timezone.utc)
 
     try:
-        fathom, ledger, floor, excluded, lookback_hours, transcripts = read_settings(arguments)
+        fathom, ledger, floor, excluded, lookback_hours, transcripts, directory = \
+            read_settings(arguments)
 
     except (configuration.ConfigurationError, fathom_credential.CredentialError) as error:
         print(f"fathom_export: {error}", file=sys.stderr)
 
         return EXIT_REFUSED
 
-    if arguments.sensitive_raw_directory:
-        os.makedirs(arguments.sensitive_raw_directory, exist_ok=True)
+    if directory:
+        directory.mkdir(parents=True, exist_ok=True)
 
-    meeting_files = MeetingFiles(arguments.sensitive_raw_directory, transcripts)
+    meeting_files = MeetingFiles(directory, transcripts)
     gaps = Gaps()
     sorting = Sorting()
     signal.signal(signal.SIGTERM, terminate)

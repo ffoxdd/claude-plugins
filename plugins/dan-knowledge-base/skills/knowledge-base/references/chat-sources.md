@@ -101,7 +101,8 @@ with the designated-channel summaries as the deliberate exception:
 - Scan everything else for stray personal data, omit what it finds, and note
   the omission at the top of the file so it is visible.
 
-**Raw text for the designated channels goes to side files outside the repo**,
+**Raw text for the designated channels goes to side files in the source's
+git-ignored folder under the intake directory** (`inbox/chat/` by default),
 which the isolated agent reads and the main session deletes once the summaries
 are written. That is sensitive data at rest, briefly, on local disk — a real
 trade-off, so write the decision and its date into the register.

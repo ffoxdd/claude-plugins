@@ -41,11 +41,16 @@ unprocessed queue, which is the one thing you need to see whole.
 there is no status field to drift.
 
 **A subdirectory of `inbox/` other than `processed/` is working space, not
-intake.** An adapter whose files an isolated agent must edit in place writes
-them there, as the Fathom adapter does to `inbox/fathom/`, because the agent's
-file tools are confined to the repository and the intake tree is already
-gitignored. Those files never join the queue or `inbox/processed/`; the sync
-deletes them once it is done with them.
+intake.** Raw text for the isolated agent always lands in `<intake>/<source>/`:
+the intake directory the register's `layout` names, joined with the source's
+name, as in `inbox/chat/`, `inbox/notion-covered/` or `inbox/fathom/`. The adapter
+derives the folder itself. It is git-ignored with the rest of the intake tree,
+and it is inside the repository, so the agent reaches its files however its
+tools are scoped, whether the gate only reads them or edits them in place. An adapter refuses to run, before any request, when the folder is in
+a work tree git does not ignore, when git cannot judge it, or when it already
+holds files: those are a previous run's, so finish that run's gate or delete the
+folder. Those files never join the queue or `inbox/processed/`; the sync deletes
+the folder once it is done with it.
 
 **Raw intake is never committed.** It is an order of magnitude larger than what
 it yields, it rots, and it is the material most likely to carry what must never
@@ -179,7 +184,8 @@ The shape that resolves it splits the work in two:
 The judgment half is the only half reading raw content, so it is the only half
 needing isolation — which makes the isolated agent's tool surface small enough
 to constrain (reading and editing files, running nothing). The raw files are
-scratch: deleting them once the summaries are written is part of the procedure.
+working files: deleting them once the summaries are written is part of the
+procedure.
 
 Chat is the hardest instance and the one worked out in most detail:
 `references/chat-sources.md`. Where your organization has a covered or
@@ -194,7 +200,9 @@ below as `<SKILL_DIR>`. Never hardcode or remember that path: it carries a
 version that changes on every plugin update.
 
 An adapter reads the register itself, from the working directory, so the only
-arguments are the watermark and where to write.
+arguments are the watermark and where to write. The chat, Notion and Fathom
+adapters write raw text to the source's folder under the intake directory (see
+Layout); `--count-only` writes none, and says what that leaves undone.
 
 **Email** — digest mail from the senders the register whitelists:
 
@@ -205,8 +213,7 @@ uv run <SKILL_DIR>/scripts/email_sweep.py <watermark> <output>
 **Chat** — every conversation you are a member of, tiered by privacy:
 
 ```
-python3 <SKILL_DIR>/scripts/chat_export.py \
-  <watermark> <output> --sensitive-raw-directory <scratch>/raw
+python3 <SKILL_DIR>/scripts/chat_export.py <watermark> <output>
 ```
 
 **Fathom** — the meetings a Fathom API key can see, created since the
@@ -215,15 +222,11 @@ watermark: each one's summary and action items and, when the source sets
 meeting:
 
 ```
-python3 <SKILL_DIR>/scripts/fathom_export.py \
-  <watermark> <output> --sensitive-raw-directory inbox/fathom
+python3 <SKILL_DIR>/scripts/fathom_export.py <watermark> <output>
 ```
 
-`inbox/` stands for the intake directory the register's `layout` names. The
-meeting files are scrubbed in place by an isolated agent whose file tools are
-confined to the repository, so the directory is inside it and git-ignored; one
-inside a work tree that git does not ignore, or that git cannot judge, is
-refused before any request.
+The meeting files go to `inbox/fathom/`, where an isolated agent scrubs them in
+place.
 It lists from the watermark less the source's `lookback_hours` (72 by default),
 because Fathom writes a summary some time after it creates the meeting, and the
 source's `ledger` of recording ids keeps the overlap from being exported twice.
@@ -252,8 +255,7 @@ in a terminal.
 `covered_locations`, changed since the watermark:
 
 ```
-python3 <SKILL_DIR>/scripts/notion_export.py \
-  <watermark> <output> --sensitive-raw-directory <scratch>/raw
+python3 <SKILL_DIR>/scripts/notion_export.py <watermark> <output>
 ```
 
 It finds the changed pages by search, a few requests for the whole workspace.
@@ -401,8 +403,9 @@ rests on comments elsewhere; only Notion's webhooks report those.
    `references/chat-sources.md` explains why the constraint is what makes the
    arrangement work, and why an allow list is usually not the control that
    imposes it.
-3. **This session deletes the side files**, then treats the export as ordinary
-   intake.
+3. **This session deletes the source's folder under the intake directory**
+   (`inbox/chat/` under the default layout), side files and all, then treats the
+   export as ordinary intake.
 
 When the script reports `0 conversation(s) with new messages`, it also prints
 `skip the isolated agent`. The export then holds no message text, so step 2 has
@@ -410,8 +413,8 @@ nothing to gate and does not run.
 
 The Notion export runs the same three steps, **except when nothing changed**.
 Then the script prints `Nothing to summarize: skip the isolated agent.`, writes
-no side files, and step 2 does not run. A quiet window costs Notion API calls
-and no model tokens, covered or otherwise. Finding what changed is a script,
+nothing to its folder under the intake directory, and step 2 does not run. A
+quiet window costs Notion API calls and no model tokens, covered or otherwise. Finding what changed is a script,
 and only a changed page's text ever reaches a model.
 
 Otherwise the steps are the same. The one difference is the export:
@@ -450,10 +453,9 @@ recording id and recorded date, is the intake record. Each meeting file opens
 with the line `UNGATED: not to be read until the isolated agent has scrubbed
 it`.
 
-1. **This session runs the script**, with `--sensitive-raw-directory` pointing
-   at the intake directory's `fathom/` subdirectory (`inbox/fathom/` under the
-   default layout), because the isolated agent edits the files in place and its
-   file tools are confined to the repository.
+1. **This session runs the script**, which writes the meeting files to the
+   source's folder under the intake directory (`inbox/fathom/` under the default
+   layout), where the isolated agent edits them in place.
 2. **The isolated agent gates each meeting file in place, one run per meeting
    file**, with file reading and editing only. It first decides what kind of
    meeting it is:
@@ -506,14 +508,14 @@ it`.
    responsible for the data hears about it, because this reader runs outside the
    isolation and has already seen what it read.
 6. **Once the sub-agents have returned their notes, this session deletes the
-   meeting files**, and moves the export to `inbox/processed/` like any other
-   intake. A scrubbed transcript still holds whatever the scrub missed, and
+   source's folder with the meeting files in it**, and moves the export to
+   `inbox/processed/` like any other intake. A scrubbed transcript still holds whatever the scrub missed, and
    Fathom keeps the original, so a later question re-fetches one meeting by
    recording id rather than relying on a pile at rest.
 
 When nothing is ready the script prints `Nothing to summarize: skip the isolated
-agent.`, writes no meeting files, and steps 2 to 6 do not run. Without
-`--sensitive-raw-directory` the meetings are only counted, no transcript is
+agent.`, writes no meeting files, and steps 2 to 6 do not run. With
+`--count-only` the meetings are only counted, no transcript is
 requested, and neither the ledger nor the watermark advances. A listing page
 that could not be read withholds the watermark and the ledger, like a Notion
 gap. A transcript that could not be read, other than one not found, is a gap

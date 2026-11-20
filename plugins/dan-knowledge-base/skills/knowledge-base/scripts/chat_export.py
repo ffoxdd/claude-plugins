@@ -11,10 +11,12 @@ script runs in the main session rather than inside that agent.
 Nothing sensitive reaches a session merely from running this. Stdout carries the
 output path, the new watermark, and any gaps; raw message text goes to the output
 file, and **record-dense conversations' text is never written into that file at
-all**. With `--sensitive-raw-directory` their text goes to side files under that
-directory instead — local scratch for the isolated agent to read while writing
-each section's summary, deleted once the summaries are in place. Without the flag
-they are fetched only far enough to advance the watermark.
+all**. Their text goes to side files under `<intake>/<source name>/` instead —
+git-ignored working space for the isolated agent to read while writing each
+section's summary, deleted once the summaries are in place. The run is refused
+before any request unless git ignores that folder and it is absent or empty (see
+`raw_directory.py`). With `--count-only` they are fetched only far enough to
+advance the watermark, and nothing of theirs is written.
 
 Three tiers, and only the first needs naming by hand:
 
@@ -45,6 +47,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 
 import configuration
+import raw_directory
 
 # The bundled client is a uv PEP-723 script; the automated path runs it through
 # `uv run --script` directly rather than the bin/ launcher. Python's subprocess
@@ -379,7 +382,7 @@ def render_message(message, indent=""):
     return [f"{indent}- {stamp} **{author}**: {text}"]
 
 
-def write_sensitive_raw_text(directory, name, lines):
+def write_raw_text(directory, name, lines):
     """Write a dense conversation's raw text where only the isolated agent reads it."""
     path = os.path.join(directory, f"{re.sub(r'[^A-Za-z0-9._-]+', '_', name)}.md")
 
@@ -432,7 +435,7 @@ def render_message_window(client, identifier, name, posted, revived, watermark, 
 
 
 def render_conversation(client, conversation, watermark, handling, acknowledgements,
-                        sensitive_raw_directory=None):
+                        raw_text_directory=None):
     """One conversation's section, its highest timestamp, and anything to report."""
     identifier, name = conversation.identifier, conversation.name
     is_dense = handling.is_dense(conversation)
@@ -476,16 +479,16 @@ def render_conversation(client, conversation, watermark, handling, acknowledgeme
             "names, identifiers, or per-person amounts.",
         ]
 
-        if sensitive_raw_directory:
-            raw_path = write_sensitive_raw_text(
-                sensitive_raw_directory,
+        if raw_text_directory:
+            raw_path = write_raw_text(
+                raw_text_directory,
                 name,
                 render_message_window(
                     client, identifier, name, posted, revived, watermark, notes, acknowledgements
                 ),
             )
             lines += [
-                f"Raw text for this section: `{raw_path}` — local scratch,",
+                f"Raw text for this section: `{raw_path}` — working space,",
                 "deleted once the summary is written.",
             ]
 
@@ -506,7 +509,7 @@ def render_conversation(client, conversation, watermark, handling, acknowledgeme
     return lines + [""], highest, notes
 
 
-def build_export(client, watermark, handling, acknowledgements, sensitive_raw_directory=None):
+def build_export(client, watermark, handling, acknowledgements, raw_text_directory=None):
     header = [
         f"# Chat export — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
         "",
@@ -521,7 +524,7 @@ def build_export(client, watermark, handling, acknowledgements, sensitive_raw_di
 
     for conversation in client.memberships():
         lines, conversation_highest, conversation_notes = render_conversation(
-            client, conversation, watermark, handling, acknowledgements, sensitive_raw_directory,
+            client, conversation, watermark, handling, acknowledgements, raw_text_directory,
         )
         body += lines
         highest = max(highest, conversation_highest)
@@ -544,13 +547,16 @@ def main(argv=None):
     parser.add_argument("output", help="path to write the intake file to")
     parser.add_argument("--source", default="chat", help="register entry to read (default: chat)")
     parser.add_argument(
-        "--sensitive-raw-directory",
-        help="write record-dense conversations' raw text here for the isolated agent",
+        "--count-only", action="store_true",
+        help="fetch record-dense conversations only to advance the watermark, writing none "
+             "of their text",
     )
     arguments = parser.parse_args(argv)
 
     try:
         source = configuration.source(arguments.source)
+        raw_text_directory = None if arguments.count_only else raw_directory.checked(
+            arguments.source)
 
     except configuration.ConfigurationError as error:
         print(f"chat_export: {error}", file=sys.stderr)
@@ -569,8 +575,8 @@ def main(argv=None):
         text.lower() for text in source.get("extra_acknowledgements") or []
     }
 
-    if arguments.sensitive_raw_directory:
-        os.makedirs(arguments.sensitive_raw_directory, exist_ok=True)
+    if raw_text_directory:
+        raw_text_directory.mkdir(parents=True, exist_ok=True)
 
     try:
         content, highest, notes = build_export(
@@ -578,7 +584,7 @@ def main(argv=None):
             arguments.watermark,
             handling,
             acknowledgements,
-            arguments.sensitive_raw_directory,
+            raw_text_directory,
         )
 
     except ExportError as error:
@@ -597,10 +603,10 @@ def main(argv=None):
     if not active:
         print("Nothing to summarize or gate: skip the isolated agent.")
 
-    if handling.dense_names and not arguments.sensitive_raw_directory:
+    if handling.dense_names and not raw_text_directory:
         print(
             f"{len(handling.dense_names)} record-dense conversation(s) were fetched only to advance "
-            "the watermark; pass --sensitive-raw-directory to have them summarized."
+            "the watermark; run without --count-only to have them summarized."
         )
 
     if notes:

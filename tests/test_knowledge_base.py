@@ -665,14 +665,14 @@ class ChatAdapterTest(unittest.TestCase):
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
-        root = Path(self.directory.name)
+        root = self.root = Path(self.directory.name).resolve()
 
         # The register names the client by path, so the stub has to be invoked the
         # way the platform can: support.stub_command returns that path.
         self.client = support.stub_command(root / "stub-chat", STUB_CHAT_CLIENT)
 
         self.output = root / "export.md"
-        self.raw = root / "raw"
+        self.raw = root / "inbox" / "chat"
         self.config = write_register(root, register(chat={
             "adapter": "chat",
             "client_command": str(self.client),
@@ -690,13 +690,13 @@ class ChatAdapterTest(unittest.TestCase):
         )
 
     def test_a_dense_conversation_never_reaches_the_export(self):
-        self.export("--sensitive-raw-directory", str(self.raw))
+        self.export()
 
         self.assertNotIn("SENSITIVE-MARKER", self.output.read_text(encoding="utf-8"))
         self.assertIn("NOT pulled verbatim", self.output.read_text(encoding="utf-8"))
 
     def test_its_text_goes_to_the_side_file_the_placeholder_names(self):
-        self.export("--sensitive-raw-directory", str(self.raw))
+        self.export()
 
         side_files = list(self.raw.glob("*.md"))
 
@@ -704,8 +704,8 @@ class ChatAdapterTest(unittest.TestCase):
         self.assertIn("SENSITIVE-MARKER", side_files[0].read_text(encoding="utf-8"))
         self.assertIn(side_files[0].name, self.output.read_text(encoding="utf-8"))
 
-    def test_without_the_flag_dense_text_is_written_nowhere(self):
-        result = self.export()
+    def test_count_only_writes_dense_text_nowhere(self):
+        result = self.export("--count-only")
 
         self.assertNotIn("SENSITIVE-MARKER", self.output.read_text(encoding="utf-8"))
         self.assertFalse(self.raw.exists())
@@ -713,7 +713,7 @@ class ChatAdapterTest(unittest.TestCase):
 
     def test_stdout_carries_no_message_text(self):
         """What makes it safe for the main session to run this itself."""
-        result = self.export("--sensitive-raw-directory", str(self.raw))
+        result = self.export()
 
         for token in ("SENSITIVE-MARKER", "shipped the", "the follow-up"):
             with self.subTest(token=token):
@@ -772,7 +772,7 @@ class ChatAdapterTest(unittest.TestCase):
         """With no new message anywhere, the gate has nothing to read."""
         result = support.run_script(
             adapter("chat_export.py"),
-            arguments=["5000.0", str(self.output), "--sensitive-raw-directory", str(self.raw)],
+            arguments=["5000.0", str(self.output)],
             KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
         )
 
@@ -808,6 +808,39 @@ class ChatAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("nonexistent", result.stderr)
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_a_folder_git_does_not_ignore_is_refused_before_any_fetch(self):
+        subprocess.run(["git", "-C", str(self.root), "init", "--quiet"], check=True)
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(str(self.raw), result.stderr)
+        self.assertIn("must be git-ignored", result.stderr)
+        self.assertFalse(self.raw.exists())
+        self.assertFalse(self.output.exists())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_a_folder_git_ignores_is_accepted(self):
+        subprocess.run(["git", "-C", str(self.root), "init", "--quiet"], check=True)
+        (self.root / ".gitignore").write_text("inbox/\n", encoding="utf-8")
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(list(self.raw.glob("*.md"))), 1)
+
+    def test_a_folder_a_previous_run_left_files_in_is_refused_before_any_fetch(self):
+        self.raw.mkdir(parents=True)
+        (self.raw / "billing-ops.md").write_text("left over", encoding="utf-8")
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(str(self.raw), result.stderr)
+        self.assertIn("previous run's working files", result.stderr)
+        self.assertFalse(self.output.exists())
 
 
 
@@ -982,10 +1015,10 @@ class NotionAdapterTest(unittest.TestCase):
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.directory.name)
+        self.root = Path(self.directory.name).resolve()
         self.stub = StubNotion()
         self.output = self.root / "export.md"
-        self.raw = self.root / "raw"
+        self.raw = self.root / "inbox" / "notion-covered"
         self.claude_config = self.root / "claude.json"
         self.write_token(self.TOKEN)
         self.write_source([
@@ -1034,7 +1067,7 @@ class NotionAdapterTest(unittest.TestCase):
                 self.assertNotIn(token, streams)
 
     def test_a_changed_page_reaches_only_its_side_file(self):
-        self.export("--sensitive-raw-directory", str(self.raw))
+        self.export()
         side_file = (self.raw / "changed.md").read_text(encoding="utf-8")
 
         for token in ("SENSITIVE-MARKER", "PERSON-TITLE", "PROPERTY-MARKER"):
@@ -1044,20 +1077,20 @@ class NotionAdapterTest(unittest.TestCase):
 
         self.assertIn(str(self.raw / "changed.md"), self.export_text())
 
-    def test_without_the_flag_nothing_of_a_page_is_written(self):
-        result = self.export()
+    def test_count_only_writes_nothing_of_a_page(self):
+        result = self.export("--count-only")
 
         self.assertNotIn("SENSITIVE-MARKER", self.export_text())
         self.assertFalse(self.raw.exists())
         self.assertIn("listed only", result.stdout)
 
     def test_no_output_stream_carries_content_or_the_token(self):
-        result = self.export("--sensitive-raw-directory", str(self.raw))
+        result = self.export()
 
         self.assert_nothing_leaked(result, files=[self.output])
 
     def test_the_token_is_sent_and_written_nowhere(self):
-        self.export("--sensitive-raw-directory", str(self.raw))
+        self.export()
         written = self.export_text() + "".join(
             path.read_text(encoding="utf-8") for path in self.raw.glob("*.md")
         )
@@ -1114,7 +1147,7 @@ class NotionAdapterTest(unittest.TestCase):
     def test_rate_limits_and_transient_errors_are_retried(self):
         """The stub answers the hub's first fetch with a 429, and `changed`'s first
         children fetch with a 503."""
-        result = self.export("--sensitive-raw-directory", str(self.raw))
+        result = self.export()
 
         self.assertEqual(result.returncode, 0)
         self.assertEqual(self.stub.failed_once, {"hub-429", "changed-503"})
@@ -1159,7 +1192,7 @@ class NotionAdapterTest(unittest.TestCase):
         self.write_source([{"name": "Operations hub", "id": "hub"},
                            {"name": "Broken", "id": "broken"}])
 
-        result = self.export("--sensitive-raw-directory", str(self.raw))
+        result = self.export()
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("failed part-way", result.stderr)
@@ -1169,8 +1202,7 @@ class NotionAdapterTest(unittest.TestCase):
 
     def test_a_quiet_window_says_to_skip_the_isolated_agent(self):
         """Nothing changed means nothing to summarize, and so no model call at all."""
-        result = self.export("--sensitive-raw-directory", str(self.raw),
-                             watermark="2026-09-30T00:00:00Z")
+        result = self.export(watermark="2026-09-30T00:00:00Z")
 
         self.assertEqual(result.returncode, 0)
         self.assertIn("0 changed", result.stdout)
@@ -1237,6 +1269,37 @@ class NotionAdapterTest(unittest.TestCase):
         result = self.export()
 
         self.assertNotIn("ledger", result.stderr)
+
+    def test_side_files_go_under_the_intake_folder_named_for_the_source(self):
+        self.export()
+
+        self.assertEqual([path.name for path in (self.root / "inbox").iterdir()],
+                         ["notion-covered"])
+        self.assertTrue((self.root / "inbox" / "notion-covered" / "changed.md").is_file())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_a_folder_git_does_not_ignore_is_refused_before_any_request(self):
+        subprocess.run(["git", "-C", str(self.root), "init", "--quiet"], check=True)
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(str(self.raw), result.stderr)
+        self.assertIn("must be git-ignored", result.stderr)
+        self.assertEqual(self.stub.authorizations, [])
+        self.assertFalse(self.raw.exists())
+
+    def test_a_folder_a_previous_run_left_files_in_is_refused_before_any_request(self):
+        self.raw.mkdir(parents=True)
+        (self.raw / "earlier.md").write_text("left over", encoding="utf-8")
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(str(self.raw), result.stderr)
+        self.assertIn("previous run's working files", result.stderr)
+        self.assertEqual(self.stub.authorizations, [])
+        self.assertFalse(self.output.exists())
 
 
 def search_item(identifier, edited, title, parent_type="workspace", parent_id=None, kind="page"):
@@ -2096,9 +2159,9 @@ class NotionAdapterSearchTest(unittest.TestCase):
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.directory.name)
+        self.root = Path(self.directory.name).resolve()
         self.output = self.root / "export.md"
-        self.raw = self.root / "raw"
+        self.raw = self.root / "inbox" / "notion-covered"
         self.claude_config = self.root / "claude.json"
         self.claude_config.write_text(json.dumps({"mcpServers": {"notion": {
             "env": {"OPENAPI_MCP_HEADERS": json.dumps({"Authorization": self.TOKEN})},
@@ -2128,7 +2191,7 @@ class NotionAdapterSearchTest(unittest.TestCase):
         return support.run_script(
             adapter("notion_export.py"),
             arguments=[StubNotionSearch.WATERMARK, str(self.output), "--source", "notion-covered",
-                       "--sensitive-raw-directory", str(self.raw), *extra],
+                       *extra],
             KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
         )
 
@@ -2255,6 +2318,7 @@ class NotionAdapterSearchTest(unittest.TestCase):
 
         walked = self.export("--walk")
         ledger = json.loads((self.root / self.LEDGER).read_text(encoding="utf-8"))
+        shutil.rmtree(self.raw)
         searched = self.export()
 
         self.assertEqual(walked.returncode, 0)
@@ -2624,9 +2688,9 @@ class FathomAdapterTest(unittest.TestCase):
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.directory.name)
+        self.root = Path(self.directory.name).resolve()
         self.output = self.root / "export.md"
-        self.raw = self.root / "raw"
+        self.raw = self.root / "inbox" / "fathom"
         self.ledger = self.root / "notes" / ".fathom-ledger"
         self.key_file = self.root / "api-key"
         self.write_key(self.KEY)
@@ -2673,9 +2737,6 @@ class FathomAdapterTest(unittest.TestCase):
             **environment,
         )
 
-    def export_with_side_files(self, **environment):
-        return self.export("--sensitive-raw-directory", str(self.raw), **environment)
-
     def written_files(self):
         return [path for path in self.root.rglob("*")
                 if path.is_file() and ".git" not in path.relative_to(self.root).parts]
@@ -2686,7 +2747,7 @@ class FathomAdapterTest(unittest.TestCase):
             if path != self.config)
 
     def test_every_page_is_read_along_the_cursor(self):
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([query.get("cursor") for query in self.stub.queries], [None, "page-2"])
@@ -2694,7 +2755,7 @@ class FathomAdapterTest(unittest.TestCase):
         self.assertIn("1 summary not ready", result.stdout)
 
     def test_the_listing_looks_back_from_the_watermark_and_asks_for_no_transcript(self):
-        self.export_with_side_files()
+        self.export()
         floor = StubFathom.WATERMARK_TIME.replace(second=0) - timedelta(hours=72)
 
         for query in self.stub.queries:
@@ -2705,7 +2766,7 @@ class FathomAdapterTest(unittest.TestCase):
                 self.assertNotIn("include_transcript", query)
 
     def test_a_meeting_with_an_excluded_invitee_is_written_nowhere(self):
-        result = self.export_with_side_files()
+        result = self.export()
         written = self.everything_written(result)
 
         self.assertIn("1 skipped by invitee domain", result.stdout)
@@ -2718,7 +2779,7 @@ class FathomAdapterTest(unittest.TestCase):
         self.assertNotIn("`102`", self.output.read_text(encoding="utf-8"))
 
     def test_a_ready_meeting_reaches_only_its_side_file(self):
-        result = self.export_with_side_files()
+        result = self.export()
         side_file = (self.raw / "fathom-101.md").read_text(encoding="utf-8")
         export = self.output.read_text(encoding="utf-8")
 
@@ -2735,7 +2796,7 @@ class FathomAdapterTest(unittest.TestCase):
         self.assertIn("`101`", export)
 
     def test_no_output_stream_carries_a_title_a_summary_an_address_or_the_key(self):
-        result = self.export_with_side_files()
+        result = self.export()
         streams = result.stdout + result.stderr + self.output.read_text(encoding="utf-8")
 
         for marker in self.CONTENT:
@@ -2745,7 +2806,7 @@ class FathomAdapterTest(unittest.TestCase):
     def test_a_ledgered_meeting_is_not_exported_again(self):
         self.write_ledger_record(fathom_time(StubFathom.WATERMARK_TIME - timedelta(hours=1)))
 
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertIn("1 already in the ledger", result.stdout)
         self.assertFalse((self.raw / "fathom-104.md").exists())
@@ -2754,24 +2815,24 @@ class FathomAdapterTest(unittest.TestCase):
     def test_a_record_from_a_run_whose_watermark_was_not_accepted_skips_nothing(self):
         self.write_ledger_record(fathom_time(StubFathom.WATERMARK_TIME + timedelta(hours=1)))
 
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertIn("0 already in the ledger", result.stdout)
         self.assertTrue((self.raw / "fathom-104.md").exists())
 
     def test_a_meeting_without_a_summary_is_retried_rather_than_recorded(self):
-        result = self.export_with_side_files()
+        result = self.export()
         records = json.loads(self.ledger.read_text(encoding="utf-8"))
 
         self.assertEqual(sorted(records), ["101", "104"])
         self.assertFalse((self.raw / "fathom-103.md").exists())
         self.assertIn("lookback: 103", result.stdout)
 
-    def test_without_the_flag_nothing_is_written_and_nothing_advances(self):
+    def test_count_only_writes_nothing_and_advances_nothing(self):
         self.write_ledger_record(fathom_time(StubFathom.WATERMARK_TIME - timedelta(hours=1)))
         before = self.ledger.read_bytes()
 
-        result = self.export()
+        result = self.export("--count-only")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.raw.exists())
@@ -2781,7 +2842,7 @@ class FathomAdapterTest(unittest.TestCase):
         self.assertNotIn("SUMMARY-MARKER", self.output.read_text(encoding="utf-8"))
 
     def test_the_watermark_is_the_clock_before_the_first_request(self):
-        result = self.export_with_side_files()
+        result = self.export()
         printed = re.search(r"New watermark: (\S+)", result.stdout).group(1)
 
         self.assertLessEqual(datetime.fromisoformat(printed.replace("Z", "+00:00")),
@@ -2790,7 +2851,7 @@ class FathomAdapterTest(unittest.TestCase):
     def test_a_rate_limit_is_retried(self):
         self.start_stub(rate_limited=True)
 
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(self.stub.queries), 3)
@@ -2798,7 +2859,7 @@ class FathomAdapterTest(unittest.TestCase):
     def test_an_unreadable_page_withholds_the_watermark_and_the_ledger(self):
         self.start_stub(failing_cursor=403)
 
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertEqual(result.returncode, 3)
         self.assertIn("GET /meetings returned 403", result.stderr)
@@ -2809,7 +2870,7 @@ class FathomAdapterTest(unittest.TestCase):
     def test_a_failure_part_way_removes_the_side_files_it_wrote(self):
         self.start_stub(broken=True)
 
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("failed part-way", result.stderr)
@@ -2824,7 +2885,7 @@ class FathomAdapterTest(unittest.TestCase):
         return (self.raw / f"fathom-{identifier}.md").read_text(encoding="utf-8")
 
     def test_a_transcript_is_rendered_as_merged_speaker_turns(self):
-        result = self.export_with_side_files()
+        result = self.export()
         transcript = self.meeting_file("101").split("## Transcript\n\n", 1)[1]
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -2835,7 +2896,7 @@ class FathomAdapterTest(unittest.TestCase):
         self.assertIn("Transcripts: 2 fetched, 0 unavailable", result.stdout)
 
     def test_a_meeting_file_opens_ungated_with_its_sections_in_order(self):
-        self.export_with_side_files()
+        self.export()
         text = self.meeting_file("101")
         headings = [line for line in text.splitlines() if line.startswith("## ")]
 
@@ -2848,7 +2909,7 @@ class FathomAdapterTest(unittest.TestCase):
     def test_without_transcripts_none_is_requested_or_written(self):
         self.start_stub(source={"transcripts": False})
 
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.stub.transcript_requests, [])
@@ -2858,7 +2919,7 @@ class FathomAdapterTest(unittest.TestCase):
     def test_a_transcripts_setting_that_is_not_a_boolean_refuses_to_run(self):
         self.start_stub(source={"transcripts": "yes"})
 
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertEqual(result.returncode, 1)
         self.assertIn('"transcripts"', result.stderr)
@@ -2867,7 +2928,7 @@ class FathomAdapterTest(unittest.TestCase):
     def test_an_absent_or_empty_transcript_is_noted_and_the_meeting_still_exported(self):
         self.start_stub(transcript_statuses={"101": 404}, transcripts={"104": []})
 
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -2885,7 +2946,7 @@ class FathomAdapterTest(unittest.TestCase):
     def test_an_unreadable_transcript_takes_the_export_back(self):
         self.start_stub(transcript_statuses={"104": 500})
 
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertEqual(result.returncode, 3)
         self.assertIn("GET /recordings/104/transcript", result.stderr)
@@ -2901,14 +2962,14 @@ class FathomAdapterTest(unittest.TestCase):
                 self.assertNotIn(marker, result.stdout + result.stderr)
 
     def test_an_excluded_meeting_has_no_transcript_requested(self):
-        self.export_with_side_files()
+        self.export()
 
         self.assertEqual(sorted(self.transcript_ids()), ["101", "104"])
 
     def test_an_unencodable_character_is_replaced_rather_than_failing_the_run(self):
         self.start_stub(transcripts={"101": [transcript_line("Pat Speaker", "before\ud800after")]})
 
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Pat Speaker: before?after", self.meeting_file("101"))
@@ -2918,7 +2979,7 @@ class FathomAdapterTest(unittest.TestCase):
         self.start_stub(held_transcript="104")
         process = subprocess.Popen(
             [sys.executable, str(adapter("fathom_export.py")), StubFathom.WATERMARK,
-             str(self.output), "--sensitive-raw-directory", str(self.raw)],
+             str(self.output)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env=support.environment(KNOWLEDGE_BASE_CONFIG_FILE=str(self.config)))
 
@@ -2933,13 +2994,13 @@ class FathomAdapterTest(unittest.TestCase):
 
     def make_work_tree(self, ignored):
         subprocess.run(["git", "-C", str(self.root), "init", "--quiet"], check=True)
-        (self.root / ".gitignore").write_text("raw/\n" if ignored else "", encoding="utf-8")
+        (self.root / ".gitignore").write_text("inbox/\n" if ignored else "", encoding="utf-8")
 
     @unittest.skipIf(shutil.which("git") is None, "needs git")
     def test_a_directory_git_does_not_ignore_is_refused_before_any_request(self):
         self.make_work_tree(ignored=False)
 
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertEqual(result.returncode, 1)
         self.assertIn(str(self.raw), result.stderr)
@@ -2951,7 +3012,7 @@ class FathomAdapterTest(unittest.TestCase):
     def test_a_directory_git_ignores_is_accepted(self):
         self.make_work_tree(ignored=True)
 
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.raw / "fathom-101.md").exists())
@@ -2959,28 +3020,30 @@ class FathomAdapterTest(unittest.TestCase):
     @unittest.skipIf(shutil.which("git") is None, "needs git")
     def test_a_directory_a_nested_ignore_rule_covers_is_accepted(self):
         self.make_work_tree(ignored=False)
+        self.config.write_text(json.dumps({**json.loads(self.config.read_text()),
+                                           "layout": {"inbox": "intake"}}))
         intake = self.root / "intake"
         intake.mkdir()
         (intake / ".gitignore").write_text("fathom/\n", encoding="utf-8")
 
-        result = self.export("--sensitive-raw-directory", str(intake / "fathom"))
+        result = self.export()
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((intake / "fathom" / "fathom-101.md").exists())
 
-    @unittest.skipIf(shutil.which("git") is None, "needs git")
-    def test_the_work_tree_root_is_refused(self):
-        self.make_work_tree(ignored=True)
+    def test_an_intake_outside_the_knowledge_base_is_refused(self):
+        self.config.write_text(json.dumps({**json.loads(self.config.read_text()),
+                                           "layout": {"inbox": "../elsewhere"}}))
 
-        result = self.export("--sensitive-raw-directory", str(self.root))
+        result = self.export()
 
         self.assertEqual(result.returncode, 1)
-        self.assertIn("must be git-ignored", result.stderr)
+        self.assertIn("outside the knowledge base", result.stderr)
         self.assertEqual(self.stub.queries, [])
 
     @unittest.skipIf(shutil.which("git") is None, "needs git")
     def test_a_directory_git_cannot_judge_is_refused(self):
-        result = self.export_with_side_files(GIT_DIR=str(self.root / "missing-repository"))
+        result = self.export(GIT_DIR=str(self.root / "missing-repository"))
 
         self.assertEqual(result.returncode, 1)
         self.assertIn(str(self.raw), result.stderr)
@@ -2989,30 +3052,41 @@ class FathomAdapterTest(unittest.TestCase):
         self.assertEqual(self.stub.queries, [])
         self.assertFalse(self.raw.exists())
 
+    def test_a_folder_a_previous_run_left_files_in_is_refused_before_any_request(self):
+        self.raw.mkdir(parents=True)
+        (self.raw / "fathom-099.md").write_text("left over", encoding="utf-8")
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(str(self.raw), result.stderr)
+        self.assertIn("previous run's working files", result.stderr)
+        self.assertEqual(self.stub.queries, [])
+        self.assertEqual([path.name for path in self.raw.iterdir()], ["fathom-099.md"])
+
     def test_a_source_listing_no_excluded_domains_refuses_to_run(self):
         self.start_stub(source={"excluded_invitee_domains": None})
 
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("excluded_invitee_domains", result.stderr)
         self.assertEqual(self.stub.queries, [])
 
     def test_a_watermark_past_the_lookback_cap_is_refused_before_any_request(self):
-        result = self.export("--sensitive-raw-directory", str(self.raw),
-                             watermark="2020-01-01T00:00:00Z")
+        result = self.export(watermark="2020-01-01T00:00:00Z")
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("max_lookback_days", result.stderr)
         self.assertEqual(self.stub.queries, [])
 
     def test_the_environment_key_wins_over_the_file(self):
-        self.export_with_side_files(FATHOM_API_KEY="environment-KEY-MARKER")
+        self.export(FATHOM_API_KEY="environment-KEY-MARKER")
 
         self.assertEqual(set(self.stub.api_keys), {"environment-KEY-MARKER"})
 
     def test_the_file_key_is_sent_and_written_nowhere(self):
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertEqual(set(self.stub.api_keys), {self.KEY})
         self.assertNotIn("KEY-MARKER", self.everything_written(result).replace(
@@ -3022,7 +3096,7 @@ class FathomAdapterTest(unittest.TestCase):
     def test_a_key_file_others_can_read_is_refused_without_quoting_it(self):
         self.write_key(self.KEY, mode=0o640)
 
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("group or other", result.stderr)
@@ -3030,7 +3104,7 @@ class FathomAdapterTest(unittest.TestCase):
         self.assertEqual(self.stub.queries, [])
 
     def test_a_malformed_key_is_refused_without_quoting_it(self):
-        result = self.export_with_side_files(FATHOM_API_KEY="secret KEY-MARKER")
+        result = self.export(FATHOM_API_KEY="secret KEY-MARKER")
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("malformed", result.stderr)
@@ -3040,7 +3114,7 @@ class FathomAdapterTest(unittest.TestCase):
     def test_a_missing_key_names_the_variable_and_the_file(self):
         self.key_file.unlink()
 
-        result = self.export_with_side_files()
+        result = self.export()
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("FATHOM_API_KEY", result.stderr)

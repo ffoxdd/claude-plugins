@@ -19,10 +19,12 @@ Nothing sensitive reaches a session merely from running this:
     by id and edit time only. Titles stay out, because a title can be a person's
     name;
   * **page text**, titles and properties included, goes only to side files under
-    `--sensitive-raw-directory`, for the isolated agent that replaces each
-    placeholder with a structural-facts-only summary. Without the flag, pages are
-    listed and nothing of theirs is written anywhere. A run that fails part-way
-    deletes the side files it wrote, since no export would point at them.
+    `<intake>/<source name>/`, for the isolated agent that replaces each
+    placeholder with a structural-facts-only summary. The run is refused before
+    any request unless git ignores that folder and it is absent or empty (see
+    `raw_directory.py`). With `--count-only`, pages are listed and nothing of
+    theirs is written anywhere. A run that fails part-way deletes the side files
+    it wrote, since no export would point at them.
 
 The register lists the locations under the source's `covered_locations`:
 
@@ -83,7 +85,6 @@ which it never prints.
 """
 
 import argparse
-import os
 import re
 import sys
 import time
@@ -96,6 +97,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import configuration
 import notion_credential
 import notion_search
+import raw_directory
 from notion_ledger import Ledger, index_lag
 from notion_api import EXIT_GAPS, EXIT_REFUSED, ExportError, Gaps, Notion, edited_since, \
     format_time, read_watermark
@@ -436,7 +438,7 @@ class SideFiles:
     """The side files this run wrote, so a failed run can take them back."""
 
     def __init__(self, directory):
-        self.directory = Path(directory) if directory else None
+        self.directory = directory
         self.written = []
 
     def write(self, page_id, text):
@@ -462,7 +464,7 @@ def placeholder(page, side_file):
     ]
 
     if side_file:
-        lines.append(f"Raw text: `{side_file}` — local scratch, deleted once the summary is written.")
+        lines.append(f"Raw text: `{side_file}` — working space, deleted once the summary is written.")
 
     return lines + [""]
 
@@ -548,8 +550,8 @@ def main(argv=None):
     parser.add_argument("output", help="path to write the intake file to")
     parser.add_argument("--source", default="notion", help="register entry to read (default: notion)")
     parser.add_argument(
-        "--sensitive-raw-directory",
-        help="write each changed page's text here for the isolated agent",
+        "--count-only", action="store_true",
+        help="list changed pages without writing any of their text",
     )
     parser.add_argument(
         "--walk", action="store_true",
@@ -572,16 +574,17 @@ def main(argv=None):
         ledger = Ledger.from_source(source, arguments.source, since, since - index_lag(source),
                                     "notion_export", lookback=not arguments.walk)
         notion = Notion.from_source(source, notion_credential.authorization(source))
+        directory = None if arguments.count_only else raw_directory.checked(arguments.source)
 
     except (configuration.ConfigurationError, notion_credential.CredentialError) as error:
         print(f"notion_export: {error}", file=sys.stderr)
 
         return EXIT_REFUSED
 
-    if arguments.sensitive_raw_directory:
-        os.makedirs(arguments.sensitive_raw_directory, exist_ok=True)
+    if directory:
+        directory.mkdir(parents=True, exist_ok=True)
 
-    side_files = SideFiles(arguments.sensitive_raw_directory)
+    side_files = SideFiles(directory)
     gaps = Gaps()
 
     if arguments.walk:
@@ -617,8 +620,8 @@ def main(argv=None):
     if not changed:
         print("Nothing to summarize: skip the isolated agent.")
 
-    elif not arguments.sensitive_raw_directory:
-        print("Changed pages were listed only; pass --sensitive-raw-directory to have them "
+    elif arguments.count_only:
+        print("Changed pages were listed only; run without --count-only to have them "
               "summarized.")
 
     if gaps:
