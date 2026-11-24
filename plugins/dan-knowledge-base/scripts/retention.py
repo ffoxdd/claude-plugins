@@ -13,10 +13,14 @@ Without it, nothing happens. The session-start provisioner runs this in every
 knowledge base; it can be run by hand too.
 
 **It refuses to act**, deleting nothing, unless the processed directory is inside
-the intake directory, git-ignored, and reached through no symbolic link. Those
-are what make the directory raw intake rather than notes, and a deletion aimed
-by a typo at the wrong one is not recoverable. It never follows a link: a
-symbolic link under the directory is neither deleted nor descended into.
+the intake directory, git-ignored, and reached through no link. Those are what
+make the directory raw intake rather than notes, and a deletion aimed by a typo
+at the wrong one is not recoverable. Where git cannot judge the directory — no
+git, or no work tree around it — it deletes nothing and says nothing, the way an
+adapter accepts such a place but retention never deletes what it cannot confirm
+is ignored. It never follows a link: a symbolic link, or on Windows a junction
+or any other reparse point, under the directory is neither deleted nor
+descended into.
 
 It prints one line, the count deleted or the refusal, and never a filename,
 since a filename can carry a meeting's title.
@@ -43,6 +47,12 @@ DEFAULT_PROCESSED = "processed"
 
 class Refused(Exception):
     """Why nothing is deleted."""
+
+
+class Unjudged(Exception):
+    """Git cannot say whether the processed directory is ignored, so nothing is
+    deleted, and nothing is said: that is the ordinary state of a knowledge base
+    outside a work tree."""
 
 
 @dataclass(frozen=True)
@@ -77,11 +87,10 @@ def processed_directory(layout, root):
                       f"directory {intake} within the knowledge base")
 
     if linked_component(root, processed) is not None:
-        raise Refused(f"the processed directory {processed} is reached through a symbolic "
-                      "link")
+        raise Refused(f"the processed directory {processed} is reached through a link")
 
-    if processed.is_dir() and not git_ignores(processed):
-        raise Refused(f"the processed directory {processed} is not git-ignored")
+    if processed.is_dir():
+        confirm_ignored(processed)
 
     return processed
 
@@ -93,16 +102,45 @@ def linked_component(root, processed):
         if path == root:
             return None
 
-        if path.is_symlink():
+        if is_link(path):
             return path
 
     return None
 
 
-def git_ignores(directory):
+# Windows marks a junction, and every other kind of link, as a reparse point.
+# Neither `is_symlink` nor a walk's `followlinks` knows a junction, so this is
+# what keeps one from being descended into.
+REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def is_link(path):
+    """Whether the path is a symbolic link or a reparse point; a path that cannot
+    be read counts as one, so it is never descended into or deleted."""
+    try:
+        status = os.lstat(path)
+
+    except FileNotFoundError:
+        return False
+
+    except OSError:
+        return True
+
+    return stat.S_ISLNK(status.st_mode) or \
+        bool(getattr(status, "st_file_attributes", 0) & REPARSE_POINT)
+
+
+def confirm_ignored(directory):
+    """Raise unless git confirms the directory is ignored: Refused when git says it
+    is not, or fails for a reason of its own; Unjudged when there is no git or no
+    work tree around it."""
     ignored = raw_directory.git(directory, "check-ignore", "--quiet", f"{directory}{os.sep}")
 
-    return ignored is not None and ignored.returncode == 0
+    if ignored is None or raw_directory.OUTSIDE_ANY_REPOSITORY.search(ignored.stderr):
+        raise Unjudged()
+
+    if ignored.returncode != 0:
+        raise Refused(f"the processed directory {directory} is not git-ignored")
 
 
 def is_expired(path, cutoff):
@@ -111,34 +149,35 @@ def is_expired(path, cutoff):
     return stat.S_ISREG(status.st_mode) and status.st_mtime < cutoff
 
 
-def delete_expired(processed, days, now):
-    """Delete every regular file older than the cutoff, then every folder left
-    empty, bottom up. The walk does not follow links, and a link is never
-    deleted. A file that cannot be deleted is left for the next run."""
-    cutoff = now - days * SECONDS_PER_DAY
+def delete_expired(folder, cutoff):
+    """Delete every regular file under the folder older than the cutoff, and every
+    folder that leaves empty. A link is never deleted or descended into. A file
+    that cannot be deleted is left for the next run."""
     deleted = 0
 
-    for folder, folders, files in os.walk(processed, topdown=False, followlinks=False):
-        for name in files:
-            path = os.path.join(folder, name)
+    for entry in os.scandir(folder):
+        if is_link(entry.path):
+            continue
 
-            try:
-                if is_expired(path, cutoff):
-                    os.unlink(path)
-                    deleted += 1
+        if entry.is_dir(follow_symlinks=False):
+            deleted += delete_expired(entry.path, cutoff)
+            remove_if_empty(entry.path)
+            continue
 
-            except OSError:
-                continue
+        try:
+            if is_expired(entry.path, cutoff):
+                os.unlink(entry.path)
+                deleted += 1
 
-        for name in folders:
-            remove_if_empty(os.path.join(folder, name))
+        except OSError:
+            continue
 
     return deleted
 
 
 def remove_if_empty(path):
     try:
-        if not os.path.islink(path) and not os.listdir(path):
+        if not is_link(path) and not os.listdir(path):
             os.rmdir(path)
 
     except OSError:
@@ -147,7 +186,7 @@ def remove_if_empty(path):
 
 def enforce(document, root, now=None):
     """The outcome of applying the register's retention, or None when it sets
-    none."""
+    none or git cannot judge where it would delete."""
     layout = document.get("layout") or {}
 
     try:
@@ -158,10 +197,14 @@ def enforce(document, root, now=None):
 
         processed = processed_directory(layout, Path(root).resolve())
 
+    except Unjudged:
+        return None
+
     except (Refused, configuration.ConfigurationError) as refusal:
         return Outcome(f"knowledge-base retention: nothing deleted; {refusal}", None)
 
-    deleted = delete_expired(processed, days, now or time.time()) if processed.is_dir() else 0
+    cutoff = (now or time.time()) - days * SECONDS_PER_DAY
+    deleted = delete_expired(processed, cutoff) if processed.is_dir() else 0
 
     return Outcome(f"knowledge-base retention: {deleted} processed intake file(s) older than "
                    f"{days:g} day(s) deleted", deleted)

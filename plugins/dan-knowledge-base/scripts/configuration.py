@@ -84,6 +84,12 @@ def load(start=None):
     except json.JSONDecodeError as error:
         raise ConfigurationError(f"{path} is not valid JSON: {error}") from error
 
+    if not isinstance(document, dict):
+        raise ConfigurationError(f"{path} is not a JSON object.")
+
+    if not isinstance(document.get("layout", {}), dict):
+        raise ConfigurationError(f'{path} declares a "layout" that is not an object.')
+
     if not isinstance(document.get("sources"), dict):
         raise ConfigurationError(
             f'{path} declares no "sources" object. A config with no sources '

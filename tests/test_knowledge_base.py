@@ -311,9 +311,9 @@ class RetentionTest(unittest.TestCase):
 
         return path
 
-    def enforce(self):
+    def enforce(self, **environment):
         return support.run_script(support.script(PLUGIN, "retention.py"),
-                                  KNOWLEDGE_BASE_CONFIG_FILE=str(self.config))
+                                  KNOWLEDGE_BASE_CONFIG_FILE=str(self.config), **environment)
 
     @unittest.skipIf(shutil.which("git") is None, "needs git")
     def test_deletes_old_files_and_the_folders_they_leave_empty(self):
@@ -383,7 +383,7 @@ class RetentionTest(unittest.TestCase):
 
         result = self.enforce()
 
-        self.assertIn("symbolic link", result.stdout)
+        self.assertIn("reached through a link", result.stdout)
         self.assertTrue(old.exists())
 
     @unittest.skipIf(shutil.which("git") is None, "needs git")
@@ -408,6 +408,73 @@ class RetentionTest(unittest.TestCase):
         self.assertTrue(target.exists())
         self.assertTrue((self.processed / "file-link.md").is_symlink())
         self.assertTrue((self.processed / "folder-link").is_symlink())
+
+    def in_process(self):
+        sys.path.insert(0, str(support.plugin_root(PLUGIN) / "scripts"))
+        import retention
+
+        return retention
+
+    def faking_reparse_point(self, retention, faked):
+        """os.lstat, with the reparse-point attribute Windows gives a junction
+        added for the one path `faked`."""
+        from types import SimpleNamespace
+        from unittest import mock
+
+        real = os.lstat
+
+        def lstat(path, *arguments, **options):
+            status = real(path, *arguments, **options)
+
+            if os.path.normpath(str(path)) != os.path.normpath(str(faked)):
+                return status
+
+            return SimpleNamespace(st_mode=status.st_mode, st_mtime=status.st_mtime,
+                                   st_file_attributes=retention.REPARSE_POINT)
+
+        return mock.patch.object(retention.os, "lstat", lstat)
+
+    def test_a_junction_inside_is_neither_descended_nor_deleted(self):
+        retention = self.in_process()
+        junction = self.processed / "junction"
+        old = junction / "old.md"
+        junction.mkdir()
+        old.write_text("at the junction's target", encoding="utf-8")
+        os.utime(old, (0, 0))
+
+        with self.faking_reparse_point(retention, junction):
+            deleted = retention.delete_expired(str(self.processed), datetime.now().timestamp())
+
+        self.assertEqual(deleted, 0)
+        self.assertTrue(old.exists())
+
+    def test_a_processed_directory_that_is_a_junction_is_refused(self):
+        retention = self.in_process()
+
+        with self.faking_reparse_point(retention, self.processed):
+            with self.assertRaises(retention.Refused):
+                retention.processed_directory(self.layout, self.root)
+
+    def test_outside_any_work_tree_nothing_is_deleted_or_said(self):
+        """git cannot judge the place, which an adapter accepts; retention still
+        deletes nothing it cannot confirm is ignored, and stays quiet about it."""
+        old = self.intake_file("old.md", age=self.OLD)
+
+        result = self.enforce(GIT_CEILING_DIRECTORIES=str(self.root.parent))
+
+        self.assertEqual(result.stdout, "")
+        self.assertTrue(old.exists())
+
+    def test_session_start_reports_a_layout_that_is_not_an_object(self):
+        self.config = write_register(self.root, {"layout": [], "sources": {}})
+
+        result = support.run_script(support.script(PLUGIN, "provision.py"),
+                                    KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+                                    HOME=str(self.root))
+        body = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('"layout" that is not an object', body)
 
     def test_a_retention_that_is_not_a_positive_number_is_refused(self):
         self.write_layout(retention_days="ninety")
