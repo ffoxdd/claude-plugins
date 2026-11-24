@@ -31,7 +31,10 @@ workspace is: a 404 in a source that lists no open location, once the run has
 confirmed its token can fetch every covered location. Sharing reaches everything
 beneath a page, so a covered location this token can see cannot sit above a
 page it cannot, and the 404 hides nothing; the confirmation is asked once a
-run, on the first 404. A covered location the token cannot fetch, or any open
+run, on the first 404. That rests on an assumption about the workspace: a token
+that can fetch a covered location can fetch everything beneath it. A register
+that cannot rely on it lists `open_locations`, which keeps every unresolved
+ancestor unplaceable. A covered location the token cannot fetch, or any open
 location listed, keeps the 404 unplaceable; listing the page the integration is
 shared at then ends the walk before it reaches the ancestor it cannot see.
 

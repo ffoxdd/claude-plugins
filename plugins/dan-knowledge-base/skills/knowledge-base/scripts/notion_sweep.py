@@ -26,8 +26,10 @@ search runs over Notion's REST API, and each result is placed in the page tree
   * every page in the manifest but those the register skips (below) is then
     **read with the page-changes walk** (`notion_page_changes.py`), and its
     changed blocks, and its new comments where the register lists the page for
-    them, are written below the manifest, one section per page. The session reads this one file; it never runs the walk page by
-    page. A database in the manifest is listed only: its edited rows are pages,
+    them, are written below the manifest, one section per page. The file is
+    raw intake like every adapter's output: a batch for a covered gate where one
+    exists, read directly by the session a register requires, and read as any
+    intake otherwise. Nobody runs the walk page by page. A database in the manifest is listed only: its edited rows are pages,
     and arrive as their own results;
   * **stdout** carries the output path, counts and the new watermark, and
     **stderr** carries progress, gaps, a request path and a status only. Neither
