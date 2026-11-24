@@ -29,6 +29,25 @@ which. There is no per-conversation tier to configure, so a newly created
 private channel is handled safely with zero config. A register's
 `dense_conversations` is read and has no effect.
 
+## A conversation can be kept out entirely
+
+Some conversations should not reach even a digest — a legal or HR channel, a
+case-review channel. An excluded conversation is never fetched: no history call,
+nothing written, only a count on stdout. The register excludes by name, by
+banner, or both:
+
+```json
+"excluded_conversations": ["#legal-*", "hr-cases"],
+"private_topic_markers": ["may contain personal data"],
+"marked_conversations": "exclude"
+```
+
+Names are shell-style patterns, matched case-insensitively, a leading `#`
+optional. `marked_conversations` is `"exclude"` or `"digest"` (the default; a
+register's `"scrub"` reads as `"digest"`) and decides what a topic or purpose
+carrying one of `private_topic_markers` does, so a newly bannered channel is
+kept out with no config change.
+
 ## Slack-specific facts
 
 - `oldest` is inclusive: a watermark taken from the newest message reprocesses

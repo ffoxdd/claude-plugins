@@ -78,7 +78,7 @@ merely nice to have produces a note on every session that has it, which is how
 a check earns itself a reputation for crying wolf.
 
 Everything else in an entry is the adapter's own vocabulary — sender lists for
-mail, dense-conversation names for chat, excluded invitee domains for Fathom —
+mail, excluded conversations for chat, excluded invitee domains for Fathom —
 and the adapter documents it.
 
 Notion's locations take one key worth knowing before the first sync. A source
@@ -99,7 +99,9 @@ before it meets a listed one is unplaceable, a gap, until the page the
 integration is shared at is listed.
 
 A value that restricts what may be read at all belongs in the JSON too, where
-the adapter enforces it, rather than only in the prose: the `fathom` adapter's
+the adapter enforces it, rather than only in the prose: the chat adapter's
+`excluded_conversations` and `marked_conversations` keep a conversation from
+being fetched at all, and the `fathom` adapter's
 `excluded_invitee_domains` is how a client contract forbidding AI use of its
 meetings reaches the script, and the adapter refuses a source that leaves the key
 out, so an unrecorded clause stops a run instead of passing through it. The prose

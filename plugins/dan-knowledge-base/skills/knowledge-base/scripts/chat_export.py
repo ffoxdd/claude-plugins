@@ -22,13 +22,27 @@ carry the output path, the raw files by conversation id, counts, the new
 watermark, and gaps named by id: never a message, and never a conversation's
 name, since a direct message is named for the people in it.
 
+**A conversation can be excluded**, and an excluded one is never fetched: no
+history call is made for it, nothing of it is written anywhere, and stdout counts
+it without naming it. The register excludes by name, by topic banner, or both:
+
+    "excluded_conversations": ["#legal-*", "hr-cases"],
+    "private_topic_markers": ["may contain personal data"],
+    "marked_conversations": "exclude"
+
+`excluded_conversations` holds shell-style patterns matched case-insensitively
+against the conversation's name, a leading `#` optional on either side.
+`marked_conversations` decides what happens to a conversation whose topic or
+purpose carries one of `private_topic_markers`: `"exclude"`, or `"digest"`, the
+default, which handles it like any other. `"scrub"` is read as `"digest"`.
+
 The register's `dense_conversations` is read and has no effect: once every
 conversation is digested from its own raw file, naming the record-dense ones
-changes nothing about how they are handled. `private_topic_markers` matter only
-through `marked_conversations`.
+changes nothing about how they are handled.
 """
 
 import argparse
+import fnmatch
 import html
 import json
 import os
@@ -84,6 +98,11 @@ BARE_ACKNOWLEDGEMENTS = {
 
 QUIET_SECTION = "No new messages since the watermark."
 
+# What `marked_conversations` may say, and what each value means. "scrub" names
+# the in-place scrub that digests replaced, and is read as "digest" so a register
+# written for it keeps its meaning.
+MARKED_HANDLING = {"digest": False, "scrub": False, "exclude": True}
+
 
 @dataclass(frozen=True)
 class Conversation:
@@ -93,6 +112,51 @@ class Conversation:
     topic: str
     kind: str = "channel"
     purpose: str = ""
+
+
+@dataclass(frozen=True)
+class Exclusions:
+    """The conversations the register says are never fetched."""
+    patterns: tuple
+    markers: tuple
+    exclude_marked: bool
+
+    @classmethod
+    def from_source(cls, source):
+        """The source's exclusions, refused before any request when malformed."""
+        patterns = string_list(source, "excluded_conversations")
+        markers = string_list(source, "private_topic_markers")
+        marked = source.get("marked_conversations", "digest")
+
+        if marked not in MARKED_HANDLING:
+            raise configuration.ConfigurationError(
+                '"marked_conversations" must be "exclude" or "digest"')
+
+        return cls(tuple(bare_name(pattern) for pattern in patterns),
+                   tuple(marker.lower() for marker in markers), MARKED_HANDLING[marked])
+
+    def excludes(self, conversation):
+        name = bare_name(conversation.name)
+
+        if any(fnmatch.fnmatchcase(name, pattern) for pattern in self.patterns):
+            return True
+
+        banners = f"{conversation.topic}\n{conversation.purpose}".lower()
+
+        return self.exclude_marked and any(marker in banners for marker in self.markers)
+
+
+def bare_name(name):
+    return name.strip().lstrip("#").lower()
+
+
+def string_list(source, key):
+    values = source.get(key) or []
+
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise configuration.ConfigurationError(f'"{key}" must be a list of strings')
+
+    return values
 
 
 class ExportError(Exception):
@@ -483,8 +547,9 @@ def render_conversation(client, conversation, watermark, acknowledgements,
     return Rendered(lines + [f"Raw text: `{raw_path}`", ""], raw_path, highest, notes)
 
 
-def build_export(client, watermark, acknowledgements, raw_text_directory=None):
-    """The index's text, and every conversation's part of the run."""
+def build_export(client, watermark, acknowledgements, exclusions, raw_text_directory=None):
+    """The index's text, every fetched conversation's part of the run, and how many
+    conversations were excluded before any fetch."""
     header = [
         f"# Chat export — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
         "",
@@ -492,13 +557,17 @@ def build_export(client, watermark, acknowledgements, raw_text_directory=None):
         "knowledge-base chat adapter: one raw file per conversation with new messages.",
         "",
     ]
+    conversations = client.memberships()
+    included = [conversation for conversation in conversations
+                if not exclusions.excludes(conversation)]
     rendered = [
         render_conversation(client, conversation, watermark, acknowledgements,
                             raw_text_directory)
-        for conversation in client.memberships()
+        for conversation in included
     ]
+    content = "\n".join(header + [line for part in rendered for line in part.lines])
 
-    return "\n".join(header + [line for part in rendered for line in part.lines]), rendered
+    return content, rendered, len(conversations) - len(included)
 
 
 def main(argv=None):
@@ -514,6 +583,7 @@ def main(argv=None):
 
     try:
         source = configuration.source(arguments.source)
+        exclusions = Exclusions.from_source(source)
         raw_text_directory = None if arguments.count_only else raw_directory.checked(
             arguments.source)
         output = raw_directory.output_checked(arguments.output)
@@ -531,8 +601,9 @@ def main(argv=None):
         raw_text_directory.mkdir(parents=True, exist_ok=True)
 
     try:
-        content, rendered = build_export(
-            Client(source), arguments.watermark, acknowledgements, raw_text_directory)
+        content, rendered, excluded = build_export(
+            Client(source), arguments.watermark, acknowledgements, exclusions,
+            raw_text_directory)
 
     except ExportError as error:
         print(f"chat_export: {error}", file=sys.stderr)
@@ -541,20 +612,22 @@ def main(argv=None):
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(content, encoding="utf-8")
-    report(output, rendered, arguments.watermark)
+    report(output, rendered, excluded, arguments.watermark)
 
     return 0
 
 
-def report(output, rendered, watermark):
+def report(output, rendered, excluded, watermark):
     """Stdout: the index, each raw file by conversation id, counts and the new
-    watermark. Stderr: gaps by id."""
+    watermark. Stderr: gaps by id. An excluded conversation is counted, never
+    named."""
     active = [part for part in rendered if part.active]
     highest = max([float(watermark)] + [part.highest for part in rendered])
     notes = [note for part in rendered for note in part.notes]
 
     print(output)
     print(f"{len(active)} conversation(s) with new messages")
+    print(f"{excluded} conversation(s) excluded")
 
     for part in active:
         if part.raw_path:

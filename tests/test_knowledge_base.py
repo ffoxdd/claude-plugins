@@ -584,8 +584,11 @@ if __name__ == "__main__":
 ADAPTER_SCRIPTS = "skills/knowledge-base/scripts"
 
 STUB_CHAT_CLIENT = '''#!/usr/bin/env python3
-import json, sys
+import json, os, sys
 command = sys.argv[1]
+if os.environ.get("STUB_CALL_LOG"):
+    with open(os.environ["STUB_CALL_LOG"], "a", encoding="utf-8") as log:
+        log.write(" ".join(sys.argv[1:]) + "\\n")
 if command == "memberships":
     print("C001\\tunlocked\\tgeneral")
     print("C002\\tlocked\\tbilling-ops")
@@ -946,11 +949,12 @@ class ChatAdapterTest(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
-    def export(self, *extra):
+    def export(self, *extra, **environment):
         return support.run_script(
             adapter("chat_export.py"),
             arguments=["1000.0", str(self.output), *extra],
             KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+            **environment,
         )
 
     def raw_text(self):
@@ -1101,6 +1105,81 @@ class ChatAdapterTest(unittest.TestCase):
             "private_topic_markers": ["may contain personal data"],
             **settings,
         })), encoding="utf-8")
+
+    def exclude(self, **settings):
+        self.config.write_text(json.dumps(register(chat={
+            "adapter": "chat", "client_command": str(self.client), **settings,
+        })), encoding="utf-8")
+        log = self.root / "calls.log"
+        log.unlink(missing_ok=True)
+        result = self.export(STUB_CALL_LOG=str(log))
+        calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
+        return result, calls
+
+    def test_an_excluded_conversation_is_never_fetched_or_written(self):
+        result, calls = self.exclude(excluded_conversations=["#billing-*"])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(call.startswith("history C002") for call in calls), calls)
+        self.assertTrue(any(call.startswith("history C001") for call in calls), calls)
+        self.assertFalse((self.raw / "C002.md").exists())
+        self.assertNotIn("billing-ops", self.output.read_text(encoding="utf-8"))
+        self.assertNotIn("SENSITIVE-MARKER", self.raw_text())
+
+    def test_the_run_counts_exclusions_without_naming_them(self):
+        result, _ = self.exclude(excluded_conversations=["billing-ops", "engineering"])
+
+        self.assertIn("2 conversation(s) excluded", result.stdout)
+        self.assertNotIn("billing-ops", result.stdout + result.stderr)
+        self.assertNotIn("engineering", result.stdout + result.stderr)
+
+    def test_patterns_are_globs_case_insensitive_with_an_optional_hash(self):
+        for pattern, excluded in (("ENGINEER*", "C003"), ("#general", "C001"),
+                                  ("case-?eview", "C004"), ("gen", None)):
+            with self.subTest(pattern=pattern):
+                shutil.rmtree(self.raw, ignore_errors=True)
+                result, calls = self.exclude(excluded_conversations=[pattern])
+                fetched = {call.split()[1] for call in calls if call.startswith("history")}
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual({"C001", "C002", "C003", "C004"} - fetched,
+                                 {excluded} if excluded else set())
+
+    def test_a_marked_conversation_is_excluded_when_the_register_says_so(self):
+        result, calls = self.exclude(private_topic_markers=["this channel may contain"],
+                                     marked_conversations="exclude")
+
+        self.assertFalse(any(call.startswith("history C004") for call in calls), calls)
+        self.assertIn("1 conversation(s) excluded", result.stdout)
+
+    def test_a_marked_conversation_is_digested_by_default(self):
+        for settings in ({}, {"marked_conversations": "digest"},
+                         {"marked_conversations": "scrub"}):
+            with self.subTest(settings=settings):
+                shutil.rmtree(self.raw, ignore_errors=True)
+                result, calls = self.exclude(private_topic_markers=["this channel may contain"],
+                                             **settings)
+
+                self.assertTrue(any(call.startswith("history C004") for call in calls), calls)
+                self.assertIn("0 conversation(s) excluded", result.stdout)
+
+    def test_a_purpose_banner_excludes_too(self):
+        self.client = support.stub_command(self.root / "stub-direct", STUB_CHAT_DIRECT)
+
+        result, _ = self.exclude(private_topic_markers=["may contain personal data"],
+                                 marked_conversations="exclude")
+
+        self.assertIn("1 conversation(s) excluded", result.stdout)
+        self.assertFalse((self.raw / "C013.md").exists())
+        self.assertTrue((self.raw / "C010.md").exists())
+
+    def test_an_unknown_marked_handling_is_refused_before_any_fetch(self):
+        result, calls = self.exclude(marked_conversations="hide")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("marked_conversations", result.stderr)
+        self.assertEqual(calls, [])
 
     def test_streams_name_a_conversation_by_id_never_by_its_name(self):
         """A direct message is named for its people. Each conversation fills the

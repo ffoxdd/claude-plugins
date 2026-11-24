@@ -47,7 +47,9 @@
       "adapter": "chat",
       "feeds": ["notes/"],
       "watermark": {"format": "epoch-seconds", "boundary": "inclusive"},
+      "excluded_conversations": ["#legal-*"],
       "private_topic_markers": ["may contain personal data"],
+      "marked_conversations": "exclude",
       "history_limit": 1000,
       "replies_limit": 200
     },
