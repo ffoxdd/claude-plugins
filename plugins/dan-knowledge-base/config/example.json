@@ -2,6 +2,7 @@
   "layout": {
     "inbox": "inbox",
     "processed": "inbox/processed",
+    "retention_days": 90,
     "notes": "notes",
     "watermarks": "notes/.sync-state"
   },

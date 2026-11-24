@@ -277,6 +277,173 @@ class ProvisioningSilenceTest(unittest.TestCase):
             self.assertEqual(self.provision(path, home=directory).returncode, 0)
 
 
+class RetentionTest(unittest.TestCase):
+    """The processed-intake retention: what it deletes, what it never touches, and
+    the conditions under which it deletes nothing at all."""
+
+    OLD = 40 * 24 * 60 * 60
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name).resolve()
+        self.processed = self.root / "inbox" / "processed"
+        self.processed.mkdir(parents=True)
+        self.layout = {"inbox": "inbox", "processed": "inbox/processed", "retention_days": 30}
+        self.write_layout()
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def write_layout(self, **changes):
+        self.config = write_register(self.root, {"layout": {**self.layout, **changes},
+                                                 "sources": {}})
+
+    def work_tree(self, ignored="inbox/\n"):
+        subprocess.run(["git", "-C", str(self.root), "init", "--quiet"], check=True)
+        (self.root / ".gitignore").write_text(ignored, encoding="utf-8")
+
+    def intake_file(self, relative, age=0):
+        path = self.processed / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("intake", encoding="utf-8")
+        moment = datetime.now().timestamp() - age
+        os.utime(path, (moment, moment))
+
+        return path
+
+    def enforce(self):
+        return support.run_script(support.script(PLUGIN, "retention.py"),
+                                  KNOWLEDGE_BASE_CONFIG_FILE=str(self.config))
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_deletes_old_files_and_the_folders_they_leave_empty(self):
+        self.work_tree()
+        old = self.intake_file("2026/OLD-NAME-MARKER.md", age=self.OLD)
+        recent = self.intake_file("RECENT-NAME-MARKER.md")
+
+        result = self.enforce()
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout.splitlines(), [
+            "knowledge-base retention: 1 processed intake file(s) older than 30 day(s) deleted"])
+        self.assertFalse(old.exists())
+        self.assertFalse(old.parent.exists())
+        self.assertTrue(recent.exists())
+        self.assertTrue(self.processed.is_dir())
+
+    def test_without_the_key_does_nothing(self):
+        self.layout.pop("retention_days")
+        self.write_layout()
+        old = self.intake_file("old.md", age=self.OLD)
+
+        result = self.enforce()
+
+        self.assertEqual(result.stdout, "")
+        self.assertTrue(old.exists())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_a_processed_directory_git_does_not_ignore_is_refused(self):
+        self.work_tree(ignored="")
+        old = self.intake_file("old.md", age=self.OLD)
+
+        result = self.enforce()
+
+        self.assertIn("nothing deleted", result.stdout)
+        self.assertIn("not git-ignored", result.stdout)
+        self.assertTrue(old.exists())
+
+    def test_a_processed_directory_outside_the_intake_is_refused(self):
+        self.write_layout(processed="notes")
+        notes = self.root / "notes"
+        notes.mkdir()
+        old = notes / "old.md"
+        old.write_text("a note", encoding="utf-8")
+        os.utime(old, (0, 0))
+
+        result = self.enforce()
+
+        self.assertIn("not inside the intake directory", result.stdout)
+        self.assertTrue(old.exists())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_a_processed_directory_reached_through_a_link_is_refused(self):
+        self.work_tree()
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        old = elsewhere / "old.md"
+        old.write_text("kept", encoding="utf-8")
+        os.utime(old, (0, 0))
+        shutil.rmtree(self.processed)
+
+        try:
+            self.processed.symlink_to(elsewhere, target_is_directory=True)
+
+        except OSError:
+            self.skipTest("this platform cannot create a symbolic link here")
+
+        result = self.enforce()
+
+        self.assertIn("symbolic link", result.stdout)
+        self.assertTrue(old.exists())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_a_link_inside_is_neither_followed_nor_deleted(self):
+        self.work_tree()
+        outside = self.root / "outside"
+        outside.mkdir()
+        target = outside / "old.md"
+        target.write_text("kept", encoding="utf-8")
+        os.utime(target, (0, 0))
+
+        try:
+            (self.processed / "file-link.md").symlink_to(target)
+            (self.processed / "folder-link").symlink_to(outside, target_is_directory=True)
+
+        except OSError:
+            self.skipTest("this platform cannot create a symbolic link here")
+
+        result = self.enforce()
+
+        self.assertIn(" 0 processed intake file(s)", result.stdout)
+        self.assertTrue(target.exists())
+        self.assertTrue((self.processed / "file-link.md").is_symlink())
+        self.assertTrue((self.processed / "folder-link").is_symlink())
+
+    def test_a_retention_that_is_not_a_positive_number_is_refused(self):
+        self.write_layout(retention_days="ninety")
+        old = self.intake_file("old.md", age=self.OLD)
+
+        result = self.enforce()
+
+        self.assertIn("retention_days", result.stdout)
+        self.assertTrue(old.exists())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_session_start_reports_a_deletion_in_one_line(self):
+        self.work_tree()
+        self.intake_file("old.md", age=self.OLD)
+
+        result = support.run_script(support.script(PLUGIN, "provision.py"),
+                                    KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+                                    HOME=str(self.root))
+        body = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+        self.assertIn("1 processed intake file(s) older than 30 day(s) deleted", body)
+        self.assertNotIn("old.md", body)
+        self.assertEqual(list(self.processed.iterdir()), [])
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_session_start_says_nothing_when_nothing_was_deleted(self):
+        self.work_tree()
+        self.intake_file("recent.md")
+
+        result = support.run_script(support.script(PLUGIN, "provision.py"),
+                                    KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+                                    HOME=str(self.root))
+
+        self.assertEqual(result.stdout.strip(), "")
+
+
 class LauncherTest(unittest.TestCase):
     """The command this plugin puts on PATH.
 
