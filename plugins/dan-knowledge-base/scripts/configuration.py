@@ -21,6 +21,16 @@ it, so nothing about hiding it costs a newcomer the ability to find it.
         Read this file instead of searching. For the test suite, and for a
         script run from outside the repository it operates on.
 
+**A register may require a session variable**, for a knowledge base that must
+sync only inside one kind of session — one whose launcher sets an environment
+variable the plugin knows nothing else about:
+
+    "session": {"required_variable": "<NAME>"}
+
+`source` is the call every adapter makes before anything else, so it is where
+that requirement is enforced: when the variable is unset or empty, it raises
+before any request or write. Without the key, nothing changes.
+
 A malformed or missing config raises rather than returning empty. The
 dan-work-routing loader deliberately does the opposite, because there a missing file
 must never stop a session from starting or widen what a guard permits. Here the
@@ -89,10 +99,44 @@ def sources(start=None):
     return document["sources"]
 
 
+def required_session_variable(document):
+    """The environment variable the register requires a session to set, or None."""
+    session = document.get("session")
+
+    if session is None:
+        return None
+
+    variable = session.get("required_variable") if isinstance(session, dict) else None
+
+    if not isinstance(variable, str) or not variable:
+        raise ConfigurationError('"session" must name a "required_variable"')
+
+    return variable
+
+
+def session_refusal(document, environ=None):
+    """Why this session may not sync this knowledge base, or None when it may."""
+    variable = required_session_variable(document)
+
+    if variable is None or (environ if environ is not None else os.environ).get(variable):
+        return None
+
+    return (f"this knowledge base syncs only in a session that sets {variable}, and it is "
+            "unset here; nothing was fetched")
+
+
 def source(name, start=None):
     """One source's entry. Raises rather than defaulting — a sweep run against a
-    source the register doesn't describe is a mistake, not a case to handle."""
-    found = sources(start)
+    source the register doesn't describe is a mistake, not a case to handle.
+    Raises too, before anything is fetched, outside the session the register
+    requires."""
+    document, _ = load(start)
+    refusal = session_refusal(document)
+
+    if refusal:
+        raise ConfigurationError(refusal)
+
+    found = document["sources"]
 
     if name not in found:
         known = ", ".join(sorted(found)) or "none"

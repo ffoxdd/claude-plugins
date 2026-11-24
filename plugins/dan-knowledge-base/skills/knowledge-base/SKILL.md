@@ -145,6 +145,15 @@ notes, advances the watermarks, commits, and leaves the push.
    confirmation prompt on every sync costs more than the mistakes it prevents.
    Pushing is what makes a mistake expensive to undo, so that stays a request.
 
+## Notes name no individual whose case they record
+
+A note records what the organization knows, not about whom: aggregates, counts,
+mechanics, and people in their business roles. No note carries the name of, an
+identifier for, or the particulars of one person's case — dates finer than the
+year, an age, family make-up, life events — for anyone whose own situation is
+the subject. A described case is identifying without a name, so write the
+pattern ("two members whose dependents were missing"), never the case.
+
 ## Provenance is per-fact, and not optional
 
 When a fact enters a note, record where it came from and when — the person and
@@ -182,6 +191,15 @@ between per-person rows, a support channel where the useful pattern is
 surrounded by the cases that revealed it. Reading one directly pulls those
 records into the session for content that was only ever going to be committed
 as aggregates.
+
+**A register may require a session variable** (`session.required_variable`).
+Then the whole sync — adapters, reading raw intake, distilling, committing —
+happens in the session that sets it, which reads raw intake directly because it
+is itself the covered side; the gate procedure below does not apply. In any
+other session the adapters refuse and session start says so: stop and say that
+the sync must run there, rather than look for another route. What such a session
+writes into notes is what leaves the covered side, so the rule above on
+individuals is the boundary.
 
 **A covered gate exists where your organization's covered-endpoint plugin is
 installed**, and its own instructions say so in the session. Without one, the

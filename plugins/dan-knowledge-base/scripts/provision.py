@@ -14,7 +14,9 @@ adapters, needs nothing installed, and is told nothing. Verifying a stated
 requirement is the job; inventing one is how a plugin becomes something people
 disable.
 
-It also applies the register's `layout.retention_days`, when it sets one, by
+When the register requires a session variable this session lacks, it says in
+one line that a sync cannot run here. It also applies the register's
+`layout.retention_days`, when it sets one, by
 running `retention.py`, and reports a deletion or a refusal in one line. A run
 that deleted nothing says nothing.
 
@@ -88,6 +90,11 @@ def main():
     adapters = declared_adapters(document)
     cleanups = clear_superseded_links() if adapters else []
     cleanups.extend(retention_report(document, root))
+    refusal = session_note(document)
+
+    if refusal:
+        report(cleanups + [refusal])
+        return
 
     # Every check below is driven by what the register declares, so a knowledge
     # base declaring nothing produces no notes and says nothing. There is no
@@ -104,6 +111,24 @@ def main():
 
     if cleanups or notes:
         report(cleanups + notes)
+
+
+def session_note(document):
+    """One line when the register requires a session variable this session lacks.
+    The prerequisite checks are left out then: no sync runs here either way."""
+    try:
+        refused = configuration.session_refusal(document)
+
+    except configuration.ConfigurationError as error:
+        return str(error)
+
+    if not refused:
+        return None
+
+    variable = configuration.required_session_variable(document)
+
+    return (f"a sync cannot run in this session: this knowledge base syncs only in a "
+            f"session that sets {variable}; start it there.")
 
 
 def retention_report(document, root):

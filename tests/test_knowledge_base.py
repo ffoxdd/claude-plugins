@@ -432,6 +432,36 @@ class RetentionTest(unittest.TestCase):
         self.assertNotIn("old.md", body)
         self.assertEqual(list(self.processed.iterdir()), [])
 
+    def provision_requiring_session(self, **environment):
+        self.config = write_register(self.root, {
+            "layout": self.layout, "sources": {},
+            "session": {"required_variable": SESSION_VARIABLE}})
+
+        return support.run_script(support.script(PLUGIN, "provision.py"),
+                                  KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+                                  HOME=str(self.root), **environment)
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_session_start_says_a_sync_cannot_run_outside_the_required_session(self):
+        self.work_tree()
+        old = self.intake_file("old.md", age=self.OLD)
+
+        result = self.provision_requiring_session()
+        body = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+        self.assertIn("a sync cannot run in this session", body)
+        self.assertIn(SESSION_VARIABLE, body)
+        self.assertIn("1 processed intake file(s)", body)
+        self.assertFalse(old.exists())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_session_start_says_nothing_inside_the_required_session(self):
+        self.work_tree()
+
+        result = self.provision_requiring_session(**{SESSION_VARIABLE: "1"})
+
+        self.assertEqual(result.stdout.strip(), "")
+
     @unittest.skipIf(shutil.which("git") is None, "needs git")
     def test_session_start_says_nothing_when_nothing_was_deleted(self):
         self.work_tree()
@@ -582,6 +612,9 @@ if __name__ == "__main__":
 
 
 ADAPTER_SCRIPTS = "skills/knowledge-base/scripts"
+
+# A variable no developer's environment sets, so its absence is the default.
+SESSION_VARIABLE = "KNOWLEDGE_BASE_TEST_COVERED_SESSION"
 
 STUB_CHAT_CLIENT = '''#!/usr/bin/env python3
 import json, os, sys
@@ -1180,6 +1213,35 @@ class ChatAdapterTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("marked_conversations", result.stderr)
         self.assertEqual(calls, [])
+
+    def require_session(self):
+        self.config.write_text(json.dumps({**register(chat={
+            "adapter": "chat", "client_command": str(self.client)}),
+            "session": {"required_variable": SESSION_VARIABLE}}), encoding="utf-8")
+
+    def test_outside_the_required_session_nothing_is_fetched(self):
+        self.require_session()
+        log = self.root / "calls.log"
+
+        for value in (None, ""):
+            with self.subTest(value=value):
+                result = self.export(STUB_CALL_LOG=str(log), **{SESSION_VARIABLE: value})
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"syncs only in a session that sets {SESSION_VARIABLE}",
+                              result.stderr)
+                self.assertIn("nothing was fetched", result.stderr)
+                self.assertFalse(log.exists())
+                self.assertFalse(self.output.exists())
+                self.assertFalse(self.raw.exists())
+
+    def test_inside_the_required_session_the_run_goes_ahead(self):
+        self.require_session()
+
+        result = self.export(**{SESSION_VARIABLE: "1"})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.raw / "C001.md").exists())
 
     def test_streams_name_a_conversation_by_id_never_by_its_name(self):
         """A direct message is named for its people. Each conversation fills the
@@ -2317,6 +2379,19 @@ class NotionSweepTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("outside the intake directory", result.stderr)
         self.assertEqual(self.stub.search_requests, 0)
+        self.assertFalse(self.output.exists())
+
+    def test_outside_the_required_session_no_request_is_made(self):
+        document = json.loads(self.config.read_text())
+        self.config.write_text(json.dumps({**document,
+                                           "session": {"required_variable": SESSION_VARIABLE}}))
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(SESSION_VARIABLE, result.stderr)
+        self.assertEqual(self.stub.search_requests, 0)
+        self.assertEqual(self.stub.authorizations, [])
         self.assertFalse(self.output.exists())
 
     def test_a_source_naming_no_exclusions_refuses_to_run(self):

@@ -1,4 +1,6 @@
 {
+  "session_example_not_enabled": {"required_variable": "<set by your covered session's launcher; rename this key to \"session\" to require it>"},
+
   "layout": {
     "inbox": "inbox",
     "processed": "inbox/processed",

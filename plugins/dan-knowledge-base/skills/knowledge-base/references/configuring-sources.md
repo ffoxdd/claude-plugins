@@ -48,6 +48,20 @@ A source that cannot be listed by recency carries `"reactive": true` and no
 watermark, so an empty entry reads as "followed by reference" rather than as a
 watermark that has looked stale for months.
 
+## A register can require a session
+
+A knowledge base that may only sync inside one kind of session — one whose
+launcher sets an environment variable — says so at the top level of the
+register:
+
+```json
+"session": {"required_variable": "<the variable that session's launcher sets>"}
+```
+
+Every adapter then refuses, before any request or write, in a session where the
+variable is unset or empty, and session start says in one line that a sync
+cannot run there. Without the key, nothing changes.
+
 ## What a source needs to be reachable at all
 
 A source with `"adapter": null` is still reached through *something* — an MCP
