@@ -117,7 +117,6 @@ import argparse
 import http.client
 import json
 import re
-import signal
 import sys
 import time
 import urllib.error
@@ -649,8 +648,11 @@ class MeetingFiles:
         return path
 
     def remove_all(self):
-        for path in self.written:
-            path.unlink(missing_ok=True)
+        """The count of files that could not be removed."""
+        if not self.directory:
+            return 0
+
+        return raw_directory.take_back(self.written, self.directory)
 
 
 # ---------------------------------------------------------------------------
@@ -796,12 +798,12 @@ def main(argv=None):
         return EXIT_REFUSED
 
     if directory:
-        directory.mkdir(parents=True, exist_ok=True)
+        raw_directory.begin(directory)
 
     meeting_files = MeetingFiles(directory, transcripts)
     gaps = Gaps()
     sorting = Sorting()
-    signal.signal(signal.SIGTERM, terminate)
+    raw_directory.stop_on_signals()
     completed = False
 
     # Past this point a failure is reported by type alone. An exception's message
@@ -815,20 +817,23 @@ def main(argv=None):
 
     except TranscriptGap as error:
         gaps.add(f"a transcript could not be read: {error}")
-        print("No export written: a transcript could not be read, and the meeting files this "
-              "run wrote were removed.")
+        print("No export written: a transcript could not be read.")
 
         return report_gaps(gaps)
 
     except Exception as error:  # noqa: BLE001 — the point is that nothing escapes unreduced
-        print(f"fathom_export: failed part-way ({type(error).__name__}); meeting files "
-              "removed, no export written", file=sys.stderr)
+        print(f"fathom_export: failed part-way ({type(error).__name__}); no export written",
+              file=sys.stderr)
 
         return EXIT_REFUSED
 
     finally:
-        if not completed:
-            meeting_files.remove_all()
+        if not completed and directory:
+            print(f"fathom_export: {raw_directory.taken_back_line(meeting_files.remove_all())}",
+                  file=sys.stderr)
+
+    if directory:
+        raw_directory.finish(directory)
 
     return report(arguments, sorting, transcripts, gaps, ledger, clock, lookback_hours)
 
@@ -844,12 +849,6 @@ def write_export(output, fathom, sorting, excluded, ledger, gaps, floor, lookbac
     content = build_export(sorting, floor, lookback_hours, meeting_files)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(content, encoding="utf-8")
-
-
-def terminate(signal_number, frame):
-    """A termination, such as a tool's time limit, unwinds like an interruption, so
-    the cleanup runs."""
-    raise SystemExit(128 + signal_number)
 
 
 def utf8_streams():

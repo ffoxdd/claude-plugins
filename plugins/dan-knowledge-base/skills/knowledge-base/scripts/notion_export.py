@@ -480,8 +480,11 @@ class SideFiles:
         return path
 
     def remove_all(self):
-        for path in self.written:
-            path.unlink(missing_ok=True)
+        """The count of files that could not be removed."""
+        if not self.directory:
+            return 0
+
+        return raw_directory.take_back(self.written, self.directory)
 
 
 def placeholder(page, side_file):
@@ -613,10 +616,12 @@ def main(argv=None):
         return EXIT_REFUSED
 
     if directory:
-        directory.mkdir(parents=True, exist_ok=True)
+        raw_directory.begin(directory)
 
     side_files = SideFiles(directory)
     gaps = Gaps()
+    raw_directory.stop_on_signals()
+    completed = False
 
     search = SearchDiscovery(notion, locations, ledger.floor, gaps, opened)
     sections = locations + ([UNLISTED] if opened is not None else [])
@@ -636,13 +641,21 @@ def main(argv=None):
                                                   ledger)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(content, encoding="utf-8")
+        completed = True
 
     except Exception as error:  # noqa: BLE001 — the point is that nothing escapes unreduced
-        side_files.remove_all()
-        print(f"notion_export: failed part-way ({type(error).__name__}); side files removed, "
-              "no export written", file=sys.stderr)
+        print(f"notion_export: failed part-way ({type(error).__name__}); no export written",
+              file=sys.stderr)
 
         return EXIT_REFUSED
+
+    finally:
+        if not completed and directory:
+            print(f"notion_export: {raw_directory.taken_back_line(side_files.remove_all())}",
+                  file=sys.stderr)
+
+    if directory:
+        raw_directory.finish(directory)
 
     print(output)
     changed = len(exported)

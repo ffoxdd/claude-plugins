@@ -456,9 +456,8 @@ class RawFiles:
         return path
 
     def remove_all(self):
-        for path in self.written:
-            if os.path.exists(path):
-                os.unlink(path)
+        """The count of files that could not be removed."""
+        return raw_directory.take_back(self.written, self.directory)
 
 
 def render_message_window(client, identifier, posted, revived, watermark, notes,
@@ -615,13 +614,15 @@ def main(argv=None):
     }
 
     if raw_text_directory:
-        raw_text_directory.mkdir(parents=True, exist_ok=True)
+        raw_directory.begin(raw_text_directory)
 
     raw_files = RawFiles(raw_text_directory) if raw_text_directory else None
+    raw_directory.stop_on_signals()
     completed = False
 
-    # Any exit before the index is written takes back the raw files, since no
-    # index would name them and the next run would refuse the folder they fill.
+    # Any exit before the index is written, a stop by signal included, takes back
+    # the raw files, since no index would name them and the next run would refuse
+    # the folder they fill.
     try:
         content, rendered, excluded = build_export(
             Client(source), arguments.watermark, acknowledgements, exclusions, raw_files)
@@ -630,14 +631,17 @@ def main(argv=None):
         completed = True
 
     except ExportError as error:
-        print(f"chat_export: {error}; the raw files this run wrote were removed",
-              file=sys.stderr)
+        print(f"chat_export: {error}", file=sys.stderr)
 
         return 1
 
     finally:
         if raw_files and not completed:
-            raw_files.remove_all()
+            print(f"chat_export: {raw_directory.taken_back_line(raw_files.remove_all())}",
+                  file=sys.stderr)
+
+    if raw_text_directory:
+        raw_directory.finish(raw_text_directory)
 
     report(output, rendered, excluded, arguments.watermark)
 

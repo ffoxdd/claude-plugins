@@ -24,18 +24,28 @@ either refuses the run:
     outside any work tree, or on a machine without git, is accepted; one git
     fails to judge for any other reason is refused.
   * **The folder must be absent or empty.** Files already there are a previous
-    run's, not yet digested or not yet moved to processed, and a second run's
-    files beside them would be handled as one run's.
+    run's, and a second run's files beside them would be handled as one run's.
+    The refusal says which kind they are. A run marks its folder incomplete when
+    it starts (`begin`) and unmarks it when it finishes (`finish`), so files
+    beside the marker are an interrupted run's partial batch, to delete, and
+    files without it are a finished run's, to digest or move to processed.
+
+A run that fails, or is stopped by SIGTERM or SIGHUP (`stop_on_signals` turns
+both into an ordinary exit so the cleanup runs), takes back what it wrote
+(`take_back`). Only a kill no process can catch leaves the marker behind.
 """
 
 import os
 import re
+import signal
 import subprocess
 from pathlib import Path
 
 import configuration
 
 DEFAULT_INTAKE = "inbox"
+
+INCOMPLETE_MARKER = ".incomplete"
 
 
 def intake_setting(document):
@@ -96,11 +106,64 @@ def occupied_refusal(directory):
     if not directory.is_dir():
         return f"the raw-text folder {directory} is a file, not a folder"
 
+    if (directory / INCOMPLETE_MARKER).exists():
+        return (f"the raw-text folder {directory} holds an interrupted run's partial files, "
+                "which are not a batch to digest: delete the folder and everything in it, "
+                "then run again")
+
     if any(directory.iterdir()):
-        return (f"the raw-text folder {directory} is not empty: a previous run's working files "
-                "are still there. Finish that run's digests, or move them to processed")
+        return (f"the raw-text folder {directory} is not empty: a finished run's files are "
+                "still there. Finish that run's digests, or move them to processed")
 
     return None
+
+
+def begin(directory):
+    """Create the run's raw-text folder, marked incomplete until `finish`."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / INCOMPLETE_MARKER).write_text("", encoding="utf-8")
+
+
+def finish(directory):
+    (directory / INCOMPLETE_MARKER).unlink(missing_ok=True)
+
+
+def take_back(paths, directory):
+    """Remove each file a failed run wrote, carrying on past one that cannot be
+    removed, and return how many are left. With none left the folder is empty
+    again, marker included, and the next run may use it."""
+    left = 0
+
+    for path in paths:
+        try:
+            Path(path).unlink(missing_ok=True)
+
+        except OSError:
+            left += 1
+
+    if not left:
+        finish(directory)
+
+    return left
+
+
+def stop_on_signals():
+    """Make SIGTERM, and SIGHUP where the platform has it, end the run the way an
+    error does, so a stopped background task still takes back its files."""
+    for name in ("SIGTERM", "SIGHUP"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), terminate)
+
+
+def terminate(signal_number, frame):
+    raise SystemExit(128 + signal_number)
+
+
+def taken_back_line(left):
+    if left:
+        return f"{left} file(s) this run wrote could not be removed; delete the folder by hand"
+
+    return "the files this run wrote were removed"
 
 
 def existing_ancestor(path):

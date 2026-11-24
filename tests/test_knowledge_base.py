@@ -691,6 +691,10 @@ if os.environ.get("STUB_CALL_LOG"):
         log.write(" ".join(sys.argv[1:]) + "\\n")
 if command == "history" and sys.argv[2] == os.environ.get("STUB_FAIL_HISTORY"):
     sys.exit("slack api error: internal_error")
+if command == "history" and sys.argv[2] == os.environ.get("STUB_HOLD_HISTORY"):
+    open(os.environ["STUB_HOLDING"], "w").close()
+    import time
+    time.sleep(60)
 if command == "memberships":
     print("C001\\tunlocked\\tgeneral")
     print("C002\\tlocked\\tbilling-ops")
@@ -1195,7 +1199,7 @@ class ChatAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn(str(self.raw), result.stderr)
-        self.assertIn("previous run's working files", result.stderr)
+        self.assertIn("a finished run's files", result.stderr)
         self.assertFalse(self.output.exists())
 
     def use_client(self, source, **settings):
@@ -1309,11 +1313,84 @@ class ChatAdapterTest(unittest.TestCase):
         result = self.export(STUB_CALL_LOG=str(log), STUB_FAIL_HISTORY="C003")
 
         self.assertEqual(result.returncode, 1)
-        self.assertIn("raw files this run wrote were removed", result.stderr)
+        self.assertIn("the files this run wrote were removed", result.stderr)
         self.assertIn("history C001", log.read_text(encoding="utf-8"))
         self.assertEqual(list(self.raw.glob("*")), [])
         self.assertFalse(self.output.exists())
         self.assertEqual(self.export().returncode, 0)
+
+    @unittest.skipIf(os.name == "nt", "Windows cannot deliver these signals to a process")
+    def test_a_run_stopped_by_a_signal_takes_back_its_raw_files(self):
+        for name in ("SIGTERM", "SIGHUP"):
+            with self.subTest(signal=name):
+                holding = self.root / f"holding-{name}"
+                process = subprocess.Popen(
+                    [sys.executable, str(adapter("chat_export.py")), "1000.0", str(self.output)],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    env=support.environment(KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+                                            STUB_HOLD_HISTORY="C003",
+                                            STUB_HOLDING=str(holding)))
+                deadline = datetime.now() + timedelta(seconds=60)
+
+                while not holding.exists() and datetime.now() < deadline:
+                    threading.Event().wait(0.05)
+
+                self.assertTrue((self.raw / "C001.md").exists())
+                process.send_signal(getattr(signal, name))
+                _, stderr = process.communicate(timeout=60)
+
+                self.assertEqual(process.returncode, 128 + getattr(signal, name))
+                self.assertIn("the files this run wrote were removed", stderr)
+                self.assertEqual(list(self.raw.iterdir()), [])
+                self.assertFalse(self.output.exists())
+
+    def test_an_interrupted_runs_leftovers_are_named_as_such(self):
+        """A marker the run removes only on finishing tells a partial batch from a
+        finished run's files."""
+        self.raw.mkdir(parents=True)
+        (self.raw / ".incomplete").write_text("", encoding="utf-8")
+        (self.raw / "C001.md").write_text("partial", encoding="utf-8")
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("an interrupted run's partial files", result.stderr)
+        self.assertIn("not a batch to digest", result.stderr)
+
+    def test_a_finished_run_leaves_no_marker(self):
+        self.export()
+
+        self.assertFalse((self.raw / ".incomplete").exists())
+
+    def test_a_file_that_cannot_be_removed_is_counted_and_the_rest_are_removed(self):
+        from unittest import mock
+
+        sys.path.insert(0, str(support.plugin_root(PLUGIN) / ADAPTER_SCRIPTS))
+        sys.path.insert(0, str(support.plugin_root(PLUGIN) / "scripts"))
+        import raw_directory
+
+        raw_directory.begin(self.raw)
+        stuck, removable = self.raw / "stuck.md", self.raw / "removable.md"
+
+        for path in (stuck, removable):
+            path.write_text("raw", encoding="utf-8")
+
+        real_unlink = Path.unlink
+
+        def unlink(path, *arguments, **options):
+            if path == stuck:
+                raise PermissionError("held open")
+
+            return real_unlink(path, *arguments, **options)
+
+        with mock.patch.object(Path, "unlink", unlink):
+            left = raw_directory.take_back([stuck, removable], self.raw)
+
+        self.assertEqual(left, 1)
+        self.assertFalse(removable.exists())
+        self.assertTrue((self.raw / ".incomplete").exists())
+        self.assertIn("1 file(s) this run wrote could not be removed",
+                      raw_directory.taken_back_line(left))
 
     def test_an_unknown_marked_handling_is_refused_before_any_fetch(self):
         result, calls = self.exclude(marked_conversations="hide")
@@ -1887,7 +1964,7 @@ class NotionAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn(str(self.raw), result.stderr)
-        self.assertIn("previous run's working files", result.stderr)
+        self.assertIn("a finished run's files", result.stderr)
         self.assertEqual(self.stub.authorizations, [])
         self.assertFalse(self.output.exists())
 
@@ -3839,7 +3916,7 @@ class FathomAdapterTest(unittest.TestCase):
         process.communicate(timeout=60)
 
         self.assertEqual(process.returncode, 128 + signal.SIGTERM)
-        self.assertEqual(list(self.raw.glob("*.md")), [])
+        self.assertEqual(list(self.raw.iterdir()), [])
         self.assertFalse(self.output.exists())
 
     def make_work_tree(self, ignored):
@@ -3932,7 +4009,7 @@ class FathomAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn(str(self.raw), result.stderr)
-        self.assertIn("previous run's working files", result.stderr)
+        self.assertIn("a finished run's files", result.stderr)
         self.assertEqual(self.stub.queries, [])
         self.assertEqual([path.name for path in self.raw.iterdir()], ["fathom-099.md"])
 
