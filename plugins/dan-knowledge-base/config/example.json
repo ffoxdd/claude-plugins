@@ -69,6 +69,9 @@
         {"name": "<an operations hub whose pages list individuals>", "id": "<page id>"},
         {"name": "<a database with one row per person>", "id": "<database id>", "kind": "database"}
       ],
+      "open_locations": [
+        {"name": "<an engineering wiki that names no individual>", "id": "<page id>"}
+      ],
       "max_depth": 4,
       "ledger": "notes/.notion-records-ledger",
       "index_lag_hours": 72

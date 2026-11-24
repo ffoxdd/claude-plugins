@@ -81,6 +81,22 @@ Everything else in an entry is the adapter's own vocabulary — sender lists for
 mail, dense-conversation names for chat, excluded invitee domains for Fathom —
 and the adapter documents it.
 
+Notion's locations take one key worth knowing before the first sync. A source
+whose `covered_locations` list the record-dense pages may also list
+`open_locations`, in the same shape:
+
+```json
+"open_locations": [{"name": "Engineering wiki", "id": "<page id>"}]
+```
+
+Without the key, every page outside a covered location is swept verbatim. With
+it, the register is default-deny: only a page under an open location is read,
+and a page under neither list is counted, named by id and exported for the
+isolated agent like a covered one. The nearest listed ancestor decides, so an
+open page inside a covered location, or the reverse, works as written. A page
+whose ancestry the integration cannot see is unplaceable, a gap, until the page
+the integration is shared at is listed.
+
 A value that restricts what may be read at all belongs in the JSON too, where
 the adapter enforces it, rather than only in the prose: the `fathom` adapter's
 `excluded_invitee_domains` is how a client contract forbidding AI use of its

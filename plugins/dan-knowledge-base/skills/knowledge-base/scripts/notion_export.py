@@ -32,6 +32,12 @@ The register lists the locations under the source's `covered_locations`:
     {"name": "Payments hub", "id": "<page id>"}                       a page tree
     {"name": "Practice playbooks", "id": "<db id>", "kind": "database"}
 
+**A source that also names `open_locations` is default-deny** (see
+`notion_search.py`): a page under no listed location is exported here too, in a
+section of its own, with the same placeholder and side file as a covered page.
+Those pages are found by the search however discovery runs, since a walk has no
+location to start from for a page that is under nothing listed.
+
 **Changed pages are found by search by default, and by a tree walk on request.**
 The search asks Notion for everything edited since the lookback floor (below),
 newest first, and places each result under a location by its parent chain
@@ -254,15 +260,21 @@ class TreeWalkDiscovery:
         return [page for page in walk.pages.values() if edited_since(page, self.since)], len(walk.pages)
 
 
+# The section for pages under no listed location, in a register naming open
+# locations. Not a location anyone walks: only the search finds its pages.
+UNLISTED = {"name": "Under no listed location", "id": None}
+
+
 class SearchDiscovery:
     """The changed pages under a location, as Notion's search lists them and the
     parent chain places them. One search serves every location, from the
     lookback floor rather than the watermark, so an edit the index showed late
-    is still found."""
+    is still found. With `open_locations` it also serves UNLISTED."""
 
-    def __init__(self, notion, locations, floor, gaps):
+    def __init__(self, notion, locations, floor, gaps, open_locations=None):
         self.notion = notion
         self.locations = locations
+        self.open_locations = open_locations
         self.floor = floor
         self.gaps = gaps
         self.changes = None
@@ -272,12 +284,29 @@ class SearchDiscovery:
         workspace, not a location."""
         if self.changes is None:
             self.changes = notion_search.changes_since(self.notion, self.locations, self.floor,
-                                                       self.gaps)
+                                                       self.gaps, open_locations=self.open_locations)
 
-        pages = [item for item in self.changes.under.get(location["name"], [])
-                 if item.get("object") == "page"]
+        if location is UNLISTED:
+            found = self.changes.unlisted
 
-        return pages, None
+        else:
+            found = self.changes.under.get(location["name"], [])
+
+        return [item for item in found if item.get("object") == "page"], None
+
+
+class WithUnlisted:
+    """A walk for the listed locations, and the search for UNLISTED."""
+
+    def __init__(self, walk, search):
+        self.walk = walk
+        self.search = search
+
+    def changed(self, location):
+        if location is UNLISTED:
+            return self.search.changed(location)
+
+        return self.walk.changed(location)
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +600,7 @@ def main(argv=None):
     try:
         source = configuration.source(arguments.source)
         locations = notion_search.read_locations(source)
+        opened = notion_search.open_locations(source)
         since = read_watermark(arguments.watermark)
         # The walk searches from the watermark, but the ledger is pruned against
         # the lookback floor either way, so a walk keeps what the next search skips.
@@ -591,17 +621,21 @@ def main(argv=None):
     side_files = SideFiles(directory)
     gaps = Gaps()
 
+    search = SearchDiscovery(notion, locations, ledger.floor, gaps, opened)
+    sections = locations + ([UNLISTED] if opened is not None else [])
+
     if arguments.walk:
-        discovery = TreeWalkDiscovery(notion, since, int(source.get("max_depth", DEFAULT_MAX_DEPTH)),
-                                      gaps, WalkProgress(len(locations)))
+        walk = TreeWalkDiscovery(notion, since, int(source.get("max_depth", DEFAULT_MAX_DEPTH)),
+                                 gaps, WalkProgress(len(locations)))
+        discovery = WithUnlisted(walk, search)
 
     else:
-        discovery = SearchDiscovery(notion, locations, ledger.floor, gaps)
+        discovery = search
 
     # Past this point a failure is reported by type alone. An exception's message
     # can carry what it was handed — a header, a body — and a traceback prints it.
     try:
-        content, checked, exported = build_export(notion, locations, discovery, side_files, gaps,
+        content, checked, exported = build_export(notion, sections, discovery, side_files, gaps,
                                                   ledger)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(content, encoding="utf-8")

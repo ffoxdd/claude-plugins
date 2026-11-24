@@ -1556,7 +1556,8 @@ class StubNotionSearch:
       ├─ covered-child      page, person-shaped title
       │    └─ toggle        block → deep-covered, found only through the block
       └─ covered-db         database → covered-row
-    private                 a page the integration cannot see (404) → unshared-child
+    team                    a page outside the hub → team-child; with `unseen`, a page
+                            the integration cannot see (404)
     forbidden               a page that refuses (403), opt-in → restricted-child
     crm-db                  a database of call logs, opt-in → call-notes, pinned-notes
     recruiting              a page, opt-in → recruiting-toggle (block) → candidate
@@ -1575,8 +1576,8 @@ class StubNotionSearch:
                     "database_id", "covered-db"),
         search_item("covered-child", "2026-09-22T09:00:00.000Z", "Jane PERSON-TITLE",
                     "page_id", "hub"),
-        search_item("unshared-child", "2026-09-21T09:00:00.000Z", "Team | notes",
-                    "page_id", "private"),
+        search_item("team-child", "2026-09-21T09:00:00.000Z", "Team | notes",
+                    "page_id", "team"),
         search_item("same-minute", "2026-09-20T10:30:00.000Z", "Same minute"),
         search_item("old-page", "2026-09-01T09:00:00.000Z", "OLD-TITLE"),
         search_item("older-page", "2026-08-01T09:00:00.000Z", "OLDER-TITLE"),
@@ -1696,6 +1697,9 @@ class StubNotionSearch:
 
     METADATA = {
         ("pages", "hub"): search_item("hub", "2026-09-01T09:00:00.000Z", "Operations hub"),
+        ("pages", "team"): search_item("team", "2026-09-01T09:00:00.000Z", "Team"),
+        ("pages", "team-child"): search_item("team-child", "2026-09-21T09:00:00.000Z",
+                                             "Team | notes", "page_id", "team"),
         ("pages", "open-page"): search_item("open-page", "2026-09-24T09:00:00.000Z", "Roadmap"),
         ("pages", "deep-covered"): search_item("deep-covered", "2026-09-23T12:00:00.000Z",
                                                "DEEP-PERSON-TITLE", "block_id", "toggle"),
@@ -1710,7 +1714,7 @@ class StubNotionSearch:
     }
 
     def __init__(self, restricted=False, search_status=None, failing_comments=(),
-                 failing_children=(), call_notes=False, lagged=False):
+                 failing_children=(), call_notes=False, lagged=False, unseen=False):
         import http.server
         import threading
 
@@ -1729,6 +1733,10 @@ class StubNotionSearch:
         self.commented = []
         self.authorizations = []
         self.first_request_at = None
+
+        if unseen:
+            self.METADATA = {key: value for key, value in self.METADATA.items()
+                             if key != ("pages", "team")}
 
         if restricted:
             self.results.insert(4, self.RESTRICTED)
@@ -1873,6 +1881,17 @@ class NotionSweepTest(unittest.TestCase):
     def list_for_comments(self, *entries):
         self.write_register({"covered_by": "notion-covered", "comment_pages": list(entries)})
 
+    def write_listing(self, covered, opened):
+        """The covered source with both lists, which is where the sweep reads them."""
+        credential = {"claude_config": str(self.claude_config)}
+        self.config = write_register(self.root, register(
+            notion={"adapter": "notion-sweep", "api_base": self.stub.api_base,
+                    "request_interval_seconds": 0, "credential": credential,
+                    "covered_by": "notion-covered"},
+            **{"notion-covered": {"adapter": "notion", "covered_locations": covered,
+                                  "open_locations": opened}},
+        ))
+
     def sweep(self, watermark=StubNotionSearch.WATERMARK):
         return support.run_script(
             adapter("notion_sweep.py"),
@@ -1895,7 +1914,7 @@ class NotionSweepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
 
-        for text in ("`open-page`", "Roadmap", "`unshared-child`", "Team \\| notes"):
+        for text in ("`open-page`", "Roadmap", "`team-child`", "Team \\| notes"):
             with self.subTest(text=text):
                 self.assertIn(text, self.manifest())
 
@@ -1950,6 +1969,95 @@ class NotionSweepTest(unittest.TestCase):
         self.assertNotIn("RESTRICTED-TITLE", self.manifest())
         self.assertNotIn("New watermark", result.stdout)
         self.assert_nothing_covered_leaked(result)
+
+    def test_a_page_whose_ancestor_cannot_be_seen_is_unplaced_and_named_by_id(self):
+        """Its parent returns 404, so what lies above might be a covered location."""
+        self.start_stub(unseen=True)
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("team-child could not be placed", result.stderr)
+        self.assertIn("## Unplaced — not read; each is a gap (1)", self.manifest())
+        self.assertIn("- `team-child`", self.manifest())
+        self.assertNotIn("Team \\| notes", self.manifest())
+        self.assertNotIn(("blocks", "team-child", "children"), self.stub.requested)
+        self.assertIn("1 unplaced", result.stdout)
+        self.assertNotIn("New watermark", result.stdout)
+
+    def test_listing_the_shared_page_places_what_is_under_it(self):
+        self.start_stub(unseen=True)
+        self.write_listing([{"name": "Operations hub", "id": "hub"}],
+                           [{"name": "Team", "id": "team-child"}, {"name": "Wiki", "id": "open-page"},
+                            {"name": "Minutes", "id": "same-minute"}])
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("`team-child`", self.manifest())
+        self.assertNotIn("Unplaced", self.manifest())
+
+    def test_with_open_locations_a_page_under_neither_list_is_named_by_id_only(self):
+        self.write_listing([{"name": "Operations hub", "id": "hub"}], [{"name": "Team", "id": "team"}])
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("| Team \\| notes | `team-child` |", self.manifest())
+        self.assertIn("## Under no open location — not read, exported by `notion-covered` (2)",
+                      self.manifest())
+
+        for page in ("open-page", "same-minute"):
+            with self.subTest(page=page):
+                self.assertIn(f"- `{page}`", self.manifest())
+                self.assertNotIn(("blocks", page, "children"), self.stub.requested)
+
+        for title in ("Roadmap", "Same minute", "NEW-BULLET"):
+            with self.subTest(title=title):
+                self.assertNotIn(title, self.manifest() + result.stdout + result.stderr)
+
+        self.assertIn("2 under no open location", result.stdout)
+        self.assertIn("- Operations hub: 3", self.manifest())
+
+    def test_an_empty_open_list_reads_nothing(self):
+        self.write_listing([{"name": "Operations hub", "id": "hub"}], [])
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("## Changed (0)", self.manifest())
+        self.assertIn("3 under no open location", result.stdout)
+
+    def test_without_open_locations_there_is_no_unlisted_section(self):
+        result = self.sweep()
+
+        self.assertNotIn("Under no open location", self.manifest())
+        self.assertNotIn("under no open location", result.stdout)
+
+    def test_the_nearest_listed_ancestor_decides(self):
+        """An open location under a covered one opens its subtree, and a covered
+        location under an open one covers its own."""
+        self.write_listing([{"name": "Covered rows", "id": "covered-db"}],
+                           [{"name": "Operations hub", "id": "hub"},
+                            {"name": "Child", "id": "covered-child"},
+                            {"name": "Team", "id": "team"}])
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("`covered-child`", self.manifest())
+        self.assertIn("`deep-covered`", self.manifest())
+        self.assertNotIn("`covered-row`", self.manifest())
+        self.assertIn("- Covered rows: 1", self.manifest())
+
+    def test_an_open_locations_entry_without_a_name_and_an_id_is_refused(self):
+        self.write_listing([{"name": "Operations hub", "id": "hub"}], [{"id": "team"}])
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('every entry in "open_locations" needs a "name" and an "id"', result.stderr)
+        self.assertEqual(self.stub.search_requests, 0)
 
     def test_an_unreadable_search_withholds_the_watermark(self):
         self.start_stub(search_status=401)
@@ -2126,7 +2234,8 @@ class NotionSweepTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("| Candidate notes | `candidate` |", self.manifest())
         self.assertIn("## Skipped — listed, not read (1)", self.manifest())
-        self.assertIn("- Candidate notes — `candidate`, under Recruiting", self.manifest())
+        self.assertIn("- `candidate`, under Recruiting", self.manifest())
+        self.assertNotIn("- Candidate notes", self.manifest())
         self.assertNotIn("CANDIDATE-MARKER", self.manifest())
         self.assertNotIn(("blocks", "candidate", "children"), self.stub.requested)
         self.assertNotIn("candidate", self.stub.commented)
@@ -2438,7 +2547,7 @@ class NotionAdapterSearchTest(unittest.TestCase):
         self.export()
 
         self.assertNotIn(("blocks", "hub", "children"), self.stub.requested)
-        self.assertNotIn(("pages", "unshared-child"), self.stub.requested)
+        self.assertNotIn(("pages", "team-child"), self.stub.requested)
 
     def test_content_reaches_only_the_side_files(self):
         result = self.export()
@@ -2560,6 +2669,44 @@ class NotionAdapterSearchTest(unittest.TestCase):
         self.assertIn("### Page `lagged-covered`", self.export_text())
         self.assertNotIn("Traceback", result.stderr)
 
+    def test_with_open_locations_a_page_under_neither_list_is_exported(self):
+        """The sweep names it by id and reads none of it; this is its route to the
+        isolated agent, through the same side file a covered page takes."""
+        self.start_stub(source={"open_locations": [{"name": "Team", "id": "team"}]})
+
+        result = self.export()
+        text = self.export_text()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("## Under no listed location", text)
+
+        for page in ("open-page", "same-minute"):
+            with self.subTest(page=page):
+                self.assertIn(f"### Page `{page}`", text)
+                self.assertTrue((self.raw / f"{page}.md").is_file())
+
+        self.assertNotIn("team-child", text)
+        self.assertNotIn("Roadmap", text + result.stdout + result.stderr)
+        self.assertIn("Roadmap", (self.raw / "open-page.md").read_text(encoding="utf-8"))
+
+    def test_a_walk_finds_the_pages_under_neither_list_by_search(self):
+        self.start_stub(source={"open_locations": [{"name": "Team", "id": "team"}]})
+
+        result = self.export("--walk")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("### Page `open-page`", self.export_text())
+        self.assertTrue((self.raw / "open-page.md").is_file())
+
+    def test_a_source_with_only_open_locations_is_accepted(self):
+        self.start_stub(source={"covered_locations": [],
+                                "open_locations": [{"name": "Team", "id": "team"}]})
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("### Page `covered-child`", self.export_text())
+
     def test_an_index_lag_that_is_not_a_number_of_hours_is_refused(self):
         self.start_stub(source={"index_lag_hours": "three days"})
 
@@ -2593,7 +2740,7 @@ class NotionPageChangesTest(unittest.TestCase):
         self.stub.close()
         self.directory.cleanup()
 
-    def start_stub(self, rules=None, **options):
+    def start_stub(self, rules=None, listing=None, **options):
         if self.stub:
             self.stub.close()
 
@@ -2604,7 +2751,8 @@ class NotionPageChangesTest(unittest.TestCase):
                     "request_interval_seconds": 0, "credential": credential,
                     "covered_by": "notion-covered", **(rules or {})},
             **{"notion-covered": {"adapter": "notion",
-                                  "covered_locations": [{"name": "Operations hub", "id": "hub"}]}},
+                                  "covered_locations": [{"name": "Operations hub", "id": "hub"}],
+                                  **(listing or {})}},
         ))
 
     def list_for_comments(self, **options):
@@ -2664,6 +2812,32 @@ class NotionPageChangesTest(unittest.TestCase):
         self.assertEqual(result.stdout, "")
         self.assertIn("could not be placed", result.stderr)
         self.assertNotIn("RESTRICTED-TITLE", result.stderr)
+
+    def test_a_page_whose_ancestor_cannot_be_seen_is_refused(self):
+        self.start_stub(unseen=True)
+
+        result = self.changes("team-child")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("could not be placed", result.stderr)
+
+    def test_with_open_locations_a_page_under_none_is_refused(self):
+        self.start_stub(listing={"open_locations": [{"name": "Team", "id": "team"}]})
+
+        result = self.changes("open-page")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("under no open location", result.stderr)
+
+    def test_with_open_locations_a_page_under_one_is_printed(self):
+        self.start_stub(listing={"open_locations": [{"name": "Roadmap", "id": "open-page"}]})
+
+        result = self.changes("open-page")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("NEW-BULLET", result.stdout)
 
     def test_the_token_is_sent_and_printed_nowhere(self):
         result = self.changes("open-page")

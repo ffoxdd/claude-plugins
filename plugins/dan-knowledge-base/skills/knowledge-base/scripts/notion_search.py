@@ -3,18 +3,35 @@
 Shared by the `notion-sweep` adapter, the `notion` adapter's default discovery,
 and the page-changes tool. One search over Notion's REST API, sorted newest
 first and stopped at the time it is given, and one placement of each result by
-its parent chain against the covered locations the register lists. The adapters
-give it their lookback floor rather than the watermark (`notion_ledger.py`).
+its parent chain against the locations the register lists. The adapters give it
+their lookback floor rather than the watermark (`notion_ledger.py`).
+
+**The register lists two kinds of location**, side by side on the source that
+holds them:
+
+    "covered_locations": [{"name": "Operations hub", "id": "<page id>"}],
+    "open_locations":    [{"name": "Engineering wiki", "id": "<page id>"}]
+
+A page under a covered location is never read by the sweep; the `notion` adapter
+exports it for the isolated agent. Without `open_locations`, every other page is
+readable. With it, the register is default-deny: only a page under an open
+location is readable, and a page under neither list is handled exactly as a
+covered one is, counted, named by id and exported by the `notion` adapter. An
+open location nested under a covered one, or the reverse, resolves to the nearest
+listed ancestor; an id listed as both is covered.
 
 **Placement walks the parent chain**, one metadata request per ancestor not yet
-seen, cached for the run. A chain that reaches the workspace, or an ancestor the
-integration cannot see, is outside every covered location: a covered location is
-shared with the integration, and sharing reaches everything beneath it, so a
-chain leading into one is visible all the way up to it.
+seen, cached for the run, and stops at the first listed location. A chain that
+reaches the workspace is under no listed location. A chain that meets an
+ancestor which cannot be fetched, one the integration cannot see (404)
+included, is `Unplaceable`: what lies above it might be a covered location, so
+the item is under no location anyone can vouch for. Listing the page the
+integration is shared at, as an open or a covered location, ends the walk
+before it reaches the ancestor it cannot see.
 
-A result whose chain cannot be followed is `Unplaceable`. Every caller treats
-that as a gap, because an item that might sit under a covered location must not
-be named anywhere.
+Every caller treats an unplaceable item as a gap, and writes nothing of it but
+its id, because an item that might sit under a covered location must not be
+named anywhere.
 
 **Every ancestor is fetched once per run**, whatever asks about it. The chain is
 held by `Ancestry`, which the covered placement walks first and the reading rules
@@ -23,6 +40,8 @@ second walk is a run of cache hits. The reading rules ask only for a page's
 `lineage`, which ends quietly where an ancestor cannot be fetched: a rule that
 cannot be placed is not applied, and the page is read whole.
 """
+
+from dataclasses import dataclass
 
 import configuration
 from notion_api import PAGE_SIZE, ExportError, edited_since
@@ -43,16 +62,17 @@ def normalize(identifier):
 
 
 class Ancestry:
-    """Every item's parent, fetched at most once per run. An ancestor the
-    integration cannot see is remembered as None, the top of the visible tree."""
+    """Every item's parent, fetched at most once per run."""
 
     def __init__(self, notion):
         self.notion = notion
         self.parents = {}
+        self.unseen = {}
 
     def parent_of(self, item):
-        """The item's parent, or None at the top of the visible tree. A fetch that
-        fails for any reason but 404 raises, and is not remembered."""
+        """The item's parent, or None when the item sits at the top of the
+        workspace. A fetch that fails raises; a 404 is remembered and raised again
+        for every item under it, since it fails the same way all run."""
         parent = item.get("parent") or {}
         kind = parent.get("type")
 
@@ -61,18 +81,21 @@ class Ancestry:
 
         identifier = normalize(parent[kind])
 
+        if identifier in self.unseen:
+            raise self.unseen[identifier]
+
         if identifier not in self.parents:
-            self.parents[identifier] = self.fetch_visible(kind, parent[kind])
+            self.parents[identifier] = self.fetch_remembering_unseen(kind, parent[kind])
 
         return self.parents[identifier]
 
-    def fetch_visible(self, kind, identifier):
+    def fetch_remembering_unseen(self, kind, identifier):
         try:
             return self.fetch(kind, identifier)
 
         except ExportError as error:
             if error.status == 404:
-                return None
+                self.unseen[normalize(identifier)] = error
 
             raise
 
@@ -103,16 +126,27 @@ class Ancestry:
         return identifiers
 
 
-class Placement:
-    """Which covered location, if any, each item sits under, cached per run."""
+@dataclass(frozen=True)
+class Location:
+    """A location the register lists, and whether it is covered or open."""
+    name: str
+    covered: bool
 
-    def __init__(self, notion, locations, ancestry=None):
+
+class Placement:
+    """Which listed location, if any, each item sits under, cached per run."""
+
+    def __init__(self, notion, locations, ancestry=None, open_locations=None):
         self.ancestry = ancestry or Ancestry(notion)
-        self.locations = {normalize(location["id"]): location["name"] for location in locations}
+        self.locations = {normalize(location["id"]): Location(location["name"], False)
+                          for location in open_locations or []}
+        self.locations.update({normalize(location["id"]): Location(location["name"], True)
+                               for location in locations})
         self.known = {}
 
     def location_of(self, item):
-        """The covered location's name, or None when the item is outside all of them."""
+        """The nearest listed Location at or above the item, or None when the
+        chain reaches the top of the workspace without meeting one."""
         chain = []
         current = item
 
@@ -169,70 +203,112 @@ def search_since(notion, since, gaps):
 
 
 class Changes:
-    """The search results, sorted by where they sit."""
+    """The search results, sorted by where they sit: `readable`, whose content a
+    session may read; `under`, by covered location; `unlisted`, under no listed
+    location in a register that names open locations, and so handled as covered;
+    and `unplaced`, whose chain could not be followed."""
 
-    def __init__(self):
-        self.outside = []
+    def __init__(self, default_deny=False):
+        self.default_deny = default_deny
+        self.readable = []
         self.under = {}
-        self.unplaced = 0
+        self.unlisted = []
+        self.unplaced = []
 
     def add(self, item, location):
         if location is None:
-            self.outside.append(item)
+            (self.unlisted if self.default_deny else self.readable).append(item)
+
+        elif location.covered:
+            self.under.setdefault(location.name, []).append(item)
 
         else:
-            self.under.setdefault(location, []).append(item)
+            self.readable.append(item)
 
     def count_under(self, location):
         return len(self.under.get(location, []))
 
 
-def changes_since(notion, locations, since, gaps, ancestry=None):
-    """Every item edited since the watermark, placed against the covered locations.
-    An item that cannot be placed is counted and reported as a gap, never kept.
-    Pass the run's `ancestry` to reuse what this placement fetched."""
-    placement = Placement(notion, locations, ancestry)
-    changes = Changes()
+def changes_since(notion, locations, since, gaps, ancestry=None, open_locations=None):
+    """Every item edited since the watermark, placed against the listed locations;
+    `open_locations`, when not None, makes the placement default-deny. An item
+    that cannot be placed is kept by id only and reported as a gap. Pass the run's
+    `ancestry` to reuse what this placement fetched."""
+    placement = Placement(notion, locations, ancestry, open_locations)
+    changes = Changes(default_deny=open_locations is not None)
 
     for item in search_since(notion, since, gaps):
         try:
             changes.add(item, placement.location_of(item))
 
         except Unplaceable as error:
-            changes.unplaced += 1
-            gaps.add(f"item {item['id']} could not be placed: {error}")
+            changes.unplaced.append(item)
+            gaps.add(f"item {item['id']} could not be placed: {error}; list the page the "
+                     "integration is shared at as an open or covered location")
 
     return changes
 
 
-def read_locations(source):
-    locations = source.get("covered_locations") or []
-
-    if not locations:
-        raise configuration.ConfigurationError(
-            'the source lists no "covered_locations", so there is nothing to export. A run '
-            "that walks nothing would report a quiet source it never looked at."
-        )
+def validated(locations, key):
+    if not isinstance(locations, list):
+        raise configuration.ConfigurationError(f'"{key}" must be a list of locations')
 
     for location in locations:
         if not isinstance(location, dict) or not location.get("id") or not location.get("name"):
             raise configuration.ConfigurationError(
-                'every entry in "covered_locations" needs a "name" and an "id"'
+                f'every entry in "{key}" needs a "name" and an "id"'
             )
 
     return locations
 
 
-def covered_locations(source):
-    """The locations a source excludes, and the name of the source whose adapter
-    reads them."""
+def open_locations(source):
+    """The source's open locations, or None when it names none and every page
+    outside a covered location is readable. An empty list is default-deny with
+    nothing open."""
+    if "open_locations" not in source:
+        return None
+
+    return validated(source["open_locations"], "open_locations")
+
+
+def read_locations(source):
+    """The covered locations of the source the `notion` adapter reads. One that
+    lists none is refused unless it names open locations, whose complement it
+    then exports."""
+    locations = source.get("covered_locations") or []
+
+    if not locations and open_locations(source) is None:
+        raise configuration.ConfigurationError(
+            'the source lists no "covered_locations", so there is nothing to export. A run '
+            "that walks nothing would report a quiet source it never looked at."
+        )
+
+    return validated(locations, "covered_locations")
+
+
+@dataclass(frozen=True)
+class Listing:
+    """What a source lists: its covered locations, its open locations (None when
+    it names none), and the name of the source whose adapter reads what is not
+    readable."""
+    covered: list
+    open: list
+    reader: str
+
+
+def listed_locations(source):
+    """The locations a sweep places against. Both lists live on one source: the
+    one `covered_by` names, or the sweep's own when it lists `covered_locations`."""
     if "covered_by" in source:
         name = source["covered_by"]
+        covered_source = configuration.source(name)
 
-        return read_locations(configuration.source(name)), name
+        return Listing(read_locations(covered_source), open_locations(covered_source), name)
 
     if "covered_locations" in source:
-        return source["covered_locations"], "the notion adapter"
+        return Listing(validated(source["covered_locations"], "covered_locations"),
+                       open_locations(source), "the notion adapter")
 
     raise configuration.ConfigurationError(
         'the source names no "covered_by" source and lists no "covered_locations". A '
