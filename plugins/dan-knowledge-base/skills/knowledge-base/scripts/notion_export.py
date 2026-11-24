@@ -111,7 +111,7 @@ from notion_api import EXIT_GAPS, EXIT_REFUSED, ExportError, Gaps, Notion, edite
     format_time, read_watermark
 
 DEFAULT_MAX_DEPTH = 4
-# Progress logs nest bullets deeply; Aligned's Provider Growth pages exceed 8.
+# Progress logs nest bullets deeply; real ones exceed 8.
 # Exceeding the limit is a gap, so it is set well above what real pages reach,
 # and a register can raise it further with `max_block_nesting`.
 DEFAULT_MAX_BLOCK_NESTING = 24

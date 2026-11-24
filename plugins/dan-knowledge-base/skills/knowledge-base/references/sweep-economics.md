@@ -126,10 +126,10 @@ exhaustively and expensive to handle selectively.
 Two properties to hold such a script to:
 
 - **Its stdout is the interface, and it stays small and clean** — a path, some
-  counts, the new watermark, and anything it couldn't fetch. Raw content goes
-  to files. That is what makes it safe for the main session to run directly:
-  nothing sensitive reaches the session merely because the session ran the
-  fetch.
+  counts, the new watermark, and anything it couldn't fetch, named by id, never
+  by a title or a name. Raw content goes to files under the intake directory.
+  That is what makes it safe for the main session to run directly: nothing
+  sensitive reaches the session merely because the session ran the fetch.
 - **A gap it reports is a note, not a hunt.** One conversation or container
   failing to fetch is passed through to the sync notes: no retries, no
   diagnosis. A source can stay stuck behind the others indefinitely, and

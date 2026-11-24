@@ -58,6 +58,17 @@ enter a repo — personal data, a pasted credential, a third party's numbers.
 Gitignoring the whole intake tree is what makes pulling *anything* in safe,
 because the pull stops being a publication decision.
 
+**Everything an adapter fetches lands under the intake directory, and nowhere
+else.** An adapter refuses an output path outside it, or one git does not
+ignore, and creates what it writes readable by its owner alone. Where a covered
+gate is in force, a session cannot read a file there until the gate releases it,
+so never choose an output path outside intake to get around that.
+
+**`layout.retention_days`**, when the register sets it, deletes processed intake
+older than that many days at session start, and reports the count in one line.
+It deletes nothing unless the processed directory is inside the intake
+directory, git-ignored, and reached through no symbolic link.
+
 ## Self-authored capture is an input, not a section
 
 A journal, daily log, or other raw personal capture is a **source** like
@@ -200,9 +211,10 @@ below as `<SKILL_DIR>`. Never hardcode or remember that path: it carries a
 version that changes on every plugin update.
 
 An adapter reads the register itself, from the working directory, so the only
-arguments are the watermark and where to write. The chat, Notion and Fathom
-adapters write raw text to the source's folder under the intake directory (see
-Layout); `--count-only` writes none, and says what that leaves undone.
+arguments are the watermark and where to write, a path under the intake
+directory. The chat, Notion and Fathom adapters also write raw text to the
+source's folder there (see Layout); `--count-only` writes none, and says what
+that leaves undone.
 
 **Email** — digest mail from the senders the register whitelists:
 
@@ -252,7 +264,8 @@ in a terminal.
 ```
 
 **Notion** — the pages under record-dense locations the register lists as
-`covered_locations`, changed since the watermark:
+`covered_locations`, changed since the watermark, and, when the same source lists
+`open_locations`, every changed page under neither list:
 
 ```
 python3 <SKILL_DIR>/scripts/notion_export.py <watermark> <output>
@@ -354,11 +367,20 @@ A skip beats all three others: a skipped page is not read, comments included. A
 page's own `newest_first_pages` entry beats a shallow location above it.
 `comment_pages` combines with either: it decides whether comments are asked
 for, and they are asked of the blocks those rules walk.
-Covered locations are excluded before any of this.
+Only readable pages are shaped by any of this.
+
+**A register can make the sweep default-deny.** Beside `covered_locations`, the
+covered source may list `open_locations` in the same shape. Then only a page
+under an open location is read; a page under neither list is named by id, never
+read, and exported by the `notion` adapter for the isolated agent. The nearest
+listed ancestor decides. A page whose ancestry the integration cannot see is
+unplaceable, a gap named by id, until the page the integration is shared at is
+listed.
 
 All five print the output path, then counts, then the new watermark, and send gaps
-to stderr. No message content passes through stdout, which is what makes them
-safe to run from this session directly.
+to stderr. Neither stream carries content, a title, a subject or a person's name:
+ids and counts only, with anything worth naming written into the output file.
+That is what makes them safe to run from this session directly.
 
 Add `--source <name>` when the register calls a source something other than
 `email`, `chat`, `fathom` or `notion`.
@@ -375,8 +397,9 @@ marked line of context, and, on a page `comment_pages` covers, any comment left
 since the watermark under the block it sits on, with images and files named rather than linked. A page that
 has been appended to weekly for a year comes back as its newest section. Unlike
 the adapters its stdout is content, so it reads the register and **refuses a
-page under a covered location**, or one it cannot place, before printing
-anything; those stay the `notion` adapter's. Prefer it to fetching a page
+page under a covered location**, one under no open location when the register
+lists them, or one it cannot place, before printing anything; those stay the
+`notion` adapter's. Prefer it to fetching a page
 through the MCP server, whose markdown carries every block the page has ever
 held and a few hundred characters of signed URL per image. It exits 3 when a
 comment request failed or blocks nested too deep to read, and names them on
@@ -418,7 +441,8 @@ rests on comments elsewhere; only Notion's webhooks report those.
    imposes it.
 3. **This session deletes the source's folder under the intake directory**
    (`inbox/chat/` under the default layout), side files and all, then treats the
-   export as ordinary intake.
+   export as ordinary intake once it is released (see the Fathom sequence's
+   step 4).
 
 When the script reports `0 conversation(s) with new messages`, it also prints
 `skip the isolated agent`. The export then holds no message text, so step 2 has
@@ -450,7 +474,8 @@ through the MCP server shares one result stream with the record-dense locations,
 so a guard withholding their results also stalls the pagination running through
 them, and a retry after the refusal reads as a workaround. The sweep searches
 over the REST API instead and places each result by its parent chain. A result
-under a covered location is only counted, since the export adapter reads it, and
+under a covered location is only counted, and one under no open location in a
+default-deny register only named by id, since the export adapter reads both;
 everything else lands in the manifest and is read into the same file. It takes its
 exclusions from the covered source it names with `covered_by`, so the register
 lists them once. It shares the export's minute-inclusive watermark, and a result
@@ -507,9 +532,13 @@ it`.
    where a sync saves money either.
 4. **This session confirms every meeting file starts with `Verified.`**, with a
    search that prints filenames only (`grep -L '^Verified\.'`, never content),
-   re-runs steps 2 and 3 on any that don't, and only then hands the files on.
+   and re-runs steps 2 and 3 on any that don't. Where a release mechanism
+   exists, its release is what makes a file readable, the export included; the
+   first-line marker alone is not, so release each verified file before handing
+   it on.
 5. **This session does not read the transcripts itself.** It hands each day's
-   meeting files to a sub-agent on the session's own model, which reads each
+   released meeting files, and only released ones, to a sub-agent on the
+   session's own model, which reads each
    file once and returns only the durable knowledge, following
    `references/transcripts.md`. A transcript held in the main context is re-sent
    on every later turn of the sync. And the sub-agent is not a cheaper model:

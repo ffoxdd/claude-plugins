@@ -623,7 +623,7 @@ if command == "memberships":
     print("C010\\t-\\topen-channel\\t\\tchannel\\t")
     print("D011\\t-\\tPat PERSON-NAME\\t\\tim\\t")
     print("G012\\t-\\tLee PERSON-NAME, Kim PERSON-NAME\\t\\tmpim\\t")
-    print("C013\\t-\\tcases\\t\\tchannel\\tMay Contain PHI")
+    print("C013\\t-\\tcases\\t\\tchannel\\tMay Contain Personal Data")
 elif command == "history":
     print(json.dumps({"ts": "1500.0", "user_name": "ana", "text": "MESSAGE-TEXT " + sys.argv[2]}))
 '''
@@ -1110,7 +1110,7 @@ class ChatAdapterTest(unittest.TestCase):
         self.config.write_text(json.dumps(register(chat={
             "adapter": "chat",
             "client_command": str(self.client),
-            "private_topic_markers": ["may contain phi"],
+            "private_topic_markers": ["may contain personal data"],
             **settings,
         })), encoding="utf-8")
 

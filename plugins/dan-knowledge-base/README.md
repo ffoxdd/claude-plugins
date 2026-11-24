@@ -83,7 +83,12 @@ as only its blocks edited since an edit to it could last have gone unreported
 (the minute after its ledger record, or the start of the index-lag lookback),
 with the comments left since on the pages the register lists for them. The
 page-changes tool is that walk for one page by hand, and refuses any page under
-those locations.
+those locations. A register that also lists `open_locations` is default-deny:
+only pages under those are read, and the rest go the record-dense route.
+
+Every adapter writes only under the intake directory, owner-only, and prints ids
+and counts, never a title or a name. `layout.retention_days`, when set, deletes
+processed intake older than that at session start.
 
 The `fathom` adapter is standard library only too, and holds the one credential
 this plugin asks for: a Fathom API key, read from `FATHOM_API_KEY` or from a key

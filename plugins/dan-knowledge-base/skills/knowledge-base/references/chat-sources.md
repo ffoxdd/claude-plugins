@@ -31,10 +31,11 @@ conversation, and neither is inferred from the other:
 - **Dense?** Is its ordinary traffic per-person records? Named by hand, in the
   register's `dense_conversations`, because nothing on the platform says so.
 - **Private?** Is personal data permitted there? Read live: the platform's
-  private flag, or a topic banner listed in `private_topic_markers` (matched
+  private flag, a direct or group direct message, or a banner listed in
+  `private_topic_markers` in the topic or the purpose (matched
   case-insensitively). A new private or bannered channel needs no config.
 
-|  | **Not private** (public, DM) | **Private** (locked or bannered) |
+|  | **Not private** (public channel) | **Private** (locked, bannered, or a DM) |
 |---|---|---|
 | **Not dense** | **Backstop:** pulled verbatim; the agent scans for stray personal data | **Scrubbed:** pulled verbatim; the agent removes personal data, summarizing a section only if it is dominated by it |
 | **Dense** | **Summarized:** raw text never enters the export; the agent writes a structural-facts-only summary | **Summarized**, the same way |
@@ -43,9 +44,10 @@ conversation, and neither is inferred from the other:
   personal detail redacts it to nothing, so a summary loses no durable content.
 - **A banner says what the lock says**, and catches a bannered channel left
   public. It says nothing about density.
+- **A DM is private by nature**, though it carries no lock: it is where people
+  speak most freely about one another.
 - **The backstop stays on** where the convention says there is nothing to
-  find: it has caught real personal data in a group DM. A convention describes
-  what people intend, not what they did.
+  find. A convention describes what people intend, not what they did.
 
 ## Slack-specific facts
 
@@ -100,6 +102,9 @@ with the designated-channel summaries as the deliberate exception:
   summary, read from the raw side file that placeholder names.
 - Scan everything else for stray personal data, omit what it finds, and note
   the omission at the top of the file so it is visible.
+
+The export itself goes under the intake directory too, and the script's
+streams name conversations by id only, since a DM is named for its people.
 
 **Raw text for the designated channels goes to side files in the source's
 git-ignored folder under the intake directory** (`inbox/chat/` by default),
