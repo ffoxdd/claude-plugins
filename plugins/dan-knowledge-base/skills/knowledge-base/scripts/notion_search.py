@@ -13,7 +13,7 @@ holds them:
     "open_locations":    [{"name": "Engineering wiki", "id": "<page id>"}]
 
 A page under a covered location is never read by the sweep; the `notion` adapter
-exports it for the isolated agent. Without `open_locations`, every other page is
+exports it for a covered gate. Without `open_locations`, every other page is
 readable. With it, the register is default-deny: only a page under an open
 location is readable, and a page under neither list is handled exactly as a
 covered one is, counted, named by id and exported by the `notion` adapter. An

@@ -922,9 +922,10 @@ class ChatClientInvocationTest(unittest.TestCase):
 class ChatAdapterTest(unittest.TestCase):
     """The chat adapter against a stub client, which is the only way to reach this
     logic without a workspace. What is being pinned is not the stub's content but
-    the four properties the design rests on: dense conversations never appear in
-    the export, stdout never carries message text, noise is dropped, and a revived
-    thread contributes only its new replies."""
+    the properties the design rests on: each active conversation is its own raw
+    file and the index carries no message, no output stream carries message text
+    or a direct message's name, noise is dropped, and a revived thread
+    contributes only its new replies."""
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -952,27 +953,39 @@ class ChatAdapterTest(unittest.TestCase):
             KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
         )
 
-    def test_a_dense_conversation_never_reaches_the_export(self):
-        self.export()
+    def raw_text(self):
+        return "".join(path.read_text(encoding="utf-8") for path in sorted(self.raw.glob("*.md")))
 
-        self.assertNotIn("SENSITIVE-MARKER", self.output.read_text(encoding="utf-8"))
-        self.assertIn("NOT pulled verbatim", self.output.read_text(encoding="utf-8"))
+    def test_each_active_conversation_is_its_own_raw_file(self):
+        """One conversation is one batch for the gate, a record-dense one included."""
+        result = self.export()
 
-    def test_its_text_goes_to_the_side_file_the_placeholder_names(self):
-        self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(path.name for path in self.raw.glob("*.md")),
+                         ["C001.md", "C002.md", "C003.md", "C004.md"])
+        self.assertIn("SENSITIVE-MARKER", (self.raw / "C002.md").read_text(encoding="utf-8"))
 
-        side_files = list(self.raw.glob("*.md"))
+    def test_the_index_names_each_raw_file_and_carries_no_message(self):
+        result = self.export()
+        index = self.output.read_text(encoding="utf-8")
 
-        self.assertEqual(len(side_files), 1)
-        self.assertIn("SENSITIVE-MARKER", side_files[0].read_text(encoding="utf-8"))
-        self.assertIn(side_files[0].name, self.output.read_text(encoding="utf-8"))
+        for identifier in ("C001", "C002", "C003", "C004"):
+            with self.subTest(identifier=identifier):
+                self.assertIn(str(self.raw / f"{identifier}.md"), index)
+                self.assertIn(f"  {self.raw / f'{identifier}.md'}", result.stdout)
 
-    def test_count_only_writes_dense_text_nowhere(self):
+        for token in ("SENSITIVE-MARKER", "shipped the", "the follow-up", "TOPIC-MARKER"):
+            with self.subTest(token=token):
+                self.assertNotIn(token, index)
+
+    def test_count_only_writes_no_message_anywhere(self):
         result = self.export("--count-only")
 
-        self.assertNotIn("SENSITIVE-MARKER", self.output.read_text(encoding="utf-8"))
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.raw.exists())
-        self.assertIn("only to advance the watermark", result.stdout)
+        self.assertIn("Counted only", self.output.read_text(encoding="utf-8"))
+        self.assertNotIn("SENSITIVE-MARKER", self.output.read_text(encoding="utf-8"))
+        self.assertIn("New watermark: 1800.0", result.stdout)
 
     def test_stdout_carries_no_message_text(self):
         """What makes it safe for the main session to run this itself."""
@@ -982,41 +995,16 @@ class ChatAdapterTest(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertNotIn(token, result.stdout)
 
-    def test_a_topic_banner_makes_a_public_conversation_scrub_mandatory(self):
-        """The banner means what the lock means, so it catches a channel left public."""
-        self.config.write_text(json.dumps(register(chat={
-            "adapter": "chat",
-            "client_command": str(self.client),
-            "dense_conversations": ["#billing-ops"],
-            "private_topic_markers": ["May Contain PHI"],
-        })), encoding="utf-8")
-
-        self.export()
-        content = self.output.read_text(encoding="utf-8")
-
-        self.assertEqual(content.count("NOT pulled verbatim"), 1)
-        self.assertEqual(content.count("scrub this section"), 2)
-
-    def test_without_a_marker_the_topic_changes_nothing(self):
-        self.export()
-
-        self.assertEqual(self.output.read_text(encoding="utf-8").count("scrub this section"), 1)
-
-    def test_a_private_conversation_is_marked_scrub_mandatory(self):
-        self.export()
-
-        self.assertIn("scrub this section", self.output.read_text(encoding="utf-8"))
-
     def test_noise_and_bare_acknowledgements_are_dropped(self):
         self.export()
-        text = self.output.read_text(encoding="utf-8")
+        text = self.raw_text()
 
         self.assertNotIn("thanks!", text)
         self.assertNotIn("channel_join", text)
 
     def test_wire_encoding_is_decoded_into_prose(self):
         self.export()
-        text = self.output.read_text(encoding="utf-8")
+        text = self.raw_text()
 
         self.assertIn("<retry>", text)
         self.assertIn("the doc (https://x.test)", text)
@@ -1026,7 +1014,7 @@ class ChatAdapterTest(unittest.TestCase):
         """A reply does not bump its parent's timestamp, so this is the case a
         watermark alone cannot see — and the parent must not be re-reported as new."""
         self.export()
-        text = self.output.read_text(encoding="utf-8")
+        text = self.raw_text()
 
         self.assertIn("and the follow-up", text)
         self.assertIn("thread continued", text)
@@ -1040,14 +1028,14 @@ class ChatAdapterTest(unittest.TestCase):
         )
 
         self.assertIn("0 conversation(s) with new messages", result.stdout)
-        self.assertIn("skip the isolated agent", result.stdout)
+        self.assertIn("skip the gate", result.stdout)
         self.assertEqual(list(self.raw.glob("*.md")), [])
 
     def test_an_active_window_does_not_say_to_skip(self):
         result = self.export()
 
         self.assertIn("4 conversation(s) with new messages", result.stdout)
-        self.assertNotIn("skip the isolated agent", result.stdout)
+        self.assertNotIn("skip the gate", result.stdout)
 
     def test_the_watermark_advances_to_the_newest_activity(self):
         result = self.export()
@@ -1092,7 +1080,7 @@ class ChatAdapterTest(unittest.TestCase):
         result = self.export()
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(list(self.raw.glob("*.md"))), 1)
+        self.assertEqual(len(list(self.raw.glob("*.md"))), 4)
 
     def test_a_folder_a_previous_run_left_files_in_is_refused_before_any_fetch(self):
         self.raw.mkdir(parents=True)
@@ -1113,32 +1101,6 @@ class ChatAdapterTest(unittest.TestCase):
             "private_topic_markers": ["may contain personal data"],
             **settings,
         })), encoding="utf-8")
-
-    def section(self, identifier):
-        content = self.output.read_text(encoding="utf-8")
-
-        return content.split(f"({identifier})", 1)[1].split("\n## ", 1)[0]
-
-    def test_a_direct_or_group_direct_message_is_scrub_mandatory(self):
-        """Neither carries a lock, and both are private by nature."""
-        self.use_client(STUB_CHAT_DIRECT)
-
-        result = self.export()
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-        for identifier in ("D011", "G012"):
-            with self.subTest(identifier=identifier):
-                self.assertIn("scrub this section", self.section(identifier))
-
-        self.assertNotIn("scrub this section", self.section("C010"))
-
-    def test_a_purpose_banner_makes_a_conversation_scrub_mandatory(self):
-        self.use_client(STUB_CHAT_DIRECT)
-
-        self.export()
-
-        self.assertIn("scrub this section", self.section("C013"))
 
     def test_streams_name_a_conversation_by_id_never_by_its_name(self):
         """A direct message is named for its people. Each conversation fills the
@@ -1575,7 +1537,7 @@ class NotionAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
         self.assertIn("0 changed", result.stdout)
-        self.assertIn("skip the isolated agent", result.stdout)
+        self.assertIn("skip the gate", result.stdout)
         self.assertEqual(list(self.raw.glob("*.md")), [])
 
     def test_nesting_past_the_limit_is_a_gap(self):
@@ -3266,7 +3228,7 @@ class StubFathom:
 class FathomAdapterTest(unittest.TestCase):
     """The fathom adapter against a stub API. Pinned: a meeting's title, summary,
     action items, invitees and transcript reach only its meeting file, which opens
-    with the UNGATED line; a meeting with an excluded invitee reaches nothing at
+    with its title; a meeting with an excluded invitee reaches nothing at
     all and has no transcript requested; the listing looks back from the watermark
     and the ledger keeps the overlap from being exported twice; a summary not yet
     written is retried rather than recorded; a transcript that is absent is noted
@@ -3388,7 +3350,6 @@ class FathomAdapterTest(unittest.TestCase):
         self.assertIn("customer.example", side_file)
         self.assertNotIn("MEMBER-EMAIL", side_file)
         self.assertIn(str(self.raw / "fathom-101.md"), export)
-        self.assertIn("scrubs it in place", export)
         self.assertIn("`101`", export)
 
     def test_no_output_stream_carries_a_title_a_summary_an_address_or_the_key(self):
@@ -3491,13 +3452,12 @@ class FathomAdapterTest(unittest.TestCase):
         self.assertIn(("101", ""), self.stub.transcript_requests)
         self.assertIn("Transcripts: 2 fetched, 0 unavailable", result.stdout)
 
-    def test_a_meeting_file_opens_ungated_with_its_sections_in_order(self):
+    def test_a_meeting_file_opens_with_its_title_and_its_sections_in_order(self):
         self.export()
         text = self.meeting_file("101")
         headings = [line for line in text.splitlines() if line.startswith("## ")]
 
-        self.assertTrue(text.startswith(
-            "UNGATED: not to be read until the isolated agent has scrubbed it\n\n# "))
+        self.assertTrue(text.startswith("# "))
         self.assertEqual(headings, ["## Summary", "## Action items", "## Transcript"])
         self.assertNotIn("00:00:07", text)
         self.assertNotIn("SPEAKER-EMAIL", text)

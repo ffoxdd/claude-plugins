@@ -20,8 +20,8 @@ Nothing sensitive reaches a session merely from running this:
     name. It must lie under the register's intake directory, git-ignored, like
     every adapter's output (`raw_directory.output_checked`);
   * **page text**, titles and properties included, goes only to side files under
-    `<intake>/<source name>/`, for the isolated agent that replaces each
-    placeholder with a structural-facts-only summary. The run is refused before
+    `<intake>/<source name>/`, one per page, for a covered gate to digest. The
+    run is refused before
     any request unless git ignores that folder and it is absent or empty (see
     `raw_directory.py`). With `--count-only`, pages are listed and nothing of
     theirs is written anywhere. A run that fails part-way deletes the side files
@@ -452,7 +452,7 @@ def page_text(notion, location_name, page):
         f"# {page_title(page)}",
         "",
         f"*Location: {location_name} · page {page['id']} · edited {page['last_edited_time']} "
-        "· raw text for the isolated agent*",
+        "· raw text*",
         "",
     ]
     lines += render_properties(page)
@@ -488,14 +488,11 @@ def placeholder(page, side_file):
     lines = [
         f"### Page `{page['id']}`, edited {page['last_edited_time']}",
         "",
-        "**Record-dense location — NOT pulled verbatim.** Replace this with a",
-        "structural-facts-only summary: standing policy, mechanics, backlog items, defect",
-        "patterns with counts, named business entities. No personal names, identifiers, or",
-        "per-person amounts, and no title that is a person's name.",
+        "**Record-dense location — NOT pulled verbatim.**",
     ]
 
     if side_file:
-        lines.append(f"Raw text: `{side_file}` — working space, deleted once the summary is written.")
+        lines.append(f"Raw text: `{side_file}`.")
 
     return lines + [""]
 
@@ -557,7 +554,7 @@ def build_export(notion, locations, discovery, side_files, gaps, ledger):
         "",
         f"Pages edited at or after `{format_time(ledger.since)}` (the watermark, floored to",
         "Notion's minute granularity). Assembled mechanically by the knowledge-base notion",
-        "adapter; the summaries are not written yet.",
+        "adapter.",
         *lookback_lines(ledger),
         "",
     ]
@@ -657,7 +654,7 @@ def main(argv=None):
         print(f"{len(locations)} location(s), {changed} changed, found by search")
 
     if not changed:
-        print("Nothing to summarize: skip the isolated agent.")
+        print("Nothing to digest: skip the gate.")
 
     elif arguments.count_only:
         print("Changed pages were listed only; run without --count-only to have them "

@@ -47,7 +47,6 @@
       "adapter": "chat",
       "feeds": ["notes/"],
       "watermark": {"format": "epoch-seconds", "boundary": "inclusive"},
-      "dense_conversations": ["#billing-ops", "#eligibility"],
       "private_topic_markers": ["may contain personal data"],
       "history_limit": 1000,
       "replies_limit": 200

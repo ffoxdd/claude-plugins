@@ -1,9 +1,10 @@
 # Reading a meeting transcript
 
 A meeting file holds the recap the meeting tool wrote and, below it, the
-transcript, verbatim except where the isolated agent replaced personal data.
-Distilling it is the step where a meeting's facts are most easily bent, and
-the bends read as plausibly as the facts, so this is how to read one.
+verbatim transcript. Whoever reads it — a covered gate writing a digest, or the
+session where there is no gate — is at the step where a meeting's facts are most
+easily bent, and the bends read as plausibly as the facts, so this is how to
+read one.
 
 ## Why the transcript is verbatim
 
@@ -11,8 +12,8 @@ Measured on 15 meetings in November 2026: Fathom's recap carried about 56% of a
 transcript's substantive facts. A model-written compaction of the transcript
 kept more, but misattributed speakers, reversed who asked whom, and firmed up
 hedges, at roughly three statements a meeting on Sonnet and six on Haiku. The
-verbatim transcript, scrubbed in place, kept every fact. So nothing upstream
-of this reading condenses it, and the reading is where the care goes.
+verbatim transcript kept every fact. So nothing upstream of this reading
+condenses it, and the reading is where the care goes.
 
 ## The recap is a map and a second opinion
 

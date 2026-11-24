@@ -10,11 +10,11 @@ around the gate. Two kinds of file go there:
   * **The export**, the one file an adapter's `output` argument names.
     `output_checked` refuses a path that does not resolve under the intake
     directory, and one inside a git work tree that git does not ignore.
-  * **Raw text for the isolated agent**, which the chat, notion and fathom
-    adapters write to `<intake>/<source name>/`, the source name being the
+  * **Raw text**, which the chat, notion and fathom adapters write to
+    `<intake>/<source name>/`, one file per batch, the source name being the
     adapter's `--source`. So `--source notion-covered` writes to
-    `inbox/notion-covered/`. The folder lives inside the repository, so the
-    isolated agent reaches it however its tools are scoped, and it is
+    `inbox/notion-covered/`. The folder lives inside the repository, so a
+    covered gate reaches it however its tools are scoped, and it is
     git-ignored, so nothing in it can reach a commit.
 
 Two checks run on the raw-text folder before an adapter's first request, and
@@ -24,8 +24,8 @@ either refuses the run:
     outside any work tree, or on a machine without git, is accepted; one git
     fails to judge for any other reason is refused.
   * **The folder must be absent or empty.** Files already there are a previous
-    run's, not yet gated or not yet deleted, and a second run's files beside
-    them would be gated, or deleted, as one batch.
+    run's, not yet digested or not yet moved to processed, and a second run's
+    files beside them would be handled as one run's.
 """
 
 import os
@@ -98,7 +98,7 @@ def occupied_refusal(directory):
 
     if any(directory.iterdir()):
         return (f"the raw-text folder {directory} is not empty: a previous run's working files "
-                "are still there. Finish that run's gate, or delete the folder")
+                "are still there. Finish that run's digests, or move them to processed")
 
     return None
 

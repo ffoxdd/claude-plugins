@@ -75,8 +75,8 @@ server's token cache, so it adds no credential and never prints the one it reads
 It exists for **record-dense Notion locations**: pages a session must not read
 directly. It finds the changed pages over the REST API, by search, or by walking
 every page with `--walk` as the periodic check, and writes their text only to
-side files in a git-ignored folder under the intake directory, for an isolated
-agent. The `notion-sweep` adapter covers the rest of
+side files in a git-ignored folder under the intake directory, for a covered
+gate to digest. The `notion-sweep` adapter covers the rest of
 the workspace on the same token: a search for what changed that counts, rather
 than lists, anything under those locations, and then reads each page it lists
 as only its blocks edited since an edit to it could last have gone unreported
@@ -96,8 +96,7 @@ file that `scripts/fathom_credential.py` writes, readable by its owner alone,
 after asking for the key without echo. It lists the meetings the key can see and
 writes each one's summary, action items and, when the register asks for them,
 verbatim transcript to a meeting file in a git-ignored folder under the intake
-directory, where an isolated agent scrubs personal data in place and changes
-nothing else. A meeting with an invitee from a domain the register excludes,
+directory, one file per meeting, which a covered gate digests where there is one. A meeting with an invitee from a domain the register excludes,
 such as a client whose contract forbids AI use of its meetings, is counted,
 written nowhere, and has no transcript requested.
 

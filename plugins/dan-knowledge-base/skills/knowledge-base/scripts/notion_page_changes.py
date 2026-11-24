@@ -84,8 +84,8 @@ would find it.
 
 **It refuses a page under a covered location**, one it cannot place, and, when
 the register names `open_locations`, one under no open location, and prints
-nothing of it. The `notion` adapter is the route for those, through the isolated
-agent. A page is placed the way the sweep places it, by parent chain against the
+nothing of it. The `notion` adapter is the route for those, through a covered
+gate. A page is placed the way the sweep places it, by parent chain against the
 register's listed locations (`notion_search.py`), so a page the sweep listed by
 title is one this will print. That is what keeps this tool from
 becoming a way around the covered route: it reads the same register and draws
@@ -258,11 +258,11 @@ def place(notion, listing, page, ancestry=None):
 
     if location is not None and location.covered:
         raise Refused(f"page {page['id']} is under the covered location {location.name!r}; the "
-                      "notion adapter reads it, through the isolated agent")
+                      "notion adapter reads it, through a covered gate")
 
     if location is None and listing.open is not None:
         raise Refused(f"page {page['id']} is under no open location; the notion adapter reads "
-                      "it, through the isolated agent")
+                      "it, through a covered gate")
 
 
 def fetch_page(notion, page_id):

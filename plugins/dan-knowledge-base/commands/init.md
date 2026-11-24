@@ -43,12 +43,12 @@ sequences the work.
    - **`email`** — sweeps a sender whitelist for meeting recaps and similar.
      Needs `uv` and a mail MCP server already signed in, whose token cache it
      borrows read-only.
-   - **`chat`** — sweeps every conversation you are a member of, tiered by the
-     platform's privacy flags. Needs `uv`, the bundled `slack-client`, and a session
+   - **`chat`** — sweeps every conversation you are a member of, one raw file
+     per conversation. Needs `uv`, the bundled `slack-client`, and a session
      captured by its `login`, which fetches its own browser. It authenticates as
      you, not as an app — read `references/chat-sources.md` before adopting it.
    - **`fathom`** — exports the meeting summaries a Fathom API key can see,
-     for an isolated agent to gate, and skips every meeting with an invitee
+     one raw file per meeting, and skips every meeting with an invitee
      from a domain the register excludes. Needs `python3` and a key, stored
      once with the plugin's `scripts/fathom_credential.py`.
    - **No adapter** — a source the model queries directly through its MCP

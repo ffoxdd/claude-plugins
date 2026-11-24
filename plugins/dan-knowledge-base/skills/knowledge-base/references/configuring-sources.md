@@ -92,7 +92,7 @@ whose `covered_locations` list the record-dense pages may also list
 Without the key, every page outside a covered location is swept verbatim. With
 it, the register is default-deny: only a page under an open location is read,
 and a page under neither list is counted, named by id and exported for the
-isolated agent like a covered one. The nearest listed ancestor decides, so an
+covered gate like a covered one. The nearest listed ancestor decides, so an
 open page inside a covered location, or the reverse, works as written. In a
 source listing any location, a page whose ancestry the integration cannot see
 before it meets a listed one is unplaceable, a gap, until the page the
