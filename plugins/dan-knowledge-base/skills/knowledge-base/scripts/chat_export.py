@@ -449,7 +449,7 @@ class RawFiles:
         path = os.path.join(self.directory, f"{name}.md")
         self.written.append(path)
 
-        with open(path, "w", encoding="utf-8") as handle:
+        with open(path, "w", encoding="utf-8", errors="replace") as handle:
             handle.write("\n".join([f"# {conversation.name} ({conversation.identifier})", ""]
                                    + lines))
 
@@ -613,12 +613,12 @@ def main(argv=None):
         text.lower() for text in source.get("extra_acknowledgements") or []
     }
 
+    raw_directory.stop_on_signals()
+    raw_files = RawFiles(raw_text_directory) if raw_text_directory else None
+    completed = False
+
     if raw_text_directory:
         raw_directory.begin(raw_text_directory)
-
-    raw_files = RawFiles(raw_text_directory) if raw_text_directory else None
-    raw_directory.stop_on_signals()
-    completed = False
 
     # Any exit before the index is written, a stop by signal included, takes back
     # the raw files, since no index would name them and the next run would refuse
@@ -627,7 +627,7 @@ def main(argv=None):
         content, rendered, excluded = build_export(
             Client(source), arguments.watermark, acknowledgements, exclusions, raw_files)
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(content, encoding="utf-8")
+        output.write_text(content, encoding="utf-8", errors="replace")
         completed = True
 
     except ExportError as error:

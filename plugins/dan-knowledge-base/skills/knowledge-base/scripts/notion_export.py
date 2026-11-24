@@ -473,9 +473,11 @@ class SideFiles:
         self.written = []
 
     def write(self, page_id, text):
+        """Recorded before the write, so a write that fails once the file exists is
+        still taken back; a lone surrogate in page text is replaced, not fatal."""
         path = self.directory / f"{re.sub(r'[^A-Za-z0-9-]+', '_', page_id)}.md"
-        path.write_text(text, encoding="utf-8")
         self.written.append(path)
+        path.write_text(text, encoding="utf-8", errors="replace")
 
         return path
 
@@ -575,6 +577,20 @@ def build_export(notion, locations, discovery, side_files, gaps, ledger):
     return "\n".join(header + body), checked_total, exported
 
 
+def discovery_for(arguments, source, notion, locations, opened, since, ledger, gaps):
+    """How the run finds changed pages, and the sections it renders."""
+    search = SearchDiscovery(notion, locations, ledger.floor, gaps, opened)
+    sections = locations + ([UNLISTED] if opened is not None else [])
+
+    if not arguments.walk:
+        return search, sections
+
+    walk = TreeWalkDiscovery(notion, since, int(source.get("max_depth", DEFAULT_MAX_DEPTH)),
+                             gaps, WalkProgress(len(locations)))
+
+    return WithUnlisted(walk, search), sections
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("watermark", help="ISO-8601 UTC time; pages edited at or after its minute")
@@ -615,24 +631,24 @@ def main(argv=None):
 
         return EXIT_REFUSED
 
-    if directory:
-        raw_directory.begin(directory)
-
+    raw_directory.stop_on_signals()
     side_files = SideFiles(directory)
     gaps = Gaps()
-    raw_directory.stop_on_signals()
     completed = False
 
-    search = SearchDiscovery(notion, locations, ledger.floor, gaps, opened)
-    sections = locations + ([UNLISTED] if opened is not None else [])
+    try:
+        discovery, sections = discovery_for(arguments, source, notion, locations, opened, since,
+                                            ledger, gaps)
 
-    if arguments.walk:
-        walk = TreeWalkDiscovery(notion, since, int(source.get("max_depth", DEFAULT_MAX_DEPTH)),
-                                 gaps, WalkProgress(len(locations)))
-        discovery = WithUnlisted(walk, search)
+    except (TypeError, ValueError):
+        print('notion_export: "max_depth" must be a whole number', file=sys.stderr)
 
-    else:
-        discovery = search
+        return EXIT_REFUSED
+
+    # The folder is marked incomplete immediately before the try that takes its
+    # files back, so nothing can fail in between and strand the marker.
+    if directory:
+        raw_directory.begin(directory)
 
     # Past this point a failure is reported by type alone. An exception's message
     # can carry what it was handed — a header, a body — and a traceback prints it.
@@ -640,7 +656,7 @@ def main(argv=None):
         content, checked, exported = build_export(notion, sections, discovery, side_files, gaps,
                                                   ledger)
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(content, encoding="utf-8")
+        output.write_text(content, encoding="utf-8", errors="replace")
         completed = True
 
     except Exception as error:  # noqa: BLE001 — the point is that nothing escapes unreduced

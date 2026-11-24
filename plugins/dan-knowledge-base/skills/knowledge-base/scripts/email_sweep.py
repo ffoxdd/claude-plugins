@@ -643,6 +643,7 @@ def main(argv=None):
     output.write_text(
         render(paired, arguments.watermark, notice_lines(set_aside, drift, unexpected_senders)),
         encoding="utf-8",
+        errors="replace",
     )
 
     # Written only once the intake file exists, so a crash mid-write never leaves

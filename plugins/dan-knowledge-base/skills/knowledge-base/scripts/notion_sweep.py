@@ -375,6 +375,7 @@ def main(argv=None):
         output.write_text(
             build_output(build_manifest(changes, ledger, listing.reader), readings),
             encoding="utf-8",
+            errors="replace",
         )
 
     except Exception as error:  # noqa: BLE001 — the point is that nothing escapes unreduced

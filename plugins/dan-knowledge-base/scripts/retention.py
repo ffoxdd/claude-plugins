@@ -20,7 +20,8 @@ git, or no work tree around it — it deletes nothing and says nothing, the way 
 adapter accepts such a place but retention never deletes what it cannot confirm
 is ignored. It never follows a link: a symbolic link, or on Windows a junction
 or any other reparse point that stands for another location, under the
-directory is neither deleted nor descended into. A folder it cannot list, or one
+directory is neither deleted nor descended into; a reparse point whose tag cannot be read counts as a link, the
+safe direction. A folder it cannot list, or one
 removed under it by another session, is skipped, and a file it cannot delete is
 left for the next run; neither is named.
 

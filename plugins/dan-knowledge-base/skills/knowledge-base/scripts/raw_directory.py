@@ -149,10 +149,13 @@ def take_back(paths, directory):
 
 def stop_on_signals():
     """Make SIGTERM, and SIGHUP where the platform has it, end the run the way an
-    error does, so a stopped background task still takes back its files."""
+    error does, so a stopped background task still takes back its files. A signal
+    the caller set to be ignored, as `nohup` does SIGHUP, stays ignored."""
     for name in ("SIGTERM", "SIGHUP"):
-        if hasattr(signal, name):
-            signal.signal(getattr(signal, name), terminate)
+        number = getattr(signal, name, None)
+
+        if number is not None and signal.getsignal(number) is not signal.SIG_IGN:
+            signal.signal(number, terminate)
 
 
 def terminate(signal_number, frame):

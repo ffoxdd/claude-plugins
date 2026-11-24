@@ -797,14 +797,14 @@ def main(argv=None):
 
         return EXIT_REFUSED
 
-    if directory:
-        raw_directory.begin(directory)
-
+    raw_directory.stop_on_signals()
     meeting_files = MeetingFiles(directory, transcripts)
     gaps = Gaps()
     sorting = Sorting()
-    raw_directory.stop_on_signals()
     completed = False
+
+    if directory:
+        raw_directory.begin(directory)
 
     # Past this point a failure is reported by type alone. An exception's message
     # can carry what it was handed — a header, a body — and a traceback prints it.
@@ -848,7 +848,7 @@ def write_export(output, fathom, sorting, excluded, ledger, gaps, floor, lookbac
 
     content = build_export(sorting, floor, lookback_hours, meeting_files)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(content, encoding="utf-8")
+    output.write_text(content, encoding="utf-8", errors="replace")
 
 
 def utf8_streams():

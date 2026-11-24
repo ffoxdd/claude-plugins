@@ -329,6 +329,91 @@ class RegisterShapeTest(unittest.TestCase):
         self.assertIn("required_variable", self.provision(session=None))
 
 
+class RawFileWritersTest(unittest.TestCase):
+    """What every writer `take_back` relies on promises: a path is recorded before
+    its file is written, so a write that fails once the file exists is still
+    taken back; and a lone surrogate, which API text can carry, is replaced
+    rather than failing the run. Exercised in-process, with no service."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.raw = Path(self.directory.name).resolve() / "inbox" / "source"
+        sys.path.insert(0, str(support.plugin_root(PLUGIN) / ADAPTER_SCRIPTS))
+        sys.path.insert(0, str(support.plugin_root(PLUGIN) / "scripts"))
+
+        import chat_export
+        import notion_export
+        import raw_directory
+
+        self.chat_export, self.notion_export, self.raw_directory = \
+            chat_export, notion_export, raw_directory
+        raw_directory.begin(self.raw)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def writers(self):
+        conversation = self.chat_export.Conversation("D1", "a direct message", False, "")
+        raw_files = self.chat_export.RawFiles(self.raw)
+        side_files = self.notion_export.SideFiles(self.raw)
+
+        return [("chat", raw_files, lambda text: raw_files.write(conversation, [text])),
+                ("notion", side_files, lambda text: side_files.write("page-1", text))]
+
+    def test_a_lone_surrogate_is_replaced_rather_than_failing(self):
+        for name, files, write in self.writers():
+            with self.subTest(writer=name):
+                path = Path(write("before \ud800 after"))
+
+                self.assertIn("before ? after", path.read_text(encoding="utf-8"))
+
+    def test_a_write_that_fails_after_creating_the_file_is_still_taken_back(self):
+        from unittest import mock
+
+        real_open = open
+
+        def failing_open(path, *arguments, **options):
+            handle = real_open(path, *arguments, **options)
+            handle.close()
+            raise OSError("no space left on device")
+
+        def failing_write_text(path, *arguments, **options):
+            path.touch()
+            raise OSError("no space left on device")
+
+        for (name, files, write), patch in zip(
+                self.writers(),
+                (mock.patch("builtins.open", failing_open),
+                 mock.patch.object(Path, "write_text", failing_write_text))):
+            with self.subTest(writer=name):
+                with patch:
+                    with self.assertRaises(OSError):
+                        write("text")
+
+                self.assertEqual(len(files.written), 1)
+                self.assertTrue(Path(files.written[0]).exists())
+                self.assertEqual(files.remove_all(), 0)
+                self.assertEqual(list(self.raw.iterdir()), [])
+                self.raw_directory.begin(self.raw)
+
+    @unittest.skipIf(not hasattr(signal, "SIGHUP"), "the platform has no SIGHUP")
+    def test_an_ignored_sighup_stays_ignored(self):
+        """`nohup` ignores SIGHUP on purpose; the run must not undo that."""
+        previous_hangup = signal.getsignal(signal.SIGHUP)
+        previous_termination = signal.getsignal(signal.SIGTERM)
+
+        try:
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)
+            self.raw_directory.stop_on_signals()
+
+            self.assertIs(signal.getsignal(signal.SIGHUP), signal.SIG_IGN)
+            self.assertIs(signal.getsignal(signal.SIGTERM), self.raw_directory.terminate)
+
+        finally:
+            signal.signal(signal.SIGHUP, previous_hangup)
+            signal.signal(signal.SIGTERM, previous_termination)
+
+
 class RetentionTest(unittest.TestCase):
     """The processed-intake retention: what it deletes, what it never touches, and
     the conditions under which it deletes nothing at all."""
@@ -2092,6 +2177,19 @@ class NotionAdapterTest(unittest.TestCase):
         self.assertIn("must be git-ignored", result.stderr)
         self.assertEqual(self.stub.authorizations, [])
         self.assertFalse(self.raw.exists())
+
+    def test_a_malformed_max_depth_strands_no_marker(self):
+        """The folder is marked only immediately before the work that takes it back."""
+        document = json.loads(self.config.read_text())
+        document["sources"]["notion-covered"]["max_depth"] = "deep"
+        self.config.write_text(json.dumps(document))
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("max_depth", result.stderr)
+        self.assertFalse((self.raw / ".incomplete").exists())
+        self.assertNotIn("interrupted run", self.export().stderr)
 
     def test_an_output_outside_the_intake_directory_is_refused_before_any_request(self):
         self.output = self.root / "export.md"
