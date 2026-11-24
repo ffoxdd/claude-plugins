@@ -415,9 +415,13 @@ class RetentionTest(unittest.TestCase):
 
         return retention
 
-    def faking_reparse_point(self, retention, faked):
+    JUNCTION = 0xA0000003
+    SYMBOLIC_LINK = 0xA000000C
+    CLOUD_PLACEHOLDER = 0x9000001A
+
+    def faking_reparse_point(self, retention, faked, tag=None):
         """os.lstat, with the reparse-point attribute Windows gives a junction
-        added for the one path `faked`."""
+        added for the one path `faked`, and `tag` as its reparse tag when given."""
         from types import SimpleNamespace
         from unittest import mock
 
@@ -429,8 +433,13 @@ class RetentionTest(unittest.TestCase):
             if os.path.normpath(str(path)) != os.path.normpath(str(faked)):
                 return status
 
-            return SimpleNamespace(st_mode=status.st_mode, st_mtime=status.st_mtime,
-                                   st_file_attributes=retention.REPARSE_POINT)
+            fields = {"st_mode": status.st_mode, "st_mtime": status.st_mtime,
+                      "st_file_attributes": retention.REPARSE_POINT}
+
+            if tag is not None:
+                fields["st_reparse_tag"] = tag
+
+            return SimpleNamespace(**fields)
 
         return mock.patch.object(retention.os, "lstat", lstat)
 
@@ -447,6 +456,92 @@ class RetentionTest(unittest.TestCase):
 
         self.assertEqual(deleted, 0)
         self.assertTrue(old.exists())
+
+    def test_only_a_reparse_tag_that_stands_for_another_location_is_a_link(self):
+        """A junction or symbolic link is stepped around; a cloud placeholder keeps
+        its own content and is swept like any folder."""
+        retention = self.in_process()
+
+        for tag, kept in ((self.JUNCTION, True), (self.SYMBOLIC_LINK, True),
+                          (self.CLOUD_PLACEHOLDER, False)):
+            with self.subTest(tag=hex(tag)):
+                folder = self.processed / f"folder-{tag:x}"
+                old = folder / "old.md"
+                folder.mkdir()
+                old.write_text("intake", encoding="utf-8")
+                os.utime(old, (0, 0))
+
+                with self.faking_reparse_point(retention, folder, tag):
+                    retention.delete_expired(str(self.processed), datetime.now().timestamp())
+
+                self.assertEqual(old.exists(), kept)
+
+    def test_a_cloud_placeholder_processed_directory_is_not_refused(self):
+        retention = self.in_process()
+
+        with self.faking_reparse_point(retention, self.processed, self.CLOUD_PLACEHOLDER):
+            self.assertIsNone(retention.linked_component(self.root, self.processed))
+
+    @unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                     "needs POSIX permissions that bind the caller")
+    def test_an_unreadable_folder_is_skipped_and_the_rest_swept(self):
+        self.work_tree()
+        old = self.intake_file("old.md", age=self.OLD)
+        locked = self.processed / "locked"
+        hidden = self.intake_file("locked/old.md", age=self.OLD)
+        locked.chmod(0)
+
+        try:
+            result = self.enforce()
+
+        finally:
+            locked.chmod(0o700)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertNotIn("locked", result.stdout + result.stderr)
+        self.assertFalse(old.exists())
+        self.assertTrue(hidden.exists())
+
+    def test_a_folder_that_vanishes_mid_sweep_costs_nothing(self):
+        retention = self.in_process()
+        gone = self.processed / "gone"
+        gone.mkdir()
+        real_scandir = os.scandir
+
+        def scandir(path):
+            if os.path.normpath(str(path)) == os.path.normpath(str(gone)):
+                raise FileNotFoundError(path)
+
+            return real_scandir(path)
+
+        from unittest import mock
+
+        with mock.patch.object(retention.os, "scandir", scandir):
+            self.assertEqual(retention.delete_expired(str(self.processed),
+                                                      datetime.now().timestamp()), 0)
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_a_retention_failure_never_silences_the_session_note(self):
+        self.work_tree()
+        self.config = write_register(self.root, {
+            "layout": self.layout, "sources": {},
+            "session": {"required_variable": SESSION_VARIABLE}})
+        from unittest import mock
+
+        sys.path.insert(0, str(support.plugin_root(PLUGIN) / "scripts"))
+        import provision
+        import retention
+
+        with mock.patch.object(retention, "enforce", side_effect=RuntimeError("boom")):
+            notes = provision.retention_report({}, self.root)
+
+        self.assertEqual(notes, [])
+        result = support.run_script(support.script(PLUGIN, "provision.py"),
+                                    KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+                                    HOME=str(self.root))
+
+        self.assertIn("a sync cannot run in this session", result.stdout)
 
     def test_a_processed_directory_that_is_a_junction_is_refused(self):
         retention = self.in_process()

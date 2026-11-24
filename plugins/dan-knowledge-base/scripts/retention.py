@@ -19,8 +19,10 @@ at the wrong one is not recoverable. Where git cannot judge the directory — no
 git, or no work tree around it — it deletes nothing and says nothing, the way an
 adapter accepts such a place but retention never deletes what it cannot confirm
 is ignored. It never follows a link: a symbolic link, or on Windows a junction
-or any other reparse point, under the directory is neither deleted nor
-descended into.
+or any other reparse point that stands for another location, under the
+directory is neither deleted nor descended into. A folder it cannot list, or one
+removed under it by another session, is skipped, and a file it cannot delete is
+left for the next run; neither is named.
 
 It prints one line, the count deleted or the refusal, and never a filename,
 since a filename can carry a meeting's title.
@@ -113,10 +115,18 @@ def linked_component(root, processed):
 # what keeps one from being descended into.
 REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
+# Bit 29 of a reparse tag, the name-surrogate bit: set on every tag that stands
+# for another named entity, symbolic links (0xA000000C) and junctions or mount
+# points (0xA0000003) among them. A cloud-file placeholder (0x9000xx1A) and the
+# other tags that keep their own content leave it clear, so a folder synced by a
+# cloud client is not mistaken for a link.
+NAME_SURROGATE = 0x20000000
+
 
 def is_link(path):
-    """Whether the path is a symbolic link or a reparse point; a path that cannot
-    be read counts as one, so it is never descended into or deleted."""
+    """Whether the path is a symbolic link, or a reparse point that stands for
+    another location; a path that cannot be read counts as one, so it is never
+    descended into or deleted."""
     try:
         status = os.lstat(path)
 
@@ -126,8 +136,19 @@ def is_link(path):
     except OSError:
         return True
 
-    return stat.S_ISLNK(status.st_mode) or \
-        bool(getattr(status, "st_file_attributes", 0) & REPARSE_POINT)
+    if stat.S_ISLNK(status.st_mode):
+        return True
+
+    if not getattr(status, "st_file_attributes", 0) & REPARSE_POINT:
+        return False
+
+    return redirects(getattr(status, "st_reparse_tag", 0))
+
+
+def redirects(tag):
+    """Whether a reparse tag stands for another location. A missing tag cannot be
+    classified, and counts as one."""
+    return not tag or bool(tag & NAME_SURROGATE)
 
 
 def confirm_ignored(directory):
@@ -155,17 +176,22 @@ def delete_expired(folder, cutoff):
     that cannot be deleted is left for the next run."""
     deleted = 0
 
-    for entry in os.scandir(folder):
+    try:
+        entries = list(os.scandir(folder))
+
+    except OSError:
+        return 0
+
+    for entry in entries:
         if is_link(entry.path):
             continue
 
-        if entry.is_dir(follow_symlinks=False):
-            deleted += delete_expired(entry.path, cutoff)
-            remove_if_empty(entry.path)
-            continue
-
         try:
-            if is_expired(entry.path, cutoff):
+            if entry.is_dir(follow_symlinks=False):
+                deleted += delete_expired(entry.path, cutoff)
+                remove_if_empty(entry.path)
+
+            elif is_expired(entry.path, cutoff):
                 os.unlink(entry.path)
                 deleted += 1
 

@@ -88,9 +88,9 @@ def main():
         return
 
     adapters = declared_adapters(document)
+    refusal = session_note(document)
     cleanups = clear_superseded_links() if adapters else []
     cleanups.extend(retention_report(document, root))
-    refusal = session_note(document)
 
     if refusal:
         report(cleanups + [refusal])
@@ -132,8 +132,13 @@ def session_note(document):
 
 
 def retention_report(document, root):
-    """The retention run's line, when it deleted something or refused."""
-    outcome = retention.enforce(document, root)
+    """The retention run's line, when it deleted something or refused. A failure of
+    its own costs its line, never the session's other notes."""
+    try:
+        outcome = retention.enforce(document, root)
+
+    except Exception:  # noqa: BLE001 — a traceback could name an intake file
+        return []
 
     if outcome is None or outcome.deleted == 0:
         return []
