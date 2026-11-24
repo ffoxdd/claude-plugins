@@ -398,9 +398,9 @@ Only readable pages are shaped by any of this.
 covered source may list `open_locations` in the same shape. Then only a page
 under an open location is read; a page under neither list is named by id, never
 read, and exported by the `notion` adapter for the gate. The nearest
-listed ancestor decides. In a source listing any location, a page whose
-ancestry the integration cannot see is unplaceable, a gap named by id, until the
-page the integration is shared at is listed.
+listed ancestor decides. A page whose ancestry the integration cannot see is
+unplaceable, a gap named by id, when open locations are listed or a covered one
+cannot be fetched, until the page the integration is shared at is listed.
 
 All five print the output path, then counts, then the new watermark, and send gaps
 to stderr. Neither stream carries content, a title, a subject or a person's name:

@@ -24,13 +24,16 @@ listed ancestor; an id listed as both is covered.
 seen, cached for the run, and stops at the first listed location. A chain that
 reaches the workspace is under no listed location. A chain that meets a
 listed location stops there, whatever lies above it. A chain that meets an
-ancestor which cannot be fetched first, one the integration cannot see (404)
-included, is `Unplaceable` when the source lists any location: what lies above
-it might be a covered location, so the item is under no location anyone can
-vouch for. Listing the page the integration is shared at ends the walk before
-it reaches the ancestor it cannot see. A source listing no location at all has
-nothing such an ancestor could hide, so a 404 there ends the chain as the top of
-the workspace does.
+ancestor which cannot be fetched first is `Unplaceable`: what lies above it
+might be a covered location, so the item is under no location anyone can vouch
+for. One kind of unseen ancestor is the top of the tree instead, as the
+workspace is: a 404 in a source that lists no open location, once the run has
+confirmed its token can fetch every covered location. Sharing reaches everything
+beneath a page, so a covered location this token can see cannot sit above a
+page it cannot, and the 404 hides nothing; the confirmation is asked once a
+run, on the first 404. A covered location the token cannot fetch, or any open
+location listed, keeps the 404 unplaceable; listing the page the integration is
+shared at then ends the walk before it reaches the ancestor it cannot see.
 
 Every caller treats an unplaceable item as a gap, and writes nothing of it but
 its id, because an item that might sit under a covered location must not be
@@ -102,6 +105,16 @@ class Ancestry:
 
             raise
 
+    def remembered(self, kind, identifier):
+        """The item, fetched at most once a run, so a location confirmed reachable
+        costs nothing more when a chain later passes through it."""
+        normalized = normalize(identifier)
+
+        if normalized not in self.parents:
+            self.parents[normalized] = self.fetch(kind, identifier)
+
+        return self.parents[normalized]
+
     def fetch(self, kind, identifier):
         if kind == "page_id":
             return self.notion.page(identifier)
@@ -145,6 +158,9 @@ class Placement:
                           for location in open_locations or []}
         self.locations.update({normalize(location["id"]): Location(location["name"], True)
                                for location in locations})
+        self.covered = list(locations)
+        self.opened = open_locations is not None
+        self.covered_confirmed = None
         self.known = {}
 
     def location_of(self, item):
@@ -152,7 +168,7 @@ class Placement:
         chain reaches the top of the workspace without meeting one. A listed
         location met on the way up places the item whatever lies above it, and
         an ancestor the integration cannot see (404) ends the chain at None when
-        nothing is listed, since there is nothing it could hide."""
+        it can hide nothing (`unseen_is_top`)."""
         chain = []
         current = item
 
@@ -171,7 +187,7 @@ class Placement:
                 current = self.ancestry.parent_of(current)
 
             except ExportError as error:
-                if error.status == 404 and not self.locations:
+                if error.status == 404 and self.unseen_is_top():
                     return self.settle(chain, None)
 
                 raise Unplaceable(str(error)) from None
@@ -180,6 +196,36 @@ class Placement:
                 return self.settle(chain, None)
 
         raise Unplaceable(f"a parent chain longer than {MAX_ANCESTRY} items")
+
+    def unseen_is_top(self):
+        """Whether an ancestor the integration cannot see can only lie above every
+        listed location: when nothing is listed, or when no open location is and
+        this token can fetch every covered one. Confirmed once a run."""
+        if not self.locations:
+            return True
+
+        if self.opened:
+            return False
+
+        if self.covered_confirmed is None:
+            self.covered_confirmed = all(map(self.fetchable, self.covered))
+
+        return self.covered_confirmed
+
+    def fetchable(self, location):
+        kinds = ("database_id",) if location.get("kind") == "database" \
+            else ("page_id", "database_id")
+
+        for kind in kinds:
+            try:
+                self.ancestry.remembered(kind, location["id"])
+
+                return True
+
+            except ExportError:
+                continue
+
+        return False
 
     def settle(self, chain, location):
         for identifier in chain:

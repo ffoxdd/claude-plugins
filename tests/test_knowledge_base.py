@@ -2202,12 +2202,16 @@ class NotionSweepTest(unittest.TestCase):
     def write_listing(self, covered, opened):
         """The covered source with both lists, which is where the sweep reads them."""
         credential = {"claude_config": str(self.claude_config)}
+        listing = {"covered_locations": covered}
+
+        if opened is not None:
+            listing["open_locations"] = opened
+
         self.config = write_register(self.root, register(
             notion={"adapter": "notion-sweep", "api_base": self.stub.api_base,
                     "request_interval_seconds": 0, "credential": credential,
                     "covered_by": "notion-covered"},
-            **{"notion-covered": {"adapter": "notion", "covered_locations": covered,
-                                  "open_locations": opened}},
+            **{"notion-covered": {"adapter": "notion", **listing}},
         ))
 
     def sweep(self, watermark=StubNotionSearch.WATERMARK):
@@ -2289,8 +2293,12 @@ class NotionSweepTest(unittest.TestCase):
         self.assert_nothing_covered_leaked(result)
 
     def test_a_page_whose_ancestor_cannot_be_seen_is_unplaced_and_named_by_id(self):
-        """Its parent returns 404, so what lies above might be a covered location."""
+        """Its parent returns 404 and open locations are listed, so what lies above
+        might be a covered location or an open one."""
         self.start_stub(unseen=True)
+        self.write_listing([{"name": "Operations hub", "id": "hub"}],
+                           [{"name": "Wiki", "id": "open-page"},
+                            {"name": "Minutes", "id": "same-minute"}])
 
         result = self.sweep()
 
@@ -2302,6 +2310,29 @@ class NotionSweepTest(unittest.TestCase):
         self.assertNotIn(("blocks", "team-child", "children"), self.stub.requested)
         self.assertIn("1 unplaced", result.stdout)
         self.assertNotIn("New watermark", result.stdout)
+
+    def test_an_unseen_ancestor_is_the_top_once_every_covered_location_is_fetched(self):
+        """Sharing reaches everything beneath a page, so a covered location this
+        token can fetch cannot sit above a page it cannot see. Confirmed once."""
+        self.start_stub(unseen=True, grandchild=True)
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("`team-child`", self.manifest())
+        self.assertIn("`team-grandchild`", self.manifest())
+        self.assertNotIn("Unplaced", self.manifest())
+        self.assertEqual(self.stub.requested.count(("pages", "hub")), 1)
+
+    def test_an_unseen_ancestor_stays_unplaceable_when_a_covered_location_is_not_fetched(self):
+        self.start_stub(unseen=True)
+        self.write_listing([{"name": "Operations hub", "id": "hub"},
+                            {"name": "Elsewhere", "id": "nowhere"}], None)
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("team-child could not be placed", result.stderr)
 
     def test_listing_the_shared_page_places_what_is_under_it(self):
         self.start_stub(unseen=True)
@@ -3171,7 +3202,8 @@ class NotionPageChangesTest(unittest.TestCase):
         self.assertNotIn("RESTRICTED-TITLE", result.stderr)
 
     def test_a_page_whose_ancestor_cannot_be_seen_is_refused(self):
-        self.start_stub(unseen=True)
+        self.start_stub(unseen=True, listing={"open_locations": [{"name": "Wiki",
+                                                                   "id": "open-page"}]})
 
         result = self.changes("team-child")
 

@@ -107,10 +107,12 @@ Without the key, every page outside a covered location is swept verbatim. With
 it, the register is default-deny: only a page under an open location is read,
 and a page under neither list is counted, named by id and exported for the
 covered gate like a covered one. The nearest listed ancestor decides, so an
-open page inside a covered location, or the reverse, works as written. In a
-source listing any location, a page whose ancestry the integration cannot see
-before it meets a listed one is unplaceable, a gap, until the page the
-integration is shared at is listed.
+open page inside a covered location, or the reverse, works as written. A page
+whose ancestry the integration cannot see before it meets a listed location is
+read as at the top of the workspace when no open location is listed and the
+token can fetch every covered one, since a covered location the token can see
+cannot sit above a page it cannot. Otherwise it is unplaceable, a gap, until the
+page the integration is shared at is listed.
 
 A value that restricts what may be read at all belongs in the JSON too, where
 the adapter enforces it, rather than only in the prose: the chat adapter's
