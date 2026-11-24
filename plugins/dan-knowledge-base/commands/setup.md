@@ -102,10 +102,11 @@ to confirm before moving on.
    it.
 
 7. **Permissions.** None to add — say so and move on. A PreToolUse hook in this
-   plugin approves the reads a sync runs. Two things still prompt, both
-   deliberately: `slack-client login`, and any call that chains a second
-   command. A `Bash(slack-client *)` entry carried from an earlier version is
-   harmless and needs no removing.
+   plugin approves the `slack-client` listings, which print no message. Everything
+   else prompts, deliberately: `history` and `replies` print message text into the
+   session, `login` waits on a person, and a chained call could reach anything.
+   A `Bash(slack-client *)` allow entry approves `history` as well; offer to
+   remove it.
 
 8. **Re-run `provision.py`.** Silence is the confirmation. Then offer, without
    running it unbidden, a first sync against a deliberately recent watermark so

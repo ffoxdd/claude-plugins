@@ -96,12 +96,15 @@ nothing else. A meeting with an invitee from a domain the register excludes,
 such as a client whose contract forbids AI use of its meetings, is counted,
 written nowhere, and has no transcript requested.
 
-**Permissions.** A PreToolUse hook approves the read-only `slack-client` calls a
-sync runs, so installing the plugin is the grant and `permissions.allow` stays
-untouched. `slack-client login` still prompts — it opens a browser and waits for
-a person — as does `slack-client file`, which saves a message's attachment to a
-path of the caller's choosing, and any invocation chaining a second command. Your
-own `permissions.deny` overrides all of it.
+**Permissions.** A PreToolUse hook approves the `slack-client` listings
+(`channels`, `starred`, `memberships`), which print no message, so installing the
+plugin is the grant and `permissions.allow` stays untouched. `history` and
+`replies` still prompt, because they print message text into the session; the
+adapter runs them as a subprocess and needs no grant. `slack-client login` prompts
+too — it opens a browser and waits for a person — as does `slack-client file`,
+which saves a message's attachment to a path of the caller's choosing, and any
+invocation chaining a second command. Your own `permissions.deny` overrides all
+of it.
 
 ## The bundled Slack client, stated plainly
 

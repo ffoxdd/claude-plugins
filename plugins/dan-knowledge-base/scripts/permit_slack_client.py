@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
-"""Approves the reads `slack-client` exists to do, so a sync needs no allowlist entry.
+"""Approves the `slack-client` listings a session runs, so setup needs no allowlist entry.
 
-Every intake run reaches Slack through this command, and until now each call was a
-permission prompt — which made a plugin whose whole purpose is an unattended sweep
-depend on someone sitting there approving it. Installing the plugin is the grant.
+Installing the plugin is the grant, and it covers the metadata subcommands only:
+`channels`, `starred` and `memberships`, which print conversation ids, names,
+lock flags and topics. Those are what a person checks while setting a source up,
+and none of them prints a message.
 
-`login` is deliberately not approved. It opens a real browser and waits up to five
+`history` and `replies` are not approved. They print message text to whoever ran
+them, and a session that runs one reads raw chat with no gate in between. The
+chat adapter calls the client as a subprocess and writes what it reads under the
+intake directory, so it needs neither approved; a person who wants raw history
+in a session answers the ordinary prompt.
+
+`login` is not approved either. It opens a real browser and waits up to five
 minutes for a person to sign in, so it is the one subcommand a person runs rather
 than Claude; approving it would let an unattended sync launch a browser and hang on
-it. Everything approved here reads and prints: channels, starred, memberships,
-history, replies. `file` is not approved either: it reads Slack but writes a local
-path of the caller's choosing, and where bytes land is a decision a person keeps.
-
-That split is not a safety compromise — the reads are the entire adapter, and the
-captured session they use is as sensitive as a Slack login either way. Approving
-them changes who has to be present, not what the command can see.
+it. Nor is `file`: it writes a local path of the caller's choosing, and where bytes
+land is a decision a person keeps.
 
 Bounded the same way the sibling grants in this marketplace are: shlex tokenizes
 the command, and any shell operator disqualifies it, so an approved first word
@@ -32,7 +34,7 @@ import sys
 
 COMMAND = "slack-client"
 
-APPROVED_SUBCOMMANDS = ("channels", "starred", "memberships", "history", "replies")
+APPROVED_SUBCOMMANDS = ("channels", "starred", "memberships")
 
 # Shell operators shlex hands back as their own tokens.
 OPERATORS = (";", "|", "||", "&", "&&", ">", ">>", "<", "(", ")")
@@ -45,9 +47,9 @@ OPERATORS = (";", "|", "||", "&", "&&", ">", ">>", "<", "(", ")")
 SUBSTITUTION_OR_NEWLINE = ("`", "\n", "\r")
 
 REASON = (
-    "A read-only slack-client call, with no way to reach a second command. "
-    "Approved by the dan-knowledge-base plugin, whose installation is the grant. "
-    "`slack-client login` is not approved: a person runs that one."
+    "A slack-client listing that prints no message, with no way to reach a second "
+    "command. Approved by the dan-knowledge-base plugin, whose installation is the "
+    "grant. `history`, `replies`, `file` and `login` are not approved."
 )
 
 
@@ -74,7 +76,7 @@ def approves(command):
 
     # The subcommand is argparse's first positional, so it is the first token that
     # is not a flag — matching on position alone would miss `slack-client --help
-    # history` and approve nothing that argparse would accept.
+    # memberships` and approve nothing that argparse would accept.
     return next((token for token in tokens[1:] if not token.startswith("-")), "") in (
         APPROVED_SUBCOMMANDS
     )

@@ -19,6 +19,12 @@
 #
 # Only invoke this when you're actually working in a PII-handling context —
 # there's no runtime check enforcing that, it's on you.
+#
+# The plugin's permission hook approves only the listings (channels, starred,
+# memberships), which print no message. `history` and `replies` print message
+# text to whoever runs them, so a session gets a prompt for those; the chat
+# adapter runs them as a subprocess and writes what they return under the
+# intake directory instead.
 
 import argparse
 import json
