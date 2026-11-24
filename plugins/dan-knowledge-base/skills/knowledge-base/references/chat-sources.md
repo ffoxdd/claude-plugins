@@ -26,8 +26,7 @@ what to leave out, so how private a conversation is changes nothing about the
 procedure: a conversation that is mostly per-person records yields a digest of
 structural facts, an engineering channel a fuller one, and the gate decides
 which. There is no per-conversation tier to configure, so a newly created
-private channel is handled safely with zero config. A register's
-`dense_conversations` is read and has no effect.
+private channel is handled safely with zero config.
 
 ## A conversation can be kept out entirely
 
@@ -37,16 +36,19 @@ nothing written, only a count on stdout. The register excludes by name, by
 banner, or both:
 
 ```json
-"excluded_conversations": ["#legal-*", "hr-cases"],
+"excluded_conversations": ["C0123ABCD", "#legal-*"],
 "private_topic_markers": ["may contain personal data"],
 "marked_conversations": "exclude"
 ```
 
-Names are shell-style patterns, matched case-insensitively, a leading `#`
-optional. `marked_conversations` is `"exclude"` or `"digest"` (the default; a
-register's `"scrub"` reads as `"digest"`) and decides what a topic or purpose
-carrying one of `private_topic_markers` does, so a newly bannered channel is
-kept out with no config change.
+Each entry is a shell-style pattern matched case-insensitively against the
+conversation's id and its name, a leading `#` optional; an id is the durable
+form, since a renamed channel keeps it. Every name in `dense_conversations` is
+excluded too. `marked_conversations` decides what a topic or purpose carrying
+one of `private_topic_markers` does, so a newly bannered channel is handled with
+no config change: `"exclude"`, which it is whenever markers are listed and the
+key is not, or `"digest"`, which handles it like any other (`"scrub"` reads as
+`"digest"`).
 
 ## Slack-specific facts
 
@@ -101,8 +103,9 @@ raw text sits in the source's git-ignored folder under the intake directory
 at rest on local disk — a real trade-off, so write the decision, and the
 register's `retention_days`, into the register.
 
-The run's index goes under the intake directory too, and the script's streams
-name conversations by id only, since a DM is named for its people. A
+The run's index is intake like the raw files: it names each conversation, and a
+DM is named for its people. Nothing else does — the script's streams name
+conversations by id, and the chat adapter keeps no ledger. A
 conversation that fails to fetch is passed through to the sync notes, not chased
 (`sweep-economics.md`).
 

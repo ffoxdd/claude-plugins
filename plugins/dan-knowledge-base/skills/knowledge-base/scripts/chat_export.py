@@ -24,21 +24,22 @@ name, since a direct message is named for the people in it.
 
 **A conversation can be excluded**, and an excluded one is never fetched: no
 history call is made for it, nothing of it is written anywhere, and stdout counts
-it without naming it. The register excludes by name, by topic banner, or both:
+it without naming it. The register excludes by name or id, by topic banner, or
+both:
 
-    "excluded_conversations": ["#legal-*", "hr-cases"],
+    "excluded_conversations": ["C0123ABCD", "#legal-*", "hr-cases"],
     "private_topic_markers": ["may contain personal data"],
     "marked_conversations": "exclude"
 
 `excluded_conversations` holds shell-style patterns matched case-insensitively
-against the conversation's name, a leading `#` optional on either side.
+against the conversation's id and its name, a leading `#` optional on either
+side. An id is the durable form: a renamed channel keeps it. Every name in
+`dense_conversations` is excluded the same way, since a record-dense
+conversation is one whose text should not be read directly.
 `marked_conversations` decides what happens to a conversation whose topic or
-purpose carries one of `private_topic_markers`: `"exclude"`, or `"digest"`, the
-default, which handles it like any other. `"scrub"` is read as `"digest"`.
-
-The register's `dense_conversations` is read and has no effect: once every
-conversation is digested from its own raw file, naming the record-dense ones
-changes nothing about how they are handled.
+purpose carries one of `private_topic_markers`: `"exclude"`, or `"digest"`,
+which handles it like any other (`"scrub"` is read as `"digest"`). Left unset,
+it is `"exclude"` whenever `private_topic_markers` lists any marker.
 """
 
 import argparse
@@ -124,9 +125,10 @@ class Exclusions:
     @classmethod
     def from_source(cls, source):
         """The source's exclusions, refused before any request when malformed."""
-        patterns = string_list(source, "excluded_conversations")
+        patterns = string_list(source, "excluded_conversations") + \
+            string_list(source, "dense_conversations")
         markers = string_list(source, "private_topic_markers")
-        marked = source.get("marked_conversations", "digest")
+        marked = source.get("marked_conversations", "exclude" if markers else "digest")
 
         if marked not in MARKED_HANDLING:
             raise configuration.ConfigurationError(
@@ -136,9 +138,10 @@ class Exclusions:
                    tuple(marker.lower() for marker in markers), MARKED_HANDLING[marked])
 
     def excludes(self, conversation):
-        name = bare_name(conversation.name)
+        names = (bare_name(conversation.identifier), bare_name(conversation.name))
 
-        if any(fnmatch.fnmatchcase(name, pattern) for pattern in self.patterns):
+        if any(fnmatch.fnmatchcase(name, pattern)
+               for name in names for pattern in self.patterns):
             return True
 
         banners = f"{conversation.topic}\n{conversation.purpose}".lower()
@@ -430,15 +433,32 @@ def render_message(message, indent=""):
     return [f"{indent}- {stamp} **{author}**: {text}"]
 
 
-def write_raw_text(directory, conversation, lines):
-    """Write one conversation's new messages as its own raw file, named by id: a
-    direct message's name is its people's, and a filename reaches stdout."""
-    path = os.path.join(directory, f"{re.sub(r'[^A-Za-z0-9._-]+', '_', conversation.identifier)}.md")
+class RawFiles:
+    """The raw files this run wrote, so a failed run can take them back: the
+    folder was empty when the run began, and a partial batch left in it would
+    refuse the next run."""
 
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write("\n".join([f"# {conversation.name} ({conversation.identifier})", ""] + lines))
+    def __init__(self, directory):
+        self.directory = directory
+        self.written = []
 
-    return path
+    def write(self, conversation, lines):
+        """Write one conversation's new messages as its own raw file, named by id:
+        a direct message's name is its people's, and a filename reaches stdout."""
+        name = re.sub(r"[^A-Za-z0-9._-]+", "_", conversation.identifier)
+        path = os.path.join(self.directory, f"{name}.md")
+        self.written.append(path)
+
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join([f"# {conversation.name} ({conversation.identifier})", ""]
+                                   + lines))
+
+        return path
+
+    def remove_all(self):
+        for path in self.written:
+            if os.path.exists(path):
+                os.unlink(path)
 
 
 def render_message_window(client, identifier, posted, revived, watermark, notes,
@@ -497,8 +517,7 @@ class Rendered:
         return QUIET_SECTION not in self.lines
 
 
-def render_conversation(client, conversation, watermark, acknowledgements,
-                        raw_text_directory=None):
+def render_conversation(client, conversation, watermark, acknowledgements, raw_files=None):
     identifier, name = conversation.identifier, conversation.name
     watermark = float(watermark)
     window, possibly_truncated = client.recent_window(identifier)
@@ -534,11 +553,10 @@ def render_conversation(client, conversation, watermark, acknowledgements,
     lines.append(f"{len(posted)} new message(s), and replies on {len(revived)} earlier "
                  "thread(s).")
 
-    if not raw_text_directory:
+    if not raw_files:
         return Rendered(lines + ["Counted only: no text was written.", ""], None, highest, notes)
 
-    raw_path = write_raw_text(
-        raw_text_directory,
+    raw_path = raw_files.write(
         conversation,
         render_message_window(client, identifier, posted, revived, watermark, notes,
                               acknowledgements),
@@ -547,7 +565,7 @@ def render_conversation(client, conversation, watermark, acknowledgements,
     return Rendered(lines + [f"Raw text: `{raw_path}`", ""], raw_path, highest, notes)
 
 
-def build_export(client, watermark, acknowledgements, exclusions, raw_text_directory=None):
+def build_export(client, watermark, acknowledgements, exclusions, raw_files=None):
     """The index's text, every fetched conversation's part of the run, and how many
     conversations were excluded before any fetch."""
     header = [
@@ -561,8 +579,7 @@ def build_export(client, watermark, acknowledgements, exclusions, raw_text_direc
     included = [conversation for conversation in conversations
                 if not exclusions.excludes(conversation)]
     rendered = [
-        render_conversation(client, conversation, watermark, acknowledgements,
-                            raw_text_directory)
+        render_conversation(client, conversation, watermark, acknowledgements, raw_files)
         for conversation in included
     ]
     content = "\n".join(header + [line for part in rendered for line in part.lines])
@@ -600,18 +617,28 @@ def main(argv=None):
     if raw_text_directory:
         raw_text_directory.mkdir(parents=True, exist_ok=True)
 
+    raw_files = RawFiles(raw_text_directory) if raw_text_directory else None
+    completed = False
+
+    # Any exit before the index is written takes back the raw files, since no
+    # index would name them and the next run would refuse the folder they fill.
     try:
         content, rendered, excluded = build_export(
-            Client(source), arguments.watermark, acknowledgements, exclusions,
-            raw_text_directory)
+            Client(source), arguments.watermark, acknowledgements, exclusions, raw_files)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(content, encoding="utf-8")
+        completed = True
 
     except ExportError as error:
-        print(f"chat_export: {error}", file=sys.stderr)
+        print(f"chat_export: {error}; the raw files this run wrote were removed",
+              file=sys.stderr)
 
         return 1
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(content, encoding="utf-8")
+    finally:
+        if raw_files and not completed:
+            raw_files.remove_all()
+
     report(output, rendered, excluded, arguments.watermark)
 
     return 0

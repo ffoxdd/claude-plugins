@@ -114,7 +114,8 @@ integration is shared at is listed.
 
 A value that restricts what may be read at all belongs in the JSON too, where
 the adapter enforces it, rather than only in the prose: the chat adapter's
-`excluded_conversations` and `marked_conversations` keep a conversation from
+`excluded_conversations`, `dense_conversations` and `private_topic_markers`
+(with `marked_conversations` left unset or `"exclude"`) keep a conversation from
 being fetched at all, and the `fathom` adapter's
 `excluded_invitee_domains` is how a client contract forbidding AI use of its
 meetings reaches the script, and the adapter refuses a source that leaves the key

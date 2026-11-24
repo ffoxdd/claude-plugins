@@ -622,6 +622,8 @@ command = sys.argv[1]
 if os.environ.get("STUB_CALL_LOG"):
     with open(os.environ["STUB_CALL_LOG"], "a", encoding="utf-8") as log:
         log.write(" ".join(sys.argv[1:]) + "\\n")
+if command == "history" and sys.argv[2] == os.environ.get("STUB_FAIL_HISTORY"):
+    sys.exit("slack api error: internal_error")
 if command == "memberships":
     print("C001\\tunlocked\\tgeneral")
     print("C002\\tlocked\\tbilling-ops")
@@ -976,7 +978,6 @@ class ChatAdapterTest(unittest.TestCase):
         self.config = write_register(root, register(chat={
             "adapter": "chat",
             "client_command": str(self.client),
-            "dense_conversations": ["#billing-ops"],
         }))
 
     def tearDown(self):
@@ -1135,7 +1136,6 @@ class ChatAdapterTest(unittest.TestCase):
         self.config.write_text(json.dumps(register(chat={
             "adapter": "chat",
             "client_command": str(self.client),
-            "private_topic_markers": ["may contain personal data"],
             **settings,
         })), encoding="utf-8")
 
@@ -1186,9 +1186,16 @@ class ChatAdapterTest(unittest.TestCase):
         self.assertFalse(any(call.startswith("history C004") for call in calls), calls)
         self.assertIn("1 conversation(s) excluded", result.stdout)
 
-    def test_a_marked_conversation_is_digested_by_default(self):
-        for settings in ({}, {"marked_conversations": "digest"},
-                         {"marked_conversations": "scrub"}):
+    def test_a_marked_conversation_is_excluded_by_default(self):
+        """A register listing markers meant them to keep a conversation from being
+        read directly, so leaving the handling unset excludes it."""
+        result, calls = self.exclude(private_topic_markers=["this channel may contain"])
+
+        self.assertFalse(any(call.startswith("history C004") for call in calls), calls)
+        self.assertIn("1 conversation(s) excluded", result.stdout)
+
+    def test_a_marked_conversation_is_digested_when_the_register_says_so(self):
+        for settings in ({"marked_conversations": "digest"}, {"marked_conversations": "scrub"}):
             with self.subTest(settings=settings):
                 shutil.rmtree(self.raw, ignore_errors=True)
                 result, calls = self.exclude(private_topic_markers=["this channel may contain"],
@@ -1206,6 +1213,40 @@ class ChatAdapterTest(unittest.TestCase):
         self.assertIn("1 conversation(s) excluded", result.stdout)
         self.assertFalse((self.raw / "C013.md").exists())
         self.assertTrue((self.raw / "C010.md").exists())
+
+    def test_a_dense_conversation_is_excluded(self):
+        """Its text was never meant to be read directly."""
+        result, calls = self.exclude(dense_conversations=["#billing-ops"])
+
+        self.assertFalse(any(call.startswith("history C002") for call in calls), calls)
+        self.assertFalse((self.raw / "C002.md").exists())
+        self.assertIn("1 conversation(s) excluded", result.stdout)
+
+    def test_dense_and_excluded_conversations_are_counted_together(self):
+        result, _ = self.exclude(dense_conversations=["billing-ops"],
+                                 excluded_conversations=["general"],
+                                 private_topic_markers=["this channel may contain"])
+
+        self.assertIn("3 conversation(s) excluded", result.stdout)
+
+    def test_a_pattern_matches_a_conversation_id_too(self):
+        """An id survives a rename, so it is the durable form."""
+        result, calls = self.exclude(excluded_conversations=["c003"])
+
+        self.assertFalse(any(call.startswith("history C003") for call in calls), calls)
+        self.assertIn("1 conversation(s) excluded", result.stdout)
+
+    def test_a_failed_run_takes_back_the_raw_files_it_wrote(self):
+        log = self.root / "calls.log"
+
+        result = self.export(STUB_CALL_LOG=str(log), STUB_FAIL_HISTORY="C003")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("raw files this run wrote were removed", result.stderr)
+        self.assertIn("history C001", log.read_text(encoding="utf-8"))
+        self.assertEqual(list(self.raw.glob("*")), [])
+        self.assertFalse(self.output.exists())
+        self.assertEqual(self.export().returncode, 0)
 
     def test_an_unknown_marked_handling_is_refused_before_any_fetch(self):
         result, calls = self.exclude(marked_conversations="hide")
