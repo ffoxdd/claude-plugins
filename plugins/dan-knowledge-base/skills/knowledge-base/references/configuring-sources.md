@@ -91,6 +91,11 @@ Name only what the source genuinely cannot work without. A requirement that is
 merely nice to have produces a note on every session that has it, which is how
 a check earns itself a reputation for crying wolf.
 
+The email adapter's `ledger` is committed and keyed by an unsalted SHA-256 of
+each meeting's title and date, which is a commitment to those titles: anyone who
+guesses a title can confirm it with one hash, so keep the ledger in a private
+repository.
+
 Everything else in an entry is the adapter's own vocabulary — sender lists for
 mail, excluded conversations for chat, excluded invitee domains for Fathom —
 and the adapter documents it.

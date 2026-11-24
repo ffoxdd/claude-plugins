@@ -133,7 +133,8 @@ notes, advances the watermarks, commits, and leaves the push.
 4. **Record the wall clock now, per source, before querying it** (rule 1).
 5. **Sweep for what changed, cheaply** — `references/sweep-economics.md`. Then
    fetch in full only the items the sweep says are substantive.
-6. **Distill each item into the right note(s)**, per each note's type: insert a
+6. **Distill each item into the right note(s)** — where a covered gate exists,
+   each item is a released digest, never the raw file — per each note's type: insert a
    dated entry at the top of a log without reading the rest; rewrite a snapshot
    whole, deleting what the new information retires; add to or correct the
    relevant section of an accumulator.
@@ -241,6 +242,12 @@ directory. The chat, Notion and Fathom adapters also write raw text to the
 source's folder there (see Layout); `--count-only` writes none, and says what
 that leaves undone.
 
+**Everything an adapter writes is raw intake, its output file included** — the
+email recaps, the sweep's manifest and page changes, the chat index. Where a
+covered gate exists, each is a batch for the gate like any other raw intake;
+where the register requires a session variable, that session reads it
+directly; where neither, the session reads it as it reads any intake.
+
 **Email** — recap mail from the senders the register whitelists:
 
 ```
@@ -336,7 +343,7 @@ python3 <SKILL_DIR>/scripts/notion_sweep.py <watermark> <output>
 It reads every block of every changed page, because Notion moves no edit time on
 a block for an edit nested inside it, so no branch can be skipped. That takes
 minutes when the changed pages are long. **Run it in the background, never under
-a time limit**, and read the one file it writes. It names each page on stderr by
+a time limit**; the one file it writes is raw intake (above). It names each page on stderr by
 position, id and reading mode as it starts, and its block count and seconds as it
 ends, never by title. A page it could not read fully is a gap, like any other.
 Each page's blocks are read from the earliest moment an edit to it could have
