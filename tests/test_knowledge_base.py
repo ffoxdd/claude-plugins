@@ -1751,6 +1751,9 @@ class StubNotionSearch:
         search_item("never-requested", "2026-07-01T09:00:00.000Z", "NEVER-TITLE"),
     ]
 
+    GRANDCHILD = search_item("team-grandchild", "2026-09-25T09:00:00.000Z", "Grandchild notes",
+                             "page_id", "team-child")
+
     RESTRICTED = search_item("restricted-child", "2026-09-21T10:00:00.000Z", "RESTRICTED-TITLE",
                              "page_id", "forbidden")
 
@@ -1881,7 +1884,8 @@ class StubNotionSearch:
     }
 
     def __init__(self, restricted=False, search_status=None, failing_comments=(),
-                 failing_children=(), call_notes=False, lagged=False, unseen=False):
+                 failing_children=(), call_notes=False, lagged=False, unseen=False,
+                 grandchild=False):
         import http.server
         import threading
 
@@ -1904,6 +1908,9 @@ class StubNotionSearch:
         if unseen:
             self.METADATA = {key: value for key, value in self.METADATA.items()
                              if key != ("pages", "team")}
+
+        if grandchild:
+            self.results.insert(0, self.GRANDCHILD)
 
         if restricted:
             self.results.insert(4, self.RESTRICTED)
@@ -2163,6 +2170,32 @@ class NotionSweepTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("`team-child`", self.manifest())
         self.assertNotIn("Unplaced", self.manifest())
+
+    def test_an_unseen_ancestor_stalls_nothing_when_no_location_is_listed(self):
+        """With nothing listed there is nothing the hidden ancestor could place the
+        page under, so it is read like any other."""
+        self.start_stub(unseen=True)
+        self.write_register({"covered_locations": []})
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("| Team \\| notes | `team-child` |", self.manifest())
+        self.assertNotIn("Unplaced", self.manifest())
+
+    def test_a_listed_location_below_an_unseen_ancestor_places_the_page(self):
+        """The walk meets the listed location before the 404 above it."""
+        self.start_stub(unseen=True, grandchild=True)
+        self.write_listing([{"name": "Team notes", "id": "team-child"}],
+                           [{"name": "Wiki", "id": "open-page"},
+                            {"name": "Minutes", "id": "same-minute"}])
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("- Team notes: 2", self.manifest())
+        self.assertNotIn("team-grandchild", self.manifest())
+        self.assertNotIn(("pages", "team"), self.stub.requested)
 
     def test_with_open_locations_a_page_under_neither_list_is_named_by_id_only(self):
         self.write_listing([{"name": "Operations hub", "id": "hub"}], [{"name": "Team", "id": "team"}])

@@ -22,12 +22,15 @@ listed ancestor; an id listed as both is covered.
 
 **Placement walks the parent chain**, one metadata request per ancestor not yet
 seen, cached for the run, and stops at the first listed location. A chain that
-reaches the workspace is under no listed location. A chain that meets an
-ancestor which cannot be fetched, one the integration cannot see (404)
-included, is `Unplaceable`: what lies above it might be a covered location, so
-the item is under no location anyone can vouch for. Listing the page the
-integration is shared at, as an open or a covered location, ends the walk
-before it reaches the ancestor it cannot see.
+reaches the workspace is under no listed location. A chain that meets a
+listed location stops there, whatever lies above it. A chain that meets an
+ancestor which cannot be fetched first, one the integration cannot see (404)
+included, is `Unplaceable` when the source lists any location: what lies above
+it might be a covered location, so the item is under no location anyone can
+vouch for. Listing the page the integration is shared at ends the walk before
+it reaches the ancestor it cannot see. A source listing no location at all has
+nothing such an ancestor could hide, so a 404 there ends the chain as the top of
+the workspace does.
 
 Every caller treats an unplaceable item as a gap, and writes nothing of it but
 its id, because an item that might sit under a covered location must not be
@@ -146,7 +149,10 @@ class Placement:
 
     def location_of(self, item):
         """The nearest listed Location at or above the item, or None when the
-        chain reaches the top of the workspace without meeting one."""
+        chain reaches the top of the workspace without meeting one. A listed
+        location met on the way up places the item whatever lies above it, and
+        an ancestor the integration cannot see (404) ends the chain at None when
+        nothing is listed, since there is nothing it could hide."""
         chain = []
         current = item
 
@@ -165,6 +171,9 @@ class Placement:
                 current = self.ancestry.parent_of(current)
 
             except ExportError as error:
+                if error.status == 404 and not self.locations:
+                    return self.settle(chain, None)
+
                 raise Unplaceable(str(error)) from None
 
             if current is None:
