@@ -277,6 +277,58 @@ class ProvisioningSilenceTest(unittest.TestCase):
             self.assertEqual(self.provision(path, home=directory).returncode, 0)
 
 
+class RegisterShapeTest(unittest.TestCase):
+    """What the register loader refuses before any script reads a value from it:
+    a refusal names the key, where a wrong type would otherwise be a traceback in
+    every adapter, or a session start that drops all its notes."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name).resolve()
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def export(self, **document):
+        config = write_register(self.root, {"sources": {"chat": {"adapter": "chat"}},
+                                            **document})
+
+        return support.run_script(adapter("chat_export.py"),
+                                  arguments=["1000.0", str(self.root / "inbox" / "x.md")],
+                                  KNOWLEDGE_BASE_CONFIG_FILE=str(config))
+
+    def provision(self, **document):
+        config = write_register(self.root, {"sources": {}, **document})
+        result = support.run_script(support.script(PLUGIN, "provision.py"),
+                                    KNOWLEDGE_BASE_CONFIG_FILE=str(config), HOME=str(self.root))
+
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"] \
+            if result.stdout.strip() else ""
+
+    def test_a_layout_path_that_is_not_a_string_is_refused_by_name(self):
+        result = self.export(layout={"inbox": 5})
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('"layout.inbox" that is not a path', result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_session_start_reports_a_malformed_layout_member(self):
+        self.assertIn('"layout.processed" that is not a path',
+                      self.provision(layout={"processed": 5, "retention_days": 1}))
+        self.assertIn('"layout.retention_days"',
+                      self.provision(layout={"retention_days": "ninety"}))
+
+    def test_a_null_layout_is_no_layout(self):
+        self.assertEqual(self.provision(layout=None), "")
+
+    def test_a_null_session_is_refused_rather_than_read_as_absent(self):
+        result = self.export(session=None)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('"session" must name a "required_variable"', result.stderr)
+        self.assertIn("required_variable", self.provision(session=None))
+
+
 class RetentionTest(unittest.TestCase):
     """The processed-intake retention: what it deletes, what it never touches, and
     the conditions under which it deletes nothing at all."""

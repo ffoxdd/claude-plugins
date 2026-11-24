@@ -87,8 +87,13 @@ def load(start=None):
     if not isinstance(document, dict):
         raise ConfigurationError(f"{path} is not a JSON object.")
 
-    if not isinstance(document.get("layout", {}), dict):
-        raise ConfigurationError(f'{path} declares a "layout" that is not an object.')
+    layout_refusal = layout_problem(document.get("layout"))
+
+    if layout_refusal:
+        raise ConfigurationError(f"{path} {layout_refusal}.")
+
+    if "session" in document:
+        required_session_variable(document)
 
     if not isinstance(document.get("sources"), dict):
         raise ConfigurationError(
@@ -99,6 +104,32 @@ def load(start=None):
     return document, Path(path).parent
 
 
+LAYOUT_PATHS = ("inbox", "processed", "notes", "watermarks")
+
+
+def layout_problem(layout):
+    """What is wrong with the register's `layout`, or None. Absent or null is no
+    layout; every member the scripts read must be the type they read it as."""
+    if layout is None:
+        return None
+
+    if not isinstance(layout, dict):
+        return 'declares a "layout" that is not an object'
+
+    for key in LAYOUT_PATHS:
+        if key in layout and layout[key] is not None and \
+                (not isinstance(layout[key], str) or not layout[key]):
+            return f'declares a "layout.{key}" that is not a path'
+
+    days = layout.get("retention_days")
+
+    if days is not None and (isinstance(days, bool) or not isinstance(days, (int, float))
+                             or days <= 0):
+        return 'declares a "layout.retention_days" that is not a number of days above zero'
+
+    return None
+
+
 def sources(start=None):
     document, _ = load(start)
 
@@ -106,12 +137,13 @@ def sources(start=None):
 
 
 def required_session_variable(document):
-    """The environment variable the register requires a session to set, or None."""
-    session = document.get("session")
-
-    if session is None:
+    """The environment variable the register requires a session to set, or None
+    when the register has no "session" key. A key that is present, null included,
+    must name one."""
+    if "session" not in document:
         return None
 
+    session = document["session"]
     variable = session.get("required_variable") if isinstance(session, dict) else None
 
     if not isinstance(variable, str) or not variable:
