@@ -382,6 +382,19 @@ held and a few hundred characters of signed URL per image. It exits 3 when a
 comment request failed or blocks nested too deep to read, and names them on
 stderr.
 
+**Writing a block** — for an edit the MCP server cannot send. Its
+`update-a-block` tool nests the update under a `type` parameter, so Notion never
+sees a `table_row` or `paragraph` key and refuses the call; a table row has no
+other route. Write the `PATCH /v1/blocks/{id}` body to a file and send it with
+the same credential the readers use:
+
+```
+python3 <SKILL_DIR>/scripts/notion_update_block.py <block id> <body.json>
+```
+
+A table row's update replaces every cell, so list the table's children first and
+carry over any cell being left alone. It prints only text lengths.
+
 **Comments are a deliberate blind spot.** On a page outside `comment_pages` a
 comment is not asked for, and a comment left on a page nobody edited moves no
 edit time, so no search returns the page, listed or not. List a page under
