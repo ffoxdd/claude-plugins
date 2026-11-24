@@ -14,7 +14,9 @@ search runs over Notion's REST API, and each result is placed in the page tree
     written nowhere else. The `notion` adapter (`notion_export.py`) is the route
     that reads those, so this one never has to;
   * every **other** result goes into the output file's manifest by id, kind,
-    edit time and title;
+    edit time and title. The output file must lie under the register's intake
+    directory, git-ignored, like every adapter's output
+    (`raw_directory.output_checked`);
   * every page in the manifest but those the register skips (below) is then
     **read with the page-changes walk** (`notion_page_changes.py`), and its
     changed blocks, and its new comments where the register lists the page for
@@ -117,8 +119,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import configuration
+import file_modes
 import notion_credential
 import notion_search
+import raw_directory
 from notion_api import EXIT_GAPS, EXIT_REFUSED, Gaps, Notion, edited_since, format_time, \
     parse_time, read_watermark
 from notion_export import page_title, plain_text
@@ -307,7 +311,8 @@ def build_output(manifest, readings):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("watermark", help="ISO-8601 UTC time; items edited at or after its minute")
-    parser.add_argument("output", help="path to write the manifest to")
+    parser.add_argument("output", help="path to write the manifest to, under the intake "
+                                       "directory")
     parser.add_argument("--source", default="notion", help="register entry to read (default: notion)")
     arguments = parser.parse_args(argv)
 
@@ -322,6 +327,7 @@ def main(argv=None):
         ledger = Ledger.from_source(source, arguments.source, since, since - index_lag(source),
                                     "notion_sweep")
         notion = Notion.from_source(source, notion_credential.authorization(source))
+        output = raw_directory.output_checked(arguments.output)
 
     except (configuration.ConfigurationError, notion_credential.CredentialError) as error:
         print(f"notion_sweep: {error}", file=sys.stderr)
@@ -336,7 +342,8 @@ def main(argv=None):
         changes = unprocessed(
             notion_search.changes_since(notion, locations, ledger.floor, gaps, ancestry), ledger)
         readings = read_changes(notion, changes, ledger, gaps, rules, ancestry)
-        Path(arguments.output).write_text(
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
             build_output(build_manifest(changes, ledger, covered_source), readings),
             encoding="utf-8",
         )
@@ -347,7 +354,7 @@ def main(argv=None):
 
         return EXIT_REFUSED
 
-    print(arguments.output)
+    print(output)
     print(f"{len(changes.outside)} changed outside covered locations, "
           f"{sum(len(items) for items in changes.under.values())} under covered locations, "
           f"{changes.unplaced} unplaced")
@@ -385,4 +392,5 @@ def utf8_streams():
 
 if __name__ == "__main__":
     utf8_streams()
+    file_modes.owner_only()
     sys.exit(main())

@@ -8,13 +8,17 @@ conversations — belongs to an isolated agent that edits the file this produces
 `references/chat-sources.md` explains why the split falls there, and why this
 script runs in the main session rather than inside that agent.
 
-Nothing sensitive reaches a session merely from running this. Stdout carries the
-output path, the new watermark, and any gaps; raw message text goes to the output
-file, and **record-dense conversations' text is never written into that file at
-all**. Their text goes to side files under `<intake>/<source name>/` instead —
+Nothing sensitive reaches a session merely from running this. Stdout and
+stderr carry the output path, counts, the new watermark, and gaps named by
+conversation id: never a message, and never a conversation's name, since a
+direct message is named for the people in it. Raw message text goes to the
+output file, which must lie under the register's intake directory, and
+**record-dense conversations' text is never written into that file at all**.
+Their text goes to side files under `<intake>/<source name>/` instead —
 git-ignored working space for the isolated agent to read while writing each
 section's summary, deleted once the summaries are in place. The run is refused
-before any request unless git ignores that folder and it is absent or empty (see
+before any request unless the output lies under the intake directory, git
+ignores both it and that folder, and the folder is absent or empty (see
 `raw_directory.py`). With `--count-only` they are fetched only far enough to
 advance the watermark, and nothing of theirs is written.
 
@@ -23,14 +27,15 @@ Three tiers, and only the first needs naming by hand:
   1. conversations listed as `dense_conversations` in the register — summarized,
      never pulled verbatim, because scrubbing text that is mostly per-person
      detail redacts it to nothing
-  2. any other private conversation, or one whose topic carries one of the
-     register's `private_topic_markers` — pulled verbatim, marked scrub-mandatory
+  2. any other private conversation, any direct or group direct message, or one
+     whose topic or purpose carries one of the register's
+     `private_topic_markers` — pulled verbatim, marked scrub-mandatory
   3. everything else — pulled verbatim; the gate is a backstop, since the
      workspace convention says there should be nothing to find
 
-Tier 2 is decided by the platform's own privacy flag and the topic, both read
-live, so a newly created private or newly bannered channel is handled safely
-with no config change.
+Tier 2 is decided by the platform's own privacy flag, the conversation's kind,
+its topic and its purpose, all read live, so a newly created private or newly
+bannered channel is handled safely with no config change.
 """
 
 import argparse
@@ -47,6 +52,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 
 import configuration
+import file_modes
 import raw_directory
 
 # The bundled client is a uv PEP-723 script; the automated path runs it through
@@ -88,6 +94,11 @@ BARE_ACKNOWLEDGEMENTS = {
 
 QUIET_SECTION = "No new messages since the watermark."
 
+# The kinds the client reports for a conversation that is not a channel. Neither
+# carries the lock a private channel shows, and both are where people speak most
+# freely about one another, so both are scrub-mandatory.
+DIRECT_KINDS = {"im", "mpim"}
+
 
 @dataclass(frozen=True)
 class Conversation:
@@ -95,17 +106,25 @@ class Conversation:
     name: str
     locked: bool
     topic: str
+    kind: str = "channel"
+    purpose: str = ""
+
+    @property
+    def is_direct(self):
+        return self.kind in DIRECT_KINDS
 
 
 @dataclass(frozen=True)
 class Handling:
     """The register's designations, which decide each conversation's tier.
 
-    A topic banner ("this channel may contain personal data") says the same thing
-    the private flag does — personal data is permitted here — so it earns the same
-    scrub-mandatory handling, and catches a bannered channel that was left public.
-    It says nothing about how much of the traffic is per-person records, so it
-    never makes a conversation dense; only the hand-named list does that.
+    A topic or purpose banner ("this channel may contain personal data") says the
+    same thing the private flag does — personal data is permitted here — so it
+    earns the same scrub-mandatory handling, and catches a bannered channel that
+    was left public. So does a direct or group direct message, which carries no
+    lock but is private by nature. None of these says how much of the traffic is
+    per-person records, so none makes a conversation dense; only the hand-named
+    list does that.
     """
     dense_names: frozenset
     private_topic_markers: tuple
@@ -114,10 +133,10 @@ class Handling:
         return conversation.name.lower() in self.dense_names
 
     def is_private(self, conversation):
-        topic = conversation.topic.lower()
+        banners = f"{conversation.topic}\n{conversation.purpose}".lower()
 
-        return conversation.locked or any(
-            marker in topic for marker in self.private_topic_markers
+        return conversation.locked or conversation.is_direct or any(
+            marker in banners for marker in self.private_topic_markers
         )
 
 
@@ -158,27 +177,20 @@ class Client:
         """Read memberships live, so joining a conversation needs no config change.
 
         The scope is every conversation the session's user is a member of —
-        channels, DMs, and group DMs. Each line is `id<TAB>lock<TAB>name<TAB>topic`,
-        where `locked` marks a private conversation. A shorter line (an older
-        client) degrades to unlocked with no topic, leaving the register's named
-        set as the safety net.
+        channels, DMs, and group DMs. Each line is
+        `id<TAB>lock<TAB>name<TAB>topic<TAB>kind<TAB>purpose`, where `locked` marks
+        a private channel and `kind` is `channel`, `im` or `mpim`. A shorter line
+        (an older client) degrades to an unlocked channel with no topic or
+        purpose, leaving the register's named set as the safety net.
         """
-        conversations = []
-
-        for line in self.run("memberships").splitlines():
-            fields = [field.strip() for field in line.split("\t", 3)]
-
-            if len(fields) == 2:
-                fields = [fields[0], "-", fields[1]]
-
-            if len(fields) >= 3:
-                identifier, lock, name, *topic = fields
-                conversations.append(
-                    Conversation(identifier, name, lock == "locked", topic[0] if topic else "")
-                )
+        conversations = [
+            conversation
+            for conversation in map(parse_membership, self.run("memberships").splitlines())
+            if conversation
+        ]
 
         if not conversations:
-            raise ExportError(f"`{self.command} memberships` returned nothing")
+            raise ExportError("the chat client's `memberships` listed no conversation")
 
         return conversations
 
@@ -222,6 +234,23 @@ class Client:
             for message in parse_message_lines(output)
             if message.get("ts") != thread_timestamp
         ]
+
+
+def parse_membership(line):
+    """One `memberships` line as a Conversation, or None for a line too short to
+    name one."""
+    fields = [field.strip() for field in line.split("\t")]
+
+    if len(fields) == 2:
+        fields = [fields[0], "-", fields[1]]
+
+    if len(fields) < 3:
+        return None
+
+    identifier, lock, name, *rest = fields
+    topic, kind, purpose = (rest + ["", "", ""])[:3]
+
+    return Conversation(identifier, name, lock == "locked", topic, kind or "channel", purpose)
 
 
 def parse_message_lines(output):
@@ -392,7 +421,7 @@ def write_raw_text(directory, name, lines):
     return path
 
 
-def render_message_window(client, identifier, name, posted, revived, watermark, notes,
+def render_message_window(client, identifier, posted, revived, watermark, notes,
                           acknowledgements):
     """Render new messages and revived threads, fetching replies as needed."""
 
@@ -400,7 +429,7 @@ def render_message_window(client, identifier, name, posted, revived, watermark, 
         replies = client.thread_replies(identifier, message["ts"])
 
         if replies is None:
-            notes.append(f"{name}: thread {message['ts']} could not be fetched")
+            notes.append(f"{identifier}: thread {message['ts']} could not be fetched")
 
             return []
 
@@ -452,7 +481,7 @@ def render_conversation(client, conversation, watermark, handling, acknowledgeme
 
     if possibly_truncated and oldest_fetched > watermark:
         notes.append(
-            f"{name} ({identifier}) hit the {client.history_limit}-message fetch limit "
+            f"{identifier} hit the {client.history_limit}-message fetch limit "
             "before reaching the watermark — messages were missed"
         )
 
@@ -484,7 +513,7 @@ def render_conversation(client, conversation, watermark, handling, acknowledgeme
                 raw_text_directory,
                 name,
                 render_message_window(
-                    client, identifier, name, posted, revived, watermark, notes, acknowledgements
+                    client, identifier, posted, revived, watermark, notes, acknowledgements
                 ),
             )
             lines += [
@@ -503,7 +532,7 @@ def render_conversation(client, conversation, watermark, handling, acknowledgeme
         ]
 
     lines += render_message_window(
-        client, identifier, name, posted, revived, watermark, notes, acknowledgements
+        client, identifier, posted, revived, watermark, notes, acknowledgements
     )
 
     return lines + [""], highest, notes
@@ -544,7 +573,8 @@ def active_conversation_count(content):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("watermark", help="timestamp; pull messages strictly newer than this")
-    parser.add_argument("output", help="path to write the intake file to")
+    parser.add_argument("output", help="path to write the intake file to, under the intake "
+                                       "directory")
     parser.add_argument("--source", default="chat", help="register entry to read (default: chat)")
     parser.add_argument(
         "--count-only", action="store_true",
@@ -557,6 +587,7 @@ def main(argv=None):
         source = configuration.source(arguments.source)
         raw_text_directory = None if arguments.count_only else raw_directory.checked(
             arguments.source)
+        output = raw_directory.output_checked(arguments.output)
 
     except configuration.ConfigurationError as error:
         print(f"chat_export: {error}", file=sys.stderr)
@@ -592,11 +623,12 @@ def main(argv=None):
 
         return 1
 
-    Path(arguments.output).write_text(content, encoding="utf-8")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(content, encoding="utf-8")
 
     active = active_conversation_count(content)
 
-    print(arguments.output)
+    print(output)
     print(f"{active} conversation(s) with new messages")
     print(f"New watermark: {highest:.6f}")
 
@@ -629,4 +661,5 @@ def utf8_streams():
 
 if __name__ == "__main__":
     utf8_streams()
+    file_modes.owner_only()
     sys.exit(main())

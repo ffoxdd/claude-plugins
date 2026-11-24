@@ -15,9 +15,11 @@ silently in production:
 """
 
 import json
+import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -443,6 +445,25 @@ elif command == "replies":
     print(json.dumps({"ts": "1600.0", "user_name": "cy", "text": "and the follow-up"}))
 '''
 
+# Conversations the platform marks only by kind or purpose: a direct message and a
+# group direct message, each named for its people and with no lock, and a public
+# channel whose purpose, not its topic, carries the banner. Every conversation has
+# one message after the watermark.
+STUB_CHAT_DIRECT = '''#!/usr/bin/env python3
+import json, sys
+command = sys.argv[1]
+if command == "memberships":
+    print("C010\\t-\\topen-channel\\t\\tchannel\\t")
+    print("D011\\t-\\tPat PERSON-NAME\\t\\tim\\t")
+    print("G012\\t-\\tLee PERSON-NAME, Kim PERSON-NAME\\t\\tmpim\\t")
+    print("C013\\t-\\tcases\\t\\tchannel\\tMay Contain PHI")
+elif command == "history":
+    print(json.dumps({"ts": "1500.0", "user_name": "ana", "text": "MESSAGE-TEXT " + sys.argv[2]}))
+'''
+
+STUB_CHAT_EMPTY = '''#!/usr/bin/env python3
+'''
+
 
 def adapter(name):
     return support.plugin_root(PLUGIN) / ADAPTER_SCRIPTS / name
@@ -565,6 +586,65 @@ class EmailParsingTest(unittest.TestCase):
 
         self.assertIn("uv run", str(raised.exception))
 
+    def digest(self, title="Pat TITLE-MARKER review", date="2026-08-17"):
+        return {"title": title, "meeting_date": date, "received": f"{date}T09:00:00Z",
+                "summary": ""}
+
+    def test_a_meeting_is_keyed_by_a_hash_that_carries_no_title(self):
+        """The ledger is committed, and a title can name a person."""
+        key = self.sweep.meeting_key(self.digest())
+
+        self.assertRegex(key, r"^[0-9a-f]{64}$")
+        self.assertNotIn("title-marker", key)
+
+    def test_a_ledger_written_with_plain_keys_still_labels_its_meetings(self):
+        """An earlier ledger keyed each meeting by its lowercased title and date. Its
+        records still match, and the next write keeps them under the hashed key."""
+        digest = self.digest()
+        earlier = {"meeting_date": "2026-08-17", "first_seen": "2026-08-17T09:00:00Z",
+                   "intake_file": "earlier.md"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ".delivery-ledger"
+            path.write_text(json.dumps({"pat title-marker review|2026-08-17": earlier}),
+                            encoding="utf-8")
+            ledger = self.sweep.read_ledger(path)
+
+        self.assertEqual(self.sweep.find_returning([digest], ledger), [(digest, earlier)])
+
+        written = self.sweep.extended_ledger(ledger, [digest], "later.md", 36500)
+
+        self.assertEqual(list(written), [self.sweep.meeting_key(digest)])
+        self.assertEqual(written[self.sweep.meeting_key(digest)], earlier)
+
+    def test_a_returning_meeting_is_named_by_its_key_never_its_title(self):
+        import contextlib
+        import io
+
+        digest = self.digest()
+        earlier = {"first_seen": "2026-08-17T09:00:00Z", "intake_file": "earlier.md"}
+        printed = io.StringIO()
+
+        with contextlib.redirect_stdout(printed):
+            self.sweep.report_returning([(digest, earlier)])
+
+        self.assertIn(self.sweep.meeting_key(digest)[:12], printed.getvalue())
+        self.assertNotIn("TITLE-MARKER", printed.getvalue())
+
+    def test_subjects_and_addresses_go_into_the_intake_file(self):
+        """They say why a message was set aside or noticed, and a subject can name a
+        person, so they are written where the gate reads them, not printed."""
+        sender = {"match": "domain", "value": "vendor.example"}
+        message = {"subject": "Pat SUBJECT-MARKER shared a recording",
+                   "from": {"emailAddress": {"address": "no-reply@vendor.example"}}}
+
+        lines = "\n".join(self.sweep.notice_lines(
+            [(message, sender)], ["digest-shaped mail from DRIFT-MARKER"], ["new@vendor.example"]))
+
+        for text in ("SUBJECT-MARKER", "DRIFT-MARKER", "new@vendor.example"):
+            with self.subTest(text=text):
+                self.assertIn(text, lines)
+
 
 class EmailAdapterInvocationTest(unittest.TestCase):
     def test_a_source_declaring_no_senders_refuses_rather_than_sweeping_everything(self):
@@ -575,7 +655,7 @@ class EmailAdapterInvocationTest(unittest.TestCase):
 
             result = support.run_script(
                 adapter("email_sweep.py"),
-                arguments=["2026-08-01T00:00:00Z", str(Path(directory) / "out.md")],
+                arguments=["2026-08-01T00:00:00Z", str(Path(directory) / "inbox" / "out.md")],
                 KNOWLEDGE_BASE_CONFIG_FILE=str(path),
             )
 
@@ -598,13 +678,29 @@ class EmailAdapterInvocationTest(unittest.TestCase):
 
             result = support.run_script(
                 adapter("email_sweep.py"),
-                arguments=["2020-01-01T00:00:00Z", str(Path(directory) / "out.md")],
+                arguments=["2020-01-01T00:00:00Z", str(Path(directory) / "inbox" / "out.md")],
                 KNOWLEDGE_BASE_CONFIG_FILE=str(path),
             )
 
             self.assertEqual(result.returncode, 1)
             self.assertIn("max_lookback_days", result.stderr)
             self.assertIn("--allow-backfill", result.stderr)
+
+    def test_an_output_outside_the_intake_directory_is_refused_before_anything(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_register(directory, register(email=self.email_source()))
+            output = Path(directory).resolve() / "out.md"
+
+            result = support.run_script(
+                adapter("email_sweep.py"),
+                arguments=["2026-08-01T00:00:00Z", str(output)],
+                KNOWLEDGE_BASE_CONFIG_FILE=str(path),
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("outside the intake directory", result.stderr)
+            self.assertIn(str(Path(directory).resolve() / "inbox"), result.stderr)
+            self.assertFalse(output.exists())
 
     def test_the_register_sets_its_own_cap(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -613,7 +709,7 @@ class EmailAdapterInvocationTest(unittest.TestCase):
 
             result = support.run_script(
                 adapter("email_sweep.py"),
-                arguments=["2020-01-01T00:00:00Z", str(Path(directory) / "out.md")],
+                arguments=["2020-01-01T00:00:00Z", str(Path(directory) / "inbox" / "out.md")],
                 KNOWLEDGE_BASE_CONFIG_FILE=str(path),
             )
 
@@ -671,7 +767,7 @@ class ChatAdapterTest(unittest.TestCase):
         # way the platform can: support.stub_command returns that path.
         self.client = support.stub_command(root / "stub-chat", STUB_CHAT_CLIENT)
 
-        self.output = root / "export.md"
+        self.output = root / "inbox" / "export.md"
         self.raw = root / "inbox" / "chat"
         self.config = write_register(root, register(chat={
             "adapter": "chat",
@@ -841,6 +937,112 @@ class ChatAdapterTest(unittest.TestCase):
         self.assertIn(str(self.raw), result.stderr)
         self.assertIn("previous run's working files", result.stderr)
         self.assertFalse(self.output.exists())
+
+    def use_client(self, source, **settings):
+        self.client = support.stub_command(self.root / "stub-direct", source)
+        self.config.write_text(json.dumps(register(chat={
+            "adapter": "chat",
+            "client_command": str(self.client),
+            "private_topic_markers": ["may contain phi"],
+            **settings,
+        })), encoding="utf-8")
+
+    def section(self, identifier):
+        content = self.output.read_text(encoding="utf-8")
+
+        return content.split(f"({identifier})", 1)[1].split("\n## ", 1)[0]
+
+    def test_a_direct_or_group_direct_message_is_scrub_mandatory(self):
+        """Neither carries a lock, and both are private by nature."""
+        self.use_client(STUB_CHAT_DIRECT)
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        for identifier in ("D011", "G012"):
+            with self.subTest(identifier=identifier):
+                self.assertIn("scrub this section", self.section(identifier))
+
+        self.assertNotIn("scrub this section", self.section("C010"))
+
+    def test_a_purpose_banner_makes_a_conversation_scrub_mandatory(self):
+        self.use_client(STUB_CHAT_DIRECT)
+
+        self.export()
+
+        self.assertIn("scrub this section", self.section("C013"))
+
+    def test_streams_name_a_conversation_by_id_never_by_its_name(self):
+        """A direct message is named for its people. Each conversation fills the
+        one-message limit without reaching the watermark, so each is a gap."""
+        self.use_client(STUB_CHAT_DIRECT, history_limit=1)
+
+        result = self.export()
+        streams = result.stdout + result.stderr
+
+        self.assertIn("D011 hit the 1-message fetch limit", result.stderr)
+        self.assertNotIn("PERSON-NAME", streams)
+        self.assertNotIn("MESSAGE-TEXT", streams)
+
+    def test_an_empty_membership_list_is_refused_cleanly(self):
+        self.use_client(STUB_CHAT_EMPTY)
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("listed no conversation", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_an_output_outside_the_intake_directory_is_refused_before_any_fetch(self):
+        for extra in ((), ("--count-only",)):
+            with self.subTest(extra=extra):
+                self.output = self.root / "export.md"
+
+                result = self.export(*extra)
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"outside the intake directory {self.root / 'inbox'}", result.stderr)
+                self.assertFalse(self.output.exists())
+                self.assertFalse(self.raw.exists())
+
+    def test_an_output_linked_out_of_the_intake_directory_is_refused(self):
+        outside = self.root / "outside.md"
+        self.output.parent.mkdir(parents=True)
+
+        try:
+            self.output.symlink_to(outside)
+
+        except OSError:
+            self.skipTest("this platform cannot create a symbolic link here")
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("outside the intake directory", result.stderr)
+        self.assertFalse(outside.exists())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_an_output_git_does_not_ignore_is_refused_before_any_fetch(self):
+        subprocess.run(["git", "-C", str(self.root), "init", "--quiet"], check=True)
+        (self.root / ".gitignore").write_text("inbox/chat/\n", encoding="utf-8")
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"the output {self.output}", result.stderr)
+        self.assertIn("must be git-ignored", result.stderr)
+        self.assertFalse(self.output.exists())
+
+    @unittest.skipIf(os.name == "nt", "Windows has no mode bits")
+    def test_what_it_writes_is_its_owners_alone(self):
+        self.export()
+        side_file = next(self.raw.glob("*.md"))
+
+        self.assertEqual(stat.S_IMODE(self.output.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(side_file.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.raw.stat().st_mode), 0o700)
 
 
 
@@ -1017,7 +1219,7 @@ class NotionAdapterTest(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name).resolve()
         self.stub = StubNotion()
-        self.output = self.root / "export.md"
+        self.output = self.root / "inbox" / "export.md"
         self.raw = self.root / "inbox" / "notion-covered"
         self.claude_config = self.root / "claude.json"
         self.write_token(self.TOKEN)
@@ -1273,8 +1475,8 @@ class NotionAdapterTest(unittest.TestCase):
     def test_side_files_go_under_the_intake_folder_named_for_the_source(self):
         self.export()
 
-        self.assertEqual([path.name for path in (self.root / "inbox").iterdir()],
-                         ["notion-covered"])
+        self.assertEqual(sorted(path.name for path in (self.root / "inbox").iterdir()),
+                         ["export.md", "notion-covered"])
         self.assertTrue((self.root / "inbox" / "notion-covered" / "changed.md").is_file())
 
     @unittest.skipIf(shutil.which("git") is None, "needs git")
@@ -1288,6 +1490,16 @@ class NotionAdapterTest(unittest.TestCase):
         self.assertIn("must be git-ignored", result.stderr)
         self.assertEqual(self.stub.authorizations, [])
         self.assertFalse(self.raw.exists())
+
+    def test_an_output_outside_the_intake_directory_is_refused_before_any_request(self):
+        self.output = self.root / "export.md"
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"outside the intake directory {self.root / 'inbox'}", result.stderr)
+        self.assertEqual(self.stub.authorizations, [])
+        self.assertFalse(self.output.exists())
 
     def test_a_folder_a_previous_run_left_files_in_is_refused_before_any_request(self):
         self.raw.mkdir(parents=True)
@@ -1630,7 +1842,7 @@ class NotionSweepTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)
-        self.output = self.root / "sweep.md"
+        self.output = self.root / "inbox" / "sweep.md"
         self.claude_config = self.root / "claude.json"
         self.claude_config.write_text(json.dumps({"mcpServers": {"notion": {
             "env": {"OPENAPI_MCP_HEADERS": json.dumps({"Authorization": self.TOKEN})},
@@ -1747,6 +1959,16 @@ class NotionSweepTest(unittest.TestCase):
         self.assertEqual(result.returncode, 3)
         self.assertIn("a search page could not be read", result.stderr)
         self.assertNotIn("New watermark", result.stdout)
+
+    def test_a_manifest_outside_the_intake_directory_is_refused_before_any_request(self):
+        self.output = self.root / "sweep.md"
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("outside the intake directory", result.stderr)
+        self.assertEqual(self.stub.search_requests, 0)
+        self.assertFalse(self.output.exists())
 
     def test_a_source_naming_no_exclusions_refuses_to_run(self):
         self.write_register({})
@@ -2160,7 +2382,7 @@ class NotionAdapterSearchTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name).resolve()
-        self.output = self.root / "export.md"
+        self.output = self.root / "inbox" / "export.md"
         self.raw = self.root / "inbox" / "notion-covered"
         self.claude_config = self.root / "claude.json"
         self.claude_config.write_text(json.dumps({"mcpServers": {"notion": {
@@ -2689,7 +2911,7 @@ class FathomAdapterTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name).resolve()
-        self.output = self.root / "export.md"
+        self.output = self.root / "inbox" / "export.md"
         self.raw = self.root / "inbox" / "fathom"
         self.ledger = self.root / "notes" / ".fathom-ledger"
         self.key_file = self.root / "api-key"
@@ -3024,12 +3246,34 @@ class FathomAdapterTest(unittest.TestCase):
                                            "layout": {"inbox": "intake"}}))
         intake = self.root / "intake"
         intake.mkdir()
-        (intake / ".gitignore").write_text("fathom/\n", encoding="utf-8")
+        (intake / ".gitignore").write_text("fathom/\nexport.md\n", encoding="utf-8")
+        self.output = intake / "export.md"
 
         result = self.export()
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((intake / "fathom" / "fathom-101.md").exists())
+
+    def test_an_output_outside_the_intake_directory_is_refused_before_any_request(self):
+        self.output = self.root / "export.md"
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("outside the intake directory", result.stderr)
+        self.assertEqual(self.stub.queries, [])
+        self.assertFalse(self.output.exists())
+
+    @unittest.skipIf(os.name == "nt", "Windows has no mode bits")
+    def test_what_it_writes_is_its_owners_alone(self):
+        self.export()
+
+        self.assertEqual(stat.S_IMODE(self.output.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.raw.stat().st_mode), 0o700)
+
+        for path in self.raw.iterdir():
+            with self.subTest(path=path.name):
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
     def test_an_intake_outside_the_knowledge_base_is_refused(self):
         self.config.write_text(json.dumps({**json.loads(self.config.read_text()),

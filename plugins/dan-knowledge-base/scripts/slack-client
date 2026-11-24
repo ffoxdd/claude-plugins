@@ -28,6 +28,7 @@
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -181,12 +182,21 @@ def command_login(arguments):
         browser.close()
 
     host = team_host(team) or workspace_host(arguments.workspace or "unknown")
-    SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SESSION_FILE.write_text(
-        json.dumps({"token": team["token"], "cookie": cookie_value, "workspace_host": host})
-    )
-    SESSION_FILE.chmod(0o600)
+    save_session({"token": team["token"], "cookie": cookie_value, "workspace_host": host})
     print(f"session saved for {host}", file=sys.stderr)
+
+
+def save_session(session):
+    """Write the session readable by its owner alone. The mode is given at
+    creation, and set again before writing to a file that already existed, so the
+    token never sits in a file others can read. Windows has no mode bits; there
+    the file's ACL is the control."""
+    SESSION_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor = os.open(SESSION_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    if os.name != "nt":
+        os.chmod(SESSION_FILE, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(session))
 
 
 def call_api(method, **params):
@@ -245,11 +255,23 @@ def is_lock_listed_channel(entry):
     return bool(entry.get("is_private"))
 
 
-def conversation_topic(entry):
-    """The topic line, flattened to one field. Workspaces mark data-handling rules
-    there (a banner that a channel may carry personal data), so it is listed."""
-    topic = (entry.get("topic") or {}).get("value") or ""
-    return " ".join(topic.split())
+def conversation_banner(entry, field):
+    """The topic or purpose line, flattened to one field. Workspaces mark
+    data-handling rules in either (a banner that a channel may carry personal
+    data), so both are listed."""
+    text = (entry.get(field) or {}).get("value") or ""
+    return " ".join(text.split())
+
+
+def conversation_kind(entry):
+    """`im` for a direct message, `mpim` for a group direct message, `channel`
+    otherwise. Neither direct kind carries a lock, so a consumer deciding how
+    private a conversation is reads this alongside the lock field."""
+    if entry.get("is_im"):
+        return "im"
+    if entry.get("is_mpim"):
+        return "mpim"
+    return "channel"
 
 
 def describe_conversation(entry, user_name_cache):
@@ -300,7 +322,8 @@ def command_channels(arguments):
 
 def command_memberships(arguments):
     """Every conversation the authed user is a member of, one per line as
-    `id<TAB>lock<TAB>name<TAB>topic`.
+    `id<TAB>lock<TAB>name<TAB>topic<TAB>kind<TAB>purpose`. The fields after the
+    topic were added last, so a consumer reading only the first four still works.
 
     `users.conversations` is membership-scoped (unlike `conversations.list`,
     which returns all public channels regardless of membership), so this is
@@ -320,7 +343,9 @@ def command_memberships(arguments):
         for entry in response["channels"]:
             lock = "locked" if is_lock_listed_channel(entry) else "-"
             name = describe_conversation(entry, user_name_cache)
-            print(f"{entry['id']}\t{lock}\t{name}\t{conversation_topic(entry)}")
+            topic = conversation_banner(entry, "topic")
+            purpose = conversation_banner(entry, "purpose")
+            print(f"{entry['id']}\t{lock}\t{name}\t{topic}\t{conversation_kind(entry)}\t{purpose}")
         cursor = response.get("response_metadata", {}).get("next_cursor")
         if not cursor:
             break
@@ -438,7 +463,8 @@ def main():
 
     subparsers.add_parser(
         "memberships",
-        help="list every conversation you are a member of (id, lock, name)",
+        help="list every conversation you are a member of "
+        "(id, lock, name, topic, kind, purpose)",
     )
 
     history_parser = subparsers.add_parser(
@@ -476,6 +502,11 @@ def main():
     file_parser.add_argument("output", help="path to write the file to")
 
     arguments = parser.parse_args()
+
+    # Every file this creates, the session and a saved attachment alike, is its
+    # owner's alone. Windows has no mode bits for a umask to clear.
+    if os.name != "nt":
+        os.umask(0o077)
 
     if arguments.command == "login":
         command_login(arguments)

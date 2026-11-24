@@ -17,7 +17,8 @@ Nothing sensitive reaches a session merely from running this:
     type, never a response body or a header;
   * **the output file** carries one placeholder per changed page, naming the page
     by id and edit time only. Titles stay out, because a title can be a person's
-    name;
+    name. It must lie under the register's intake directory, git-ignored, like
+    every adapter's output (`raw_directory.output_checked`);
   * **page text**, titles and properties included, goes only to side files under
     `<intake>/<source name>/`, for the isolated agent that replaces each
     placeholder with a structural-facts-only summary. The run is refused before
@@ -95,6 +96,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import configuration
+import file_modes
 import notion_credential
 import notion_search
 import raw_directory
@@ -547,7 +549,8 @@ def build_export(notion, locations, discovery, side_files, gaps, ledger):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("watermark", help="ISO-8601 UTC time; pages edited at or after its minute")
-    parser.add_argument("output", help="path to write the intake file to")
+    parser.add_argument("output", help="path to write the intake file to, under the intake "
+                                       "directory")
     parser.add_argument("--source", default="notion", help="register entry to read (default: notion)")
     parser.add_argument(
         "--count-only", action="store_true",
@@ -575,6 +578,7 @@ def main(argv=None):
                                     "notion_export", lookback=not arguments.walk)
         notion = Notion.from_source(source, notion_credential.authorization(source))
         directory = None if arguments.count_only else raw_directory.checked(arguments.source)
+        output = raw_directory.output_checked(arguments.output)
 
     except (configuration.ConfigurationError, notion_credential.CredentialError) as error:
         print(f"notion_export: {error}", file=sys.stderr)
@@ -599,7 +603,8 @@ def main(argv=None):
     try:
         content, checked, exported = build_export(notion, locations, discovery, side_files, gaps,
                                                   ledger)
-        Path(arguments.output).write_text(content, encoding="utf-8")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(content, encoding="utf-8")
 
     except Exception as error:  # noqa: BLE001 — the point is that nothing escapes unreduced
         side_files.remove_all()
@@ -608,7 +613,7 @@ def main(argv=None):
 
         return EXIT_REFUSED
 
-    print(arguments.output)
+    print(output)
     changed = len(exported)
 
     if arguments.walk:
@@ -652,4 +657,5 @@ def utf8_streams():
 
 if __name__ == "__main__":
     utf8_streams()
+    file_modes.owner_only()
     sys.exit(main())

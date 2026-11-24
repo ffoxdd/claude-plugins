@@ -30,9 +30,18 @@ substance, and a line diff reports almost everything changed. What the label
 carries is the fact of recurrence, the date, and where the earlier copy went — so
 the comparison can be made against the distilled notes, which is the only place
 the earlier meeting still exists in a form worth comparing to.
+
+Nothing sensitive reaches a session merely from running this. Stdout and stderr
+carry the output path, counts, opaque meeting keys and the new watermark, never
+a meeting title, a subject or an address: a title can name a person. Every title,
+subject and address the run has something to say about goes into the output
+file, which must lie under the register's intake directory and, inside a work
+tree, be git-ignored (`raw_directory.py`), so a gate stands between it and the
+session like any other intake.
 """
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -60,7 +69,9 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 
 import configuration
+import file_modes
 import mail_cache
+import raw_directory
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
 PAGE_SIZE = 50
@@ -376,7 +387,10 @@ def fetch_digest(access_token, message, sender):
     }
 
 
-def meeting_key(digest):
+LEDGER_KEY_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+
+def meeting_identity(digest):
     """Identify the meeting a copy is a copy of.
 
     Title plus the meeting's own date, so two same-titled standups on different
@@ -385,6 +399,28 @@ def meeting_key(digest):
     copy to the wrong day but never merges two distinct meetings.
     """
     return f"{digest['title'].lower()}|{digest['meeting_date'] or digest['received'][:10]}"
+
+
+def hashed(identity):
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def meeting_key(digest):
+    """The meeting's identity as a SHA-256, which is what the ledger is keyed by
+    and what stdout names a meeting by. The ledger is committed, and a title can
+    name a person, so no title is written there or printed."""
+    return hashed(meeting_identity(digest))
+
+
+def ledger_key(key):
+    """A ledger key in the hashed form. A key written before the ledger was
+    hashed is the identity itself, so hashing it gives the key its meeting has
+    now, and the earlier record still matches."""
+    return key if LEDGER_KEY_PATTERN.fullmatch(key) else hashed(key)
+
+
+def short_key(key):
+    return key[:12]
 
 
 def deduplicate(digests):
@@ -416,17 +452,22 @@ def read_ledger(path):
 
     An unreadable ledger degrades to an empty one and warns: losing the label for
     one run is a smaller failure than aborting a sweep that otherwise worked.
+    Every key is read in its hashed form (`ledger_key`), so the next write leaves
+    no title in the file.
     """
     if not path.exists():
         return {}
 
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        entries = json.loads(path.read_text(encoding="utf-8"))
 
     except (OSError, json.JSONDecodeError) as error:
-        print(f"email_sweep: ignoring unreadable ledger at {path}: {error}", file=sys.stderr)
+        print(f"email_sweep: ignoring unreadable ledger at {path} ({type(error).__name__})",
+              file=sys.stderr)
 
         return {}
+
+    return {ledger_key(key): entry for key, entry in entries.items()}
 
 
 def find_returning(digests, ledger):
@@ -471,7 +512,34 @@ def render_returning_notice(entry):
     ]
 
 
-def render(paired, watermark):
+def notice_lines(set_aside, drift, unexpected_senders):
+    """What the run set aside or noticed, with the subjects and addresses that say
+    why. They are written into the intake file rather than printed, since a
+    subject can name a person; stdout and stderr carry only the counts."""
+    lines = []
+
+    if set_aside:
+        lines += ["## Set aside — whitelisted sender, no recap title", "",
+                  "A recap whose subject changed shape would land here; widen the sender's",
+                  "`title_patterns` if one did.", ""]
+        lines += [f"- {sender_address(message)}: {message.get('subject', '(no subject)')!r}"
+                  for message, _ in set_aside]
+        lines.append("")
+
+    if drift:
+        lines += ["## Possible sender drift — confirm and widen the register", ""]
+        lines += [f"- {note}" for note in drift]
+        lines.append("")
+
+    if unexpected_senders:
+        lines += ["## Sender differs from the register's baseline", ""]
+        lines += [f"- {address}" for address in unexpected_senders]
+        lines.append("")
+
+    return lines
+
+
+def render(paired, watermark, notices=()):
     lines = [
         f"# Meeting recaps — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
         "",
@@ -493,13 +561,14 @@ def render(paired, watermark):
 
         lines += [digest["summary"], ""]
 
-    return "\n".join(lines)
+    return "\n".join(lines + list(notices))
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("watermark", help="ISO-8601 UTC; collect mail received after this")
-    parser.add_argument("output", help="path to write the intake file to")
+    parser.add_argument("output", help="path to write the intake file to, under the intake "
+                                       "directory")
     parser.add_argument("--source", default="email", help="register entry to read (default: email)")
     parser.add_argument("--ledger", type=Path, help="override the register's ledger path")
     parser.add_argument(
@@ -512,6 +581,7 @@ def main(argv=None):
     try:
         document, root = configuration.load()
         source = configuration.source(arguments.source)
+        output = raw_directory.output_checked(arguments.output)
 
     except configuration.ConfigurationError as error:
         print(f"email_sweep: {error}", file=sys.stderr)
@@ -567,8 +637,13 @@ def main(argv=None):
 
     ledger = read_ledger(ledger_path)
     paired = find_returning(digests, ledger)
+    unexpected_senders = senders_off_baseline(whitelisted, senders)
 
-    Path(arguments.output).write_text(render(paired, arguments.watermark), encoding="utf-8")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        render(paired, arguments.watermark, notice_lines(set_aside, drift, unexpected_senders)),
+        encoding="utf-8",
+    )
 
     # Written only once the intake file exists, so a crash mid-write never leaves
     # a meeting marked delivered that nothing delivered.
@@ -577,7 +652,7 @@ def main(argv=None):
             extended_ledger(
                 ledger,
                 digests,
-                arguments.output,
+                output,
                 source.get("ledger_retention_days", DEFAULT_RETENTION_DAYS),
             ),
             indent=2,
@@ -587,31 +662,17 @@ def main(argv=None):
         encoding="utf-8",
     )
 
-    print(arguments.output)
+    print(output)
     print(
         f"{len(digests)} meetings from {len(candidates)} emails "
         f"({duplicates} duplicate copies collapsed); {len(messages)} scanned"
     )
 
-    returning = [(digest, earlier) for digest, earlier in paired if earlier]
-
-    if returning:
-        print(
-            f"{len(returning)} already distilled in an earlier sync — "
-            "read against the notes, don't skip as duplicates:"
-        )
-
-        for digest, earlier in returning:
-            print(
-                f"  - {digest['title']!r} — first delivered {earlier['first_seen']} "
-                f"in {earlier['intake_file']}"
-            )
+    report_returning(paired)
 
     if set_aside:
-        print(f"{len(set_aside)} from whitelisted senders carried no recap title and were set aside:")
-
-        for message, _ in set_aside:
-            print(f"  - {sender_address(message)}: {message.get('subject', '(no subject)')!r}")
+        print(f"{len(set_aside)} from whitelisted senders carried no recap title and were set "
+              "aside; the intake file lists them")
 
     advanced = max(
         (message["receivedDateTime"] for message, _ in whitelisted),
@@ -619,19 +680,38 @@ def main(argv=None):
     )
     print(f"New watermark: {advanced}")
 
-    report_observed(whitelisted, senders)
+    if unexpected_senders:
+        print(f"\n{len(unexpected_senders)} sending address(es) differ from the register's "
+              "baseline; the intake file names them", file=sys.stderr)
 
     if drift:
-        print("\nPossible sender drift — confirm and widen the register:", file=sys.stderr)
-
-        for note in drift:
-            print(f"  - {note}", file=sys.stderr)
+        print(f"\n{len(drift)} digest-shaped message(s) from unrecognized senders: possible "
+              "sender drift; the intake file names them", file=sys.stderr)
 
     return 0
 
 
-def report_observed(candidates, senders):
-    """Say when the sending address differs from the one the register recorded.
+def report_returning(paired):
+    """Name each meeting already distilled by its key, never its title."""
+    returning = [(digest, earlier) for digest, earlier in paired if earlier]
+
+    if not returning:
+        return
+
+    print(
+        f"{len(returning)} already distilled in an earlier sync — "
+        "read against the notes, don't skip as duplicates:"
+    )
+
+    for digest, earlier in returning:
+        print(
+            f"  - meeting {short_key(meeting_key(digest))} — first delivered "
+            f"{earlier['first_seen']} in {earlier['intake_file']}"
+        )
+
+
+def senders_off_baseline(candidates, senders):
+    """The sending addresses, when any differs from the one the register recorded.
 
     A vendor changing its local-part is harmless for a domain match and worth
     knowing about anyway: it is the cheapest early warning that the sender is
@@ -643,10 +723,9 @@ def report_observed(candidates, senders):
     observed = sorted({sender_address(message) for message, _ in candidates})
 
     if observed and baseline and set(observed) - baseline:
-        print(
-            f"\nSender differs from the register's baseline: {', '.join(observed)}",
-            file=sys.stderr,
-        )
+        return observed
+
+    return []
 
 
 def utf8_streams():
@@ -660,4 +739,5 @@ def utf8_streams():
 
 if __name__ == "__main__":
     utf8_streams()
+    file_modes.owner_only()
     sys.exit(main())

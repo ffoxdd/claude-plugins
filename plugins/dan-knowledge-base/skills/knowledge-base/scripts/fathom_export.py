@@ -25,7 +25,9 @@ Nothing sensitive reaches a session merely from running this:
     response body or a header;
   * **the output file** carries one placeholder per exported meeting, naming it
     by recording id and recorded date and pointing at its meeting file. Titles
-    stay out, because a title can be a person's name;
+    stay out, because a title can be a person's name. It must lie under the
+    register's intake directory, git-ignored, like every adapter's output
+    (`raw_directory.output_checked`);
   * **the meeting itself** goes only to its meeting file under
     `<intake>/<source name>/`: first the line `UNGATED: not to be read until
     the isolated agent has scrubbed it`, then the title, invitee domains (never
@@ -132,6 +134,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import configuration
 import fathom_credential
+import file_modes
 import raw_directory
 from notion_api import EXIT_GAPS, EXIT_REFUSED, RETRIES, RETRYABLE_STATUSES, ExportError, Gaps, \
     Retryable, floor_to_minute, format_time, parse_time, read_watermark, retry_after_seconds
@@ -770,17 +773,19 @@ def read_settings(arguments):
 
     requested = transcripts_setting(source)
     directory = None if arguments.count_only else raw_directory.checked(arguments.source)
+    output = raw_directory.output_checked(arguments.output)
     ledger = Ledger.from_source(source, arguments.source, since, floor)
     fathom = Fathom.from_source(source, fathom_credential.api_key(source))
 
     return (fathom, ledger, floor, excluded, lookback_hours, Transcripts(fathom, requested),
-            directory)
+            directory, output)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("watermark", help="ISO-8601 UTC time; meetings created after it")
-    parser.add_argument("output", help="path to write the intake file to")
+    parser.add_argument("output", help="path to write the intake file to, under the intake "
+                                       "directory")
     parser.add_argument("--source", default="fathom", help="register entry to read (default: fathom)")
     parser.add_argument("--count-only", action="store_true",
                         help="list and count meetings without writing any meeting file; the "
@@ -794,7 +799,7 @@ def main(argv=None):
     clock = datetime.now(timezone.utc)
 
     try:
-        fathom, ledger, floor, excluded, lookback_hours, transcripts, directory = \
+        fathom, ledger, floor, excluded, lookback_hours, transcripts, directory, output = \
             read_settings(arguments)
 
     except (configuration.ConfigurationError, fathom_credential.CredentialError) as error:
@@ -816,7 +821,7 @@ def main(argv=None):
     # Any exit before the export is written, an interruption included, takes back
     # the meeting files, since no export would point at them.
     try:
-        write_export(arguments, fathom, sorting, excluded, ledger, gaps, floor, lookback_hours,
+        write_export(output, fathom, sorting, excluded, ledger, gaps, floor, lookback_hours,
                      meeting_files)
         completed = True
 
@@ -840,7 +845,7 @@ def main(argv=None):
     return report(arguments, sorting, transcripts, gaps, ledger, clock, lookback_hours)
 
 
-def write_export(arguments, fathom, sorting, excluded, ledger, gaps, floor, lookback_hours,
+def write_export(output, fathom, sorting, excluded, ledger, gaps, floor, lookback_hours,
                  meeting_files):
     try:
         sorting.sort(fathom.meetings_created_after(floor), excluded, ledger, gaps)
@@ -849,7 +854,8 @@ def write_export(arguments, fathom, sorting, excluded, ledger, gaps, floor, look
         gaps.add(f"the meeting listing stopped part-way: {error}")
 
     content = build_export(sorting, floor, lookback_hours, meeting_files)
-    Path(arguments.output).write_text(content, encoding="utf-8")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(content, encoding="utf-8")
 
 
 def terminate(signal_number, frame):
@@ -869,4 +875,5 @@ def utf8_streams():
 
 if __name__ == "__main__":
     utf8_streams()
+    file_modes.owner_only()
     sys.exit(main())
