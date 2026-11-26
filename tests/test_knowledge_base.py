@@ -15,9 +15,11 @@ silently in production:
 """
 
 import json
+import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -275,6 +277,502 @@ class ProvisioningSilenceTest(unittest.TestCase):
             self.assertEqual(self.provision(path, home=directory).returncode, 0)
 
 
+class RegisterShapeTest(unittest.TestCase):
+    """What the register loader refuses before any script reads a value from it:
+    a refusal names the key, where a wrong type would otherwise be a traceback in
+    every adapter, or a session start that drops all its notes."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name).resolve()
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def export(self, **document):
+        config = write_register(self.root, {"sources": {"chat": {"adapter": "chat"}},
+                                            **document})
+
+        return support.run_script(adapter("chat_export.py"),
+                                  arguments=["1000.0", str(self.root / "inbox" / "x.md")],
+                                  KNOWLEDGE_BASE_CONFIG_FILE=str(config))
+
+    def provision(self, **document):
+        config = write_register(self.root, {"sources": {}, **document})
+        result = support.run_script(support.script(PLUGIN, "provision.py"),
+                                    KNOWLEDGE_BASE_CONFIG_FILE=str(config), HOME=str(self.root))
+
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"] \
+            if result.stdout.strip() else ""
+
+    def test_a_layout_path_that_is_not_a_string_is_refused_by_name(self):
+        result = self.export(layout={"inbox": 5})
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('"layout.inbox" that is not a path', result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_session_start_reports_a_malformed_layout_member(self):
+        self.assertIn('"layout.processed" that is not a path',
+                      self.provision(layout={"processed": 5, "retention_days": 1}))
+        self.assertIn('"layout.retention_days"',
+                      self.provision(layout={"retention_days": "ninety"}))
+
+    def test_a_null_layout_is_no_layout(self):
+        self.assertEqual(self.provision(layout=None), "")
+
+    def test_a_null_session_is_refused_rather_than_read_as_absent(self):
+        result = self.export(session=None)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('"session" must name a "required_variable"', result.stderr)
+        self.assertIn("required_variable", self.provision(session=None))
+
+
+class RawFileWritersTest(unittest.TestCase):
+    """What every writer `take_back` relies on promises: a path is recorded before
+    its file is written, so a write that fails once the file exists is still
+    taken back; and a lone surrogate, which API text can carry, is replaced
+    rather than failing the run. Exercised in-process, with no service."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.raw = Path(self.directory.name).resolve() / "inbox" / "source"
+        sys.path.insert(0, str(support.plugin_root(PLUGIN) / ADAPTER_SCRIPTS))
+        sys.path.insert(0, str(support.plugin_root(PLUGIN) / "scripts"))
+
+        import chat_export
+        import notion_export
+        import raw_directory
+
+        self.chat_export, self.notion_export, self.raw_directory = \
+            chat_export, notion_export, raw_directory
+        raw_directory.begin(self.raw)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def writers(self):
+        conversation = self.chat_export.Conversation("D1", "a direct message", False, "")
+        raw_files = self.chat_export.RawFiles(self.raw)
+        side_files = self.notion_export.SideFiles(self.raw)
+
+        return [("chat", raw_files, lambda text: raw_files.write(conversation, [text])),
+                ("notion", side_files, lambda text: side_files.write("page-1", text))]
+
+    def test_a_lone_surrogate_is_replaced_rather_than_failing(self):
+        for name, files, write in self.writers():
+            with self.subTest(writer=name):
+                path = Path(write("before \ud800 after"))
+
+                self.assertIn("before ? after", path.read_text(encoding="utf-8"))
+
+    def test_a_write_that_fails_after_creating_the_file_is_still_taken_back(self):
+        from unittest import mock
+
+        real_open = open
+
+        def failing_open(path, *arguments, **options):
+            handle = real_open(path, *arguments, **options)
+            handle.close()
+            raise OSError("no space left on device")
+
+        def failing_write_text(path, *arguments, **options):
+            path.touch()
+            raise OSError("no space left on device")
+
+        for (name, files, write), patch in zip(
+                self.writers(),
+                (mock.patch("builtins.open", failing_open),
+                 mock.patch.object(Path, "write_text", failing_write_text))):
+            with self.subTest(writer=name):
+                with patch:
+                    with self.assertRaises(OSError):
+                        write("text")
+
+                self.assertEqual(len(files.written), 1)
+                self.assertTrue(Path(files.written[0]).exists())
+                self.assertEqual(files.remove_all(), 0)
+                self.assertEqual(list(self.raw.iterdir()), [])
+                self.raw_directory.begin(self.raw)
+
+    @unittest.skipIf(not hasattr(signal, "SIGHUP"), "the platform has no SIGHUP")
+    def test_an_ignored_sighup_stays_ignored(self):
+        """`nohup` ignores SIGHUP on purpose; the run must not undo that."""
+        previous_hangup = signal.getsignal(signal.SIGHUP)
+        previous_termination = signal.getsignal(signal.SIGTERM)
+
+        try:
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)
+            self.raw_directory.stop_on_signals()
+
+            self.assertIs(signal.getsignal(signal.SIGHUP), signal.SIG_IGN)
+            self.assertIs(signal.getsignal(signal.SIGTERM), self.raw_directory.terminate)
+
+        finally:
+            signal.signal(signal.SIGHUP, previous_hangup)
+            signal.signal(signal.SIGTERM, previous_termination)
+
+
+class RetentionTest(unittest.TestCase):
+    """The processed-intake retention: what it deletes, what it never touches, and
+    the conditions under which it deletes nothing at all."""
+
+    OLD = 40 * 24 * 60 * 60
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name).resolve()
+        self.processed = self.root / "inbox" / "processed"
+        self.processed.mkdir(parents=True)
+        self.layout = {"inbox": "inbox", "processed": "inbox/processed", "retention_days": 30}
+        self.write_layout()
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def write_layout(self, **changes):
+        self.config = write_register(self.root, {"layout": {**self.layout, **changes},
+                                                 "sources": {}})
+
+    def work_tree(self, ignored="inbox/\n"):
+        subprocess.run(["git", "-C", str(self.root), "init", "--quiet"], check=True)
+        (self.root / ".gitignore").write_text(ignored, encoding="utf-8")
+
+    def intake_file(self, relative, age=0):
+        path = self.processed / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("intake", encoding="utf-8")
+        moment = datetime.now().timestamp() - age
+        os.utime(path, (moment, moment))
+
+        return path
+
+    def enforce(self, **environment):
+        return support.run_script(support.script(PLUGIN, "retention.py"),
+                                  KNOWLEDGE_BASE_CONFIG_FILE=str(self.config), **environment)
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_deletes_old_files_and_the_folders_they_leave_empty(self):
+        self.work_tree()
+        old = self.intake_file("2026/OLD-NAME-MARKER.md", age=self.OLD)
+        recent = self.intake_file("RECENT-NAME-MARKER.md")
+
+        result = self.enforce()
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout.splitlines(), [
+            "knowledge-base retention: 1 processed intake file(s) older than 30 day(s) deleted"])
+        self.assertFalse(old.exists())
+        self.assertFalse(old.parent.exists())
+        self.assertTrue(recent.exists())
+        self.assertTrue(self.processed.is_dir())
+
+    def test_without_the_key_does_nothing(self):
+        self.layout.pop("retention_days")
+        self.write_layout()
+        old = self.intake_file("old.md", age=self.OLD)
+
+        result = self.enforce()
+
+        self.assertEqual(result.stdout, "")
+        self.assertTrue(old.exists())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_a_processed_directory_git_does_not_ignore_is_refused(self):
+        self.work_tree(ignored="")
+        old = self.intake_file("old.md", age=self.OLD)
+
+        result = self.enforce()
+
+        self.assertIn("nothing deleted", result.stdout)
+        self.assertIn("not git-ignored", result.stdout)
+        self.assertTrue(old.exists())
+
+    def test_a_processed_directory_outside_the_intake_is_refused(self):
+        self.write_layout(processed="notes")
+        notes = self.root / "notes"
+        notes.mkdir()
+        old = notes / "old.md"
+        old.write_text("a note", encoding="utf-8")
+        os.utime(old, (0, 0))
+
+        result = self.enforce()
+
+        self.assertIn("not inside the intake directory", result.stdout)
+        self.assertTrue(old.exists())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_a_processed_directory_reached_through_a_link_is_refused(self):
+        self.work_tree()
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        old = elsewhere / "old.md"
+        old.write_text("kept", encoding="utf-8")
+        os.utime(old, (0, 0))
+        shutil.rmtree(self.processed)
+
+        try:
+            self.processed.symlink_to(elsewhere, target_is_directory=True)
+
+        except OSError:
+            self.skipTest("this platform cannot create a symbolic link here")
+
+        result = self.enforce()
+
+        self.assertIn("reached through a link", result.stdout)
+        self.assertTrue(old.exists())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_a_link_inside_is_neither_followed_nor_deleted(self):
+        self.work_tree()
+        outside = self.root / "outside"
+        outside.mkdir()
+        target = outside / "old.md"
+        target.write_text("kept", encoding="utf-8")
+        os.utime(target, (0, 0))
+
+        try:
+            (self.processed / "file-link.md").symlink_to(target)
+            (self.processed / "folder-link").symlink_to(outside, target_is_directory=True)
+
+        except OSError:
+            self.skipTest("this platform cannot create a symbolic link here")
+
+        result = self.enforce()
+
+        self.assertIn(" 0 processed intake file(s)", result.stdout)
+        self.assertTrue(target.exists())
+        self.assertTrue((self.processed / "file-link.md").is_symlink())
+        self.assertTrue((self.processed / "folder-link").is_symlink())
+
+    def in_process(self):
+        sys.path.insert(0, str(support.plugin_root(PLUGIN) / "scripts"))
+        import retention
+
+        return retention
+
+    JUNCTION = 0xA0000003
+    SYMBOLIC_LINK = 0xA000000C
+    CLOUD_PLACEHOLDER = 0x9000001A
+
+    def faking_reparse_point(self, retention, faked, tag=None):
+        """os.lstat, with the reparse-point attribute Windows gives a junction
+        added for the one path `faked`, and `tag` as its reparse tag when given."""
+        from types import SimpleNamespace
+        from unittest import mock
+
+        real = os.lstat
+
+        def lstat(path, *arguments, **options):
+            status = real(path, *arguments, **options)
+
+            if os.path.normpath(str(path)) != os.path.normpath(str(faked)):
+                return status
+
+            fields = {"st_mode": status.st_mode, "st_mtime": status.st_mtime,
+                      "st_file_attributes": retention.REPARSE_POINT}
+
+            if tag is not None:
+                fields["st_reparse_tag"] = tag
+
+            return SimpleNamespace(**fields)
+
+        return mock.patch.object(retention.os, "lstat", lstat)
+
+    def test_a_junction_inside_is_neither_descended_nor_deleted(self):
+        retention = self.in_process()
+        junction = self.processed / "junction"
+        old = junction / "old.md"
+        junction.mkdir()
+        old.write_text("at the junction's target", encoding="utf-8")
+        os.utime(old, (0, 0))
+
+        with self.faking_reparse_point(retention, junction):
+            deleted = retention.delete_expired(str(self.processed), datetime.now().timestamp())
+
+        self.assertEqual(deleted, 0)
+        self.assertTrue(old.exists())
+
+    def test_only_a_reparse_tag_that_stands_for_another_location_is_a_link(self):
+        """A junction or symbolic link is stepped around; a cloud placeholder keeps
+        its own content and is swept like any folder."""
+        retention = self.in_process()
+
+        for tag, kept in ((self.JUNCTION, True), (self.SYMBOLIC_LINK, True),
+                          (self.CLOUD_PLACEHOLDER, False)):
+            with self.subTest(tag=hex(tag)):
+                folder = self.processed / f"folder-{tag:x}"
+                old = folder / "old.md"
+                folder.mkdir()
+                old.write_text("intake", encoding="utf-8")
+                os.utime(old, (0, 0))
+
+                with self.faking_reparse_point(retention, folder, tag):
+                    retention.delete_expired(str(self.processed), datetime.now().timestamp())
+
+                self.assertEqual(old.exists(), kept)
+
+    def test_a_cloud_placeholder_processed_directory_is_not_refused(self):
+        retention = self.in_process()
+
+        with self.faking_reparse_point(retention, self.processed, self.CLOUD_PLACEHOLDER):
+            self.assertIsNone(retention.linked_component(self.root, self.processed))
+
+    @unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                     "needs POSIX permissions that bind the caller")
+    def test_an_unreadable_folder_is_skipped_and_the_rest_swept(self):
+        self.work_tree()
+        old = self.intake_file("old.md", age=self.OLD)
+        locked = self.processed / "locked"
+        hidden = self.intake_file("locked/old.md", age=self.OLD)
+        locked.chmod(0)
+
+        try:
+            result = self.enforce()
+
+        finally:
+            locked.chmod(0o700)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertNotIn("locked", result.stdout + result.stderr)
+        self.assertFalse(old.exists())
+        self.assertTrue(hidden.exists())
+
+    def test_a_folder_that_vanishes_mid_sweep_costs_nothing(self):
+        retention = self.in_process()
+        gone = self.processed / "gone"
+        gone.mkdir()
+        real_scandir = os.scandir
+
+        def scandir(path):
+            if os.path.normpath(str(path)) == os.path.normpath(str(gone)):
+                raise FileNotFoundError(path)
+
+            return real_scandir(path)
+
+        from unittest import mock
+
+        with mock.patch.object(retention.os, "scandir", scandir):
+            self.assertEqual(retention.delete_expired(str(self.processed),
+                                                      datetime.now().timestamp()), 0)
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_a_retention_failure_never_silences_the_session_note(self):
+        self.work_tree()
+        self.config = write_register(self.root, {
+            "layout": self.layout, "sources": {},
+            "session": {"required_variable": SESSION_VARIABLE}})
+        from unittest import mock
+
+        sys.path.insert(0, str(support.plugin_root(PLUGIN) / "scripts"))
+        import provision
+        import retention
+
+        with mock.patch.object(retention, "enforce", side_effect=RuntimeError("boom")):
+            notes = provision.retention_report({}, self.root)
+
+        self.assertEqual(notes, [])
+        result = support.run_script(support.script(PLUGIN, "provision.py"),
+                                    KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+                                    HOME=str(self.root))
+
+        self.assertIn("a sync cannot run in this session", result.stdout)
+
+    def test_a_processed_directory_that_is_a_junction_is_refused(self):
+        retention = self.in_process()
+
+        with self.faking_reparse_point(retention, self.processed):
+            with self.assertRaises(retention.Refused):
+                retention.processed_directory(self.layout, self.root)
+
+    def test_outside_any_work_tree_nothing_is_deleted_or_said(self):
+        """git cannot judge the place, which an adapter accepts; retention still
+        deletes nothing it cannot confirm is ignored, and stays quiet about it."""
+        old = self.intake_file("old.md", age=self.OLD)
+
+        result = self.enforce(GIT_CEILING_DIRECTORIES=str(self.root.parent))
+
+        self.assertEqual(result.stdout, "")
+        self.assertTrue(old.exists())
+
+    def test_session_start_reports_a_layout_that_is_not_an_object(self):
+        self.config = write_register(self.root, {"layout": [], "sources": {}})
+
+        result = support.run_script(support.script(PLUGIN, "provision.py"),
+                                    KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+                                    HOME=str(self.root))
+        body = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('"layout" that is not an object', body)
+
+    def test_a_retention_that_is_not_a_positive_number_is_refused(self):
+        self.write_layout(retention_days="ninety")
+        old = self.intake_file("old.md", age=self.OLD)
+
+        result = self.enforce()
+
+        self.assertIn("retention_days", result.stdout)
+        self.assertTrue(old.exists())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_session_start_reports_a_deletion_in_one_line(self):
+        self.work_tree()
+        self.intake_file("old.md", age=self.OLD)
+
+        result = support.run_script(support.script(PLUGIN, "provision.py"),
+                                    KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+                                    HOME=str(self.root))
+        body = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+        self.assertIn("1 processed intake file(s) older than 30 day(s) deleted", body)
+        self.assertNotIn("old.md", body)
+        self.assertEqual(list(self.processed.iterdir()), [])
+
+    def provision_requiring_session(self, **environment):
+        self.config = write_register(self.root, {
+            "layout": self.layout, "sources": {},
+            "session": {"required_variable": SESSION_VARIABLE}})
+
+        return support.run_script(support.script(PLUGIN, "provision.py"),
+                                  KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+                                  HOME=str(self.root), **environment)
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_session_start_says_a_sync_cannot_run_outside_the_required_session(self):
+        self.work_tree()
+        old = self.intake_file("old.md", age=self.OLD)
+
+        result = self.provision_requiring_session()
+        body = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+        self.assertIn("a sync cannot run in this session", body)
+        self.assertIn(SESSION_VARIABLE, body)
+        self.assertIn("1 processed intake file(s)", body)
+        self.assertFalse(old.exists())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_session_start_says_nothing_inside_the_required_session(self):
+        self.work_tree()
+
+        result = self.provision_requiring_session(**{SESSION_VARIABLE: "1"})
+
+        self.assertEqual(result.stdout.strip(), "")
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_session_start_says_nothing_when_nothing_was_deleted(self):
+        self.work_tree()
+        self.intake_file("recent.md")
+
+        result = support.run_script(support.script(PLUGIN, "provision.py"),
+                                    KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+                                    HOME=str(self.root))
+
+        self.assertEqual(result.stdout.strip(), "")
+
+
 class LauncherTest(unittest.TestCase):
     """The command this plugin puts on PATH.
 
@@ -414,9 +912,21 @@ if __name__ == "__main__":
 
 ADAPTER_SCRIPTS = "skills/knowledge-base/scripts"
 
+# A variable no developer's environment sets, so its absence is the default.
+SESSION_VARIABLE = "KNOWLEDGE_BASE_TEST_COVERED_SESSION"
+
 STUB_CHAT_CLIENT = '''#!/usr/bin/env python3
-import json, sys
+import json, os, sys
 command = sys.argv[1]
+if os.environ.get("STUB_CALL_LOG"):
+    with open(os.environ["STUB_CALL_LOG"], "a", encoding="utf-8") as log:
+        log.write(" ".join(sys.argv[1:]) + "\\n")
+if command == "history" and sys.argv[2] == os.environ.get("STUB_FAIL_HISTORY"):
+    sys.exit("slack api error: internal_error")
+if command == "history" and sys.argv[2] == os.environ.get("STUB_HOLD_HISTORY"):
+    open(os.environ["STUB_HOLDING"], "w").close()
+    import time
+    time.sleep(60)
 if command == "memberships":
     print("C001\\tunlocked\\tgeneral")
     print("C002\\tlocked\\tbilling-ops")
@@ -441,6 +951,25 @@ elif command == "history":
 elif command == "replies":
     print(json.dumps({"ts": "900.0", "user_name": "cy", "text": "older parent"}))
     print(json.dumps({"ts": "1600.0", "user_name": "cy", "text": "and the follow-up"}))
+'''
+
+# Conversations the platform marks only by kind or purpose: a direct message and a
+# group direct message, each named for its people and with no lock, and a public
+# channel whose purpose, not its topic, carries the banner. Every conversation has
+# one message after the watermark.
+STUB_CHAT_DIRECT = '''#!/usr/bin/env python3
+import json, sys
+command = sys.argv[1]
+if command == "memberships":
+    print("C010\\t-\\topen-channel\\t\\tchannel\\t")
+    print("D011\\t-\\tPat PERSON-NAME\\t\\tim\\t")
+    print("G012\\t-\\tLee PERSON-NAME, Kim PERSON-NAME\\t\\tmpim\\t")
+    print("C013\\t-\\tcases\\t\\tchannel\\tMay Contain Personal Data")
+elif command == "history":
+    print(json.dumps({"ts": "1500.0", "user_name": "ana", "text": "MESSAGE-TEXT " + sys.argv[2]}))
+'''
+
+STUB_CHAT_EMPTY = '''#!/usr/bin/env python3
 '''
 
 
@@ -565,6 +1094,65 @@ class EmailParsingTest(unittest.TestCase):
 
         self.assertIn("uv run", str(raised.exception))
 
+    def digest(self, title="Pat TITLE-MARKER review", date="2026-08-17"):
+        return {"title": title, "meeting_date": date, "received": f"{date}T09:00:00Z",
+                "summary": ""}
+
+    def test_a_meeting_is_keyed_by_a_hash_that_carries_no_title(self):
+        """The ledger is committed, and a title can name a person."""
+        key = self.sweep.meeting_key(self.digest())
+
+        self.assertRegex(key, r"^[0-9a-f]{64}$")
+        self.assertNotIn("title-marker", key)
+
+    def test_a_ledger_written_with_plain_keys_still_labels_its_meetings(self):
+        """An earlier ledger keyed each meeting by its lowercased title and date. Its
+        records still match, and the next write keeps them under the hashed key."""
+        digest = self.digest()
+        earlier = {"meeting_date": "2026-08-17", "first_seen": "2026-08-17T09:00:00Z",
+                   "intake_file": "earlier.md"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ".delivery-ledger"
+            path.write_text(json.dumps({"pat title-marker review|2026-08-17": earlier}),
+                            encoding="utf-8")
+            ledger = self.sweep.read_ledger(path)
+
+        self.assertEqual(self.sweep.find_returning([digest], ledger), [(digest, earlier)])
+
+        written = self.sweep.extended_ledger(ledger, [digest], "later.md", 36500)
+
+        self.assertEqual(list(written), [self.sweep.meeting_key(digest)])
+        self.assertEqual(written[self.sweep.meeting_key(digest)], earlier)
+
+    def test_a_returning_meeting_is_named_by_its_key_never_its_title(self):
+        import contextlib
+        import io
+
+        digest = self.digest()
+        earlier = {"first_seen": "2026-08-17T09:00:00Z", "intake_file": "earlier.md"}
+        printed = io.StringIO()
+
+        with contextlib.redirect_stdout(printed):
+            self.sweep.report_returning([(digest, earlier)])
+
+        self.assertIn(self.sweep.meeting_key(digest)[:12], printed.getvalue())
+        self.assertNotIn("TITLE-MARKER", printed.getvalue())
+
+    def test_subjects_and_addresses_go_into_the_intake_file(self):
+        """They say why a message was set aside or noticed, and a subject can name a
+        person, so they are written where the gate reads them, not printed."""
+        sender = {"match": "domain", "value": "vendor.example"}
+        message = {"subject": "Pat SUBJECT-MARKER shared a recording",
+                   "from": {"emailAddress": {"address": "no-reply@vendor.example"}}}
+
+        lines = "\n".join(self.sweep.notice_lines(
+            [(message, sender)], ["digest-shaped mail from DRIFT-MARKER"], ["new@vendor.example"]))
+
+        for text in ("SUBJECT-MARKER", "DRIFT-MARKER", "new@vendor.example"):
+            with self.subTest(text=text):
+                self.assertIn(text, lines)
+
 
 class EmailAdapterInvocationTest(unittest.TestCase):
     def test_a_source_declaring_no_senders_refuses_rather_than_sweeping_everything(self):
@@ -575,7 +1163,7 @@ class EmailAdapterInvocationTest(unittest.TestCase):
 
             result = support.run_script(
                 adapter("email_sweep.py"),
-                arguments=["2026-08-01T00:00:00Z", str(Path(directory) / "out.md")],
+                arguments=["2026-08-01T00:00:00Z", str(Path(directory) / "inbox" / "out.md")],
                 KNOWLEDGE_BASE_CONFIG_FILE=str(path),
             )
 
@@ -598,13 +1186,29 @@ class EmailAdapterInvocationTest(unittest.TestCase):
 
             result = support.run_script(
                 adapter("email_sweep.py"),
-                arguments=["2020-01-01T00:00:00Z", str(Path(directory) / "out.md")],
+                arguments=["2020-01-01T00:00:00Z", str(Path(directory) / "inbox" / "out.md")],
                 KNOWLEDGE_BASE_CONFIG_FILE=str(path),
             )
 
             self.assertEqual(result.returncode, 1)
             self.assertIn("max_lookback_days", result.stderr)
             self.assertIn("--allow-backfill", result.stderr)
+
+    def test_an_output_outside_the_intake_directory_is_refused_before_anything(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_register(directory, register(email=self.email_source()))
+            output = Path(directory).resolve() / "out.md"
+
+            result = support.run_script(
+                adapter("email_sweep.py"),
+                arguments=["2026-08-01T00:00:00Z", str(output)],
+                KNOWLEDGE_BASE_CONFIG_FILE=str(path),
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("outside the intake directory", result.stderr)
+            self.assertIn(str(Path(directory).resolve() / "inbox"), result.stderr)
+            self.assertFalse(output.exists())
 
     def test_the_register_sets_its_own_cap(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -613,7 +1217,7 @@ class EmailAdapterInvocationTest(unittest.TestCase):
 
             result = support.run_script(
                 adapter("email_sweep.py"),
-                arguments=["2020-01-01T00:00:00Z", str(Path(directory) / "out.md")],
+                arguments=["2020-01-01T00:00:00Z", str(Path(directory) / "inbox" / "out.md")],
                 KNOWLEDGE_BASE_CONFIG_FILE=str(path),
             )
 
@@ -659,9 +1263,10 @@ class ChatClientInvocationTest(unittest.TestCase):
 class ChatAdapterTest(unittest.TestCase):
     """The chat adapter against a stub client, which is the only way to reach this
     logic without a workspace. What is being pinned is not the stub's content but
-    the four properties the design rests on: dense conversations never appear in
-    the export, stdout never carries message text, noise is dropped, and a revived
-    thread contributes only its new replies."""
+    the properties the design rests on: each active conversation is its own raw
+    file and the index carries no message, no output stream carries message text
+    or a direct message's name, noise is dropped, and a revived thread
+    contributes only its new replies."""
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -671,45 +1276,57 @@ class ChatAdapterTest(unittest.TestCase):
         # way the platform can: support.stub_command returns that path.
         self.client = support.stub_command(root / "stub-chat", STUB_CHAT_CLIENT)
 
-        self.output = root / "export.md"
+        self.output = root / "inbox" / "export.md"
         self.raw = root / "inbox" / "chat"
         self.config = write_register(root, register(chat={
             "adapter": "chat",
             "client_command": str(self.client),
-            "dense_conversations": ["#billing-ops"],
         }))
 
     def tearDown(self):
         self.directory.cleanup()
 
-    def export(self, *extra):
+    def export(self, *extra, **environment):
         return support.run_script(
             adapter("chat_export.py"),
             arguments=["1000.0", str(self.output), *extra],
             KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+            **environment,
         )
 
-    def test_a_dense_conversation_never_reaches_the_export(self):
-        self.export()
+    def raw_text(self):
+        return "".join(path.read_text(encoding="utf-8") for path in sorted(self.raw.glob("*.md")))
 
-        self.assertNotIn("SENSITIVE-MARKER", self.output.read_text(encoding="utf-8"))
-        self.assertIn("NOT pulled verbatim", self.output.read_text(encoding="utf-8"))
+    def test_each_active_conversation_is_its_own_raw_file(self):
+        """One conversation is one batch for the gate, a record-dense one included."""
+        result = self.export()
 
-    def test_its_text_goes_to_the_side_file_the_placeholder_names(self):
-        self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(path.name for path in self.raw.glob("*.md")),
+                         ["C001.md", "C002.md", "C003.md", "C004.md"])
+        self.assertIn("SENSITIVE-MARKER", (self.raw / "C002.md").read_text(encoding="utf-8"))
 
-        side_files = list(self.raw.glob("*.md"))
+    def test_the_index_names_each_raw_file_and_carries_no_message(self):
+        result = self.export()
+        index = self.output.read_text(encoding="utf-8")
 
-        self.assertEqual(len(side_files), 1)
-        self.assertIn("SENSITIVE-MARKER", side_files[0].read_text(encoding="utf-8"))
-        self.assertIn(side_files[0].name, self.output.read_text(encoding="utf-8"))
+        for identifier in ("C001", "C002", "C003", "C004"):
+            with self.subTest(identifier=identifier):
+                self.assertIn(str(self.raw / f"{identifier}.md"), index)
+                self.assertIn(f"  {self.raw / f'{identifier}.md'}", result.stdout)
 
-    def test_count_only_writes_dense_text_nowhere(self):
+        for token in ("SENSITIVE-MARKER", "shipped the", "the follow-up", "TOPIC-MARKER"):
+            with self.subTest(token=token):
+                self.assertNotIn(token, index)
+
+    def test_count_only_writes_no_message_anywhere(self):
         result = self.export("--count-only")
 
-        self.assertNotIn("SENSITIVE-MARKER", self.output.read_text(encoding="utf-8"))
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.raw.exists())
-        self.assertIn("only to advance the watermark", result.stdout)
+        self.assertIn("Counted only", self.output.read_text(encoding="utf-8"))
+        self.assertNotIn("SENSITIVE-MARKER", self.output.read_text(encoding="utf-8"))
+        self.assertIn("New watermark: 1800.0", result.stdout)
 
     def test_stdout_carries_no_message_text(self):
         """What makes it safe for the main session to run this itself."""
@@ -719,41 +1336,16 @@ class ChatAdapterTest(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertNotIn(token, result.stdout)
 
-    def test_a_topic_banner_makes_a_public_conversation_scrub_mandatory(self):
-        """The banner means what the lock means, so it catches a channel left public."""
-        self.config.write_text(json.dumps(register(chat={
-            "adapter": "chat",
-            "client_command": str(self.client),
-            "dense_conversations": ["#billing-ops"],
-            "private_topic_markers": ["May Contain PHI"],
-        })), encoding="utf-8")
-
-        self.export()
-        content = self.output.read_text(encoding="utf-8")
-
-        self.assertEqual(content.count("NOT pulled verbatim"), 1)
-        self.assertEqual(content.count("scrub this section"), 2)
-
-    def test_without_a_marker_the_topic_changes_nothing(self):
-        self.export()
-
-        self.assertEqual(self.output.read_text(encoding="utf-8").count("scrub this section"), 1)
-
-    def test_a_private_conversation_is_marked_scrub_mandatory(self):
-        self.export()
-
-        self.assertIn("scrub this section", self.output.read_text(encoding="utf-8"))
-
     def test_noise_and_bare_acknowledgements_are_dropped(self):
         self.export()
-        text = self.output.read_text(encoding="utf-8")
+        text = self.raw_text()
 
         self.assertNotIn("thanks!", text)
         self.assertNotIn("channel_join", text)
 
     def test_wire_encoding_is_decoded_into_prose(self):
         self.export()
-        text = self.output.read_text(encoding="utf-8")
+        text = self.raw_text()
 
         self.assertIn("<retry>", text)
         self.assertIn("the doc (https://x.test)", text)
@@ -763,7 +1355,7 @@ class ChatAdapterTest(unittest.TestCase):
         """A reply does not bump its parent's timestamp, so this is the case a
         watermark alone cannot see — and the parent must not be re-reported as new."""
         self.export()
-        text = self.output.read_text(encoding="utf-8")
+        text = self.raw_text()
 
         self.assertIn("and the follow-up", text)
         self.assertIn("thread continued", text)
@@ -777,14 +1369,14 @@ class ChatAdapterTest(unittest.TestCase):
         )
 
         self.assertIn("0 conversation(s) with new messages", result.stdout)
-        self.assertIn("skip the isolated agent", result.stdout)
+        self.assertIn("skip the gate", result.stdout)
         self.assertEqual(list(self.raw.glob("*.md")), [])
 
     def test_an_active_window_does_not_say_to_skip(self):
         result = self.export()
 
         self.assertIn("4 conversation(s) with new messages", result.stdout)
-        self.assertNotIn("skip the isolated agent", result.stdout)
+        self.assertNotIn("skip the gate", result.stdout)
 
     def test_the_watermark_advances_to_the_newest_activity(self):
         result = self.export()
@@ -829,7 +1421,7 @@ class ChatAdapterTest(unittest.TestCase):
         result = self.export()
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(list(self.raw.glob("*.md"))), 1)
+        self.assertEqual(len(list(self.raw.glob("*.md"))), 4)
 
     def test_a_folder_a_previous_run_left_files_in_is_refused_before_any_fetch(self):
         self.raw.mkdir(parents=True)
@@ -839,8 +1431,305 @@ class ChatAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn(str(self.raw), result.stderr)
-        self.assertIn("previous run's working files", result.stderr)
+        self.assertIn("a finished run's files", result.stderr)
         self.assertFalse(self.output.exists())
+
+    def use_client(self, source, **settings):
+        self.client = support.stub_command(self.root / "stub-direct", source)
+        self.config.write_text(json.dumps(register(chat={
+            "adapter": "chat",
+            "client_command": str(self.client),
+            **settings,
+        })), encoding="utf-8")
+
+    def exclude(self, **settings):
+        self.config.write_text(json.dumps(register(chat={
+            "adapter": "chat", "client_command": str(self.client), **settings,
+        })), encoding="utf-8")
+        log = self.root / "calls.log"
+        log.unlink(missing_ok=True)
+        result = self.export(STUB_CALL_LOG=str(log))
+        calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
+        return result, calls
+
+    def test_an_excluded_conversation_is_never_fetched_or_written(self):
+        result, calls = self.exclude(excluded_conversations=["#billing-*"])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(call.startswith("history C002") for call in calls), calls)
+        self.assertTrue(any(call.startswith("history C001") for call in calls), calls)
+        self.assertFalse((self.raw / "C002.md").exists())
+        self.assertNotIn("billing-ops", self.output.read_text(encoding="utf-8"))
+        self.assertNotIn("SENSITIVE-MARKER", self.raw_text())
+
+    def test_the_run_counts_exclusions_without_naming_them(self):
+        result, _ = self.exclude(excluded_conversations=["billing-ops", "engineering"])
+
+        self.assertIn("2 conversation(s) excluded", result.stdout)
+        self.assertNotIn("billing-ops", result.stdout + result.stderr)
+        self.assertNotIn("engineering", result.stdout + result.stderr)
+
+    def test_patterns_are_globs_case_insensitive_with_an_optional_hash(self):
+        for pattern, excluded in (("ENGINEER*", "C003"), ("#general", "C001"),
+                                  ("case-?eview", "C004"), ("gen", None)):
+            with self.subTest(pattern=pattern):
+                shutil.rmtree(self.raw, ignore_errors=True)
+                result, calls = self.exclude(excluded_conversations=[pattern])
+                fetched = {call.split()[1] for call in calls if call.startswith("history")}
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual({"C001", "C002", "C003", "C004"} - fetched,
+                                 {excluded} if excluded else set())
+
+    def test_a_marked_conversation_is_excluded_when_the_register_says_so(self):
+        result, calls = self.exclude(private_topic_markers=["this channel may contain"],
+                                     marked_conversations="exclude")
+
+        self.assertFalse(any(call.startswith("history C004") for call in calls), calls)
+        self.assertIn("1 conversation(s) excluded", result.stdout)
+
+    def test_a_marked_conversation_is_excluded_by_default(self):
+        """A register listing markers meant them to keep a conversation from being
+        read directly, so leaving the handling unset excludes it."""
+        result, calls = self.exclude(private_topic_markers=["this channel may contain"])
+
+        self.assertFalse(any(call.startswith("history C004") for call in calls), calls)
+        self.assertIn("1 conversation(s) excluded", result.stdout)
+
+    def test_a_marked_conversation_is_digested_when_the_register_says_so(self):
+        for settings in ({"marked_conversations": "digest"}, {"marked_conversations": "scrub"}):
+            with self.subTest(settings=settings):
+                shutil.rmtree(self.raw, ignore_errors=True)
+                result, calls = self.exclude(private_topic_markers=["this channel may contain"],
+                                             **settings)
+
+                self.assertTrue(any(call.startswith("history C004") for call in calls), calls)
+                self.assertIn("0 conversation(s) excluded", result.stdout)
+
+    def test_a_purpose_banner_excludes_too(self):
+        self.client = support.stub_command(self.root / "stub-direct", STUB_CHAT_DIRECT)
+
+        result, _ = self.exclude(private_topic_markers=["may contain personal data"],
+                                 marked_conversations="exclude")
+
+        self.assertIn("1 conversation(s) excluded", result.stdout)
+        self.assertFalse((self.raw / "C013.md").exists())
+        self.assertTrue((self.raw / "C010.md").exists())
+
+    def test_a_dense_conversation_is_excluded(self):
+        """Its text was never meant to be read directly."""
+        result, calls = self.exclude(dense_conversations=["#billing-ops"])
+
+        self.assertFalse(any(call.startswith("history C002") for call in calls), calls)
+        self.assertFalse((self.raw / "C002.md").exists())
+        self.assertIn("1 conversation(s) excluded", result.stdout)
+
+    def test_dense_and_excluded_conversations_are_counted_together(self):
+        result, _ = self.exclude(dense_conversations=["billing-ops"],
+                                 excluded_conversations=["general"],
+                                 private_topic_markers=["this channel may contain"])
+
+        self.assertIn("3 conversation(s) excluded", result.stdout)
+
+    def test_a_pattern_matches_a_conversation_id_too(self):
+        """An id survives a rename, so it is the durable form."""
+        result, calls = self.exclude(excluded_conversations=["c003"])
+
+        self.assertFalse(any(call.startswith("history C003") for call in calls), calls)
+        self.assertIn("1 conversation(s) excluded", result.stdout)
+
+    def test_a_failed_run_takes_back_the_raw_files_it_wrote(self):
+        log = self.root / "calls.log"
+
+        result = self.export(STUB_CALL_LOG=str(log), STUB_FAIL_HISTORY="C003")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("the files this run wrote were removed", result.stderr)
+        self.assertIn("history C001", log.read_text(encoding="utf-8"))
+        self.assertEqual(list(self.raw.glob("*")), [])
+        self.assertFalse(self.output.exists())
+        self.assertEqual(self.export().returncode, 0)
+
+    @unittest.skipIf(os.name == "nt", "Windows cannot deliver these signals to a process")
+    def test_a_run_stopped_by_a_signal_takes_back_its_raw_files(self):
+        for name in ("SIGTERM", "SIGHUP"):
+            with self.subTest(signal=name):
+                holding = self.root / f"holding-{name}"
+                process = subprocess.Popen(
+                    [sys.executable, str(adapter("chat_export.py")), "1000.0", str(self.output)],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    env=support.environment(KNOWLEDGE_BASE_CONFIG_FILE=str(self.config),
+                                            STUB_HOLD_HISTORY="C003",
+                                            STUB_HOLDING=str(holding)))
+                deadline = datetime.now() + timedelta(seconds=60)
+
+                while not holding.exists() and datetime.now() < deadline:
+                    threading.Event().wait(0.05)
+
+                self.assertTrue((self.raw / "C001.md").exists())
+                process.send_signal(getattr(signal, name))
+                _, stderr = process.communicate(timeout=60)
+
+                self.assertEqual(process.returncode, 128 + getattr(signal, name))
+                self.assertIn("the files this run wrote were removed", stderr)
+                self.assertEqual(list(self.raw.iterdir()), [])
+                self.assertFalse(self.output.exists())
+
+    def test_an_interrupted_runs_leftovers_are_named_as_such(self):
+        """A marker the run removes only on finishing tells a partial batch from a
+        finished run's files."""
+        self.raw.mkdir(parents=True)
+        (self.raw / ".incomplete").write_text("", encoding="utf-8")
+        (self.raw / "C001.md").write_text("partial", encoding="utf-8")
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("an interrupted run's partial files", result.stderr)
+        self.assertIn("not a batch to digest", result.stderr)
+
+    def test_a_finished_run_leaves_no_marker(self):
+        self.export()
+
+        self.assertFalse((self.raw / ".incomplete").exists())
+
+    def test_a_file_that_cannot_be_removed_is_counted_and_the_rest_are_removed(self):
+        from unittest import mock
+
+        sys.path.insert(0, str(support.plugin_root(PLUGIN) / ADAPTER_SCRIPTS))
+        sys.path.insert(0, str(support.plugin_root(PLUGIN) / "scripts"))
+        import raw_directory
+
+        raw_directory.begin(self.raw)
+        stuck, removable = self.raw / "stuck.md", self.raw / "removable.md"
+
+        for path in (stuck, removable):
+            path.write_text("raw", encoding="utf-8")
+
+        real_unlink = Path.unlink
+
+        def unlink(path, *arguments, **options):
+            if path == stuck:
+                raise PermissionError("held open")
+
+            return real_unlink(path, *arguments, **options)
+
+        with mock.patch.object(Path, "unlink", unlink):
+            left = raw_directory.take_back([stuck, removable], self.raw)
+
+        self.assertEqual(left, 1)
+        self.assertFalse(removable.exists())
+        self.assertTrue((self.raw / ".incomplete").exists())
+        self.assertIn("1 file(s) this run wrote could not be removed",
+                      raw_directory.taken_back_line(left))
+
+    def test_an_unknown_marked_handling_is_refused_before_any_fetch(self):
+        result, calls = self.exclude(marked_conversations="hide")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("marked_conversations", result.stderr)
+        self.assertEqual(calls, [])
+
+    def require_session(self):
+        self.config.write_text(json.dumps({**register(chat={
+            "adapter": "chat", "client_command": str(self.client)}),
+            "session": {"required_variable": SESSION_VARIABLE}}), encoding="utf-8")
+
+    def test_outside_the_required_session_nothing_is_fetched(self):
+        self.require_session()
+        log = self.root / "calls.log"
+
+        for value in (None, ""):
+            with self.subTest(value=value):
+                result = self.export(STUB_CALL_LOG=str(log), **{SESSION_VARIABLE: value})
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"syncs only in a session that sets {SESSION_VARIABLE}",
+                              result.stderr)
+                self.assertIn("nothing was fetched", result.stderr)
+                self.assertFalse(log.exists())
+                self.assertFalse(self.output.exists())
+                self.assertFalse(self.raw.exists())
+
+    def test_inside_the_required_session_the_run_goes_ahead(self):
+        self.require_session()
+
+        result = self.export(**{SESSION_VARIABLE: "1"})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.raw / "C001.md").exists())
+
+    def test_streams_name_a_conversation_by_id_never_by_its_name(self):
+        """A direct message is named for its people. Each conversation fills the
+        one-message limit without reaching the watermark, so each is a gap."""
+        self.use_client(STUB_CHAT_DIRECT, history_limit=1)
+
+        result = self.export()
+        streams = result.stdout + result.stderr
+
+        self.assertIn("D011 hit the 1-message fetch limit", result.stderr)
+        self.assertNotIn("PERSON-NAME", streams)
+        self.assertNotIn("MESSAGE-TEXT", streams)
+
+    def test_an_empty_membership_list_is_refused_cleanly(self):
+        self.use_client(STUB_CHAT_EMPTY)
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("listed no conversation", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_an_output_outside_the_intake_directory_is_refused_before_any_fetch(self):
+        for extra in ((), ("--count-only",)):
+            with self.subTest(extra=extra):
+                self.output = self.root / "export.md"
+
+                result = self.export(*extra)
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"outside the intake directory {self.root / 'inbox'}", result.stderr)
+                self.assertFalse(self.output.exists())
+                self.assertFalse(self.raw.exists())
+
+    def test_an_output_linked_out_of_the_intake_directory_is_refused(self):
+        outside = self.root / "outside.md"
+        self.output.parent.mkdir(parents=True)
+
+        try:
+            self.output.symlink_to(outside)
+
+        except OSError:
+            self.skipTest("this platform cannot create a symbolic link here")
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("outside the intake directory", result.stderr)
+        self.assertFalse(outside.exists())
+
+    @unittest.skipIf(shutil.which("git") is None, "needs git")
+    def test_an_output_git_does_not_ignore_is_refused_before_any_fetch(self):
+        subprocess.run(["git", "-C", str(self.root), "init", "--quiet"], check=True)
+        (self.root / ".gitignore").write_text("inbox/chat/\n", encoding="utf-8")
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"the output {self.output}", result.stderr)
+        self.assertIn("must be git-ignored", result.stderr)
+        self.assertFalse(self.output.exists())
+
+    @unittest.skipIf(os.name == "nt", "Windows has no mode bits")
+    def test_what_it_writes_is_its_owners_alone(self):
+        self.export()
+        side_file = next(self.raw.glob("*.md"))
+
+        self.assertEqual(stat.S_IMODE(self.output.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(side_file.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.raw.stat().st_mode), 0o700)
 
 
 
@@ -1017,7 +1906,7 @@ class NotionAdapterTest(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name).resolve()
         self.stub = StubNotion()
-        self.output = self.root / "export.md"
+        self.output = self.root / "inbox" / "export.md"
         self.raw = self.root / "inbox" / "notion-covered"
         self.claude_config = self.root / "claude.json"
         self.write_token(self.TOKEN)
@@ -1206,7 +2095,7 @@ class NotionAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
         self.assertIn("0 changed", result.stdout)
-        self.assertIn("skip the isolated agent", result.stdout)
+        self.assertIn("skip the gate", result.stdout)
         self.assertEqual(list(self.raw.glob("*.md")), [])
 
     def test_nesting_past_the_limit_is_a_gap(self):
@@ -1273,8 +2162,8 @@ class NotionAdapterTest(unittest.TestCase):
     def test_side_files_go_under_the_intake_folder_named_for_the_source(self):
         self.export()
 
-        self.assertEqual([path.name for path in (self.root / "inbox").iterdir()],
-                         ["notion-covered"])
+        self.assertEqual(sorted(path.name for path in (self.root / "inbox").iterdir()),
+                         ["export.md", "notion-covered"])
         self.assertTrue((self.root / "inbox" / "notion-covered" / "changed.md").is_file())
 
     @unittest.skipIf(shutil.which("git") is None, "needs git")
@@ -1289,6 +2178,29 @@ class NotionAdapterTest(unittest.TestCase):
         self.assertEqual(self.stub.authorizations, [])
         self.assertFalse(self.raw.exists())
 
+    def test_a_malformed_max_depth_strands_no_marker(self):
+        """The folder is marked only immediately before the work that takes it back."""
+        document = json.loads(self.config.read_text())
+        document["sources"]["notion-covered"]["max_depth"] = "deep"
+        self.config.write_text(json.dumps(document))
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("max_depth", result.stderr)
+        self.assertFalse((self.raw / ".incomplete").exists())
+        self.assertNotIn("interrupted run", self.export().stderr)
+
+    def test_an_output_outside_the_intake_directory_is_refused_before_any_request(self):
+        self.output = self.root / "export.md"
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"outside the intake directory {self.root / 'inbox'}", result.stderr)
+        self.assertEqual(self.stub.authorizations, [])
+        self.assertFalse(self.output.exists())
+
     def test_a_folder_a_previous_run_left_files_in_is_refused_before_any_request(self):
         self.raw.mkdir(parents=True)
         (self.raw / "earlier.md").write_text("left over", encoding="utf-8")
@@ -1297,7 +2209,7 @@ class NotionAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn(str(self.raw), result.stderr)
-        self.assertIn("previous run's working files", result.stderr)
+        self.assertIn("a finished run's files", result.stderr)
         self.assertEqual(self.stub.authorizations, [])
         self.assertFalse(self.output.exists())
 
@@ -1344,7 +2256,8 @@ class StubNotionSearch:
       ├─ covered-child      page, person-shaped title
       │    └─ toggle        block → deep-covered, found only through the block
       └─ covered-db         database → covered-row
-    private                 a page the integration cannot see (404) → unshared-child
+    team                    a page outside the hub → team-child; with `unseen`, a page
+                            the integration cannot see (404)
     forbidden               a page that refuses (403), opt-in → restricted-child
     crm-db                  a database of call logs, opt-in → call-notes, pinned-notes
     recruiting              a page, opt-in → recruiting-toggle (block) → candidate
@@ -1363,13 +2276,16 @@ class StubNotionSearch:
                     "database_id", "covered-db"),
         search_item("covered-child", "2026-09-22T09:00:00.000Z", "Jane PERSON-TITLE",
                     "page_id", "hub"),
-        search_item("unshared-child", "2026-09-21T09:00:00.000Z", "Team | notes",
-                    "page_id", "private"),
+        search_item("team-child", "2026-09-21T09:00:00.000Z", "Team | notes",
+                    "page_id", "team"),
         search_item("same-minute", "2026-09-20T10:30:00.000Z", "Same minute"),
         search_item("old-page", "2026-09-01T09:00:00.000Z", "OLD-TITLE"),
         search_item("older-page", "2026-08-01T09:00:00.000Z", "OLDER-TITLE"),
         search_item("never-requested", "2026-07-01T09:00:00.000Z", "NEVER-TITLE"),
     ]
+
+    GRANDCHILD = search_item("team-grandchild", "2026-09-25T09:00:00.000Z", "Grandchild notes",
+                             "page_id", "team-child")
 
     RESTRICTED = search_item("restricted-child", "2026-09-21T10:00:00.000Z", "RESTRICTED-TITLE",
                              "page_id", "forbidden")
@@ -1484,6 +2400,9 @@ class StubNotionSearch:
 
     METADATA = {
         ("pages", "hub"): search_item("hub", "2026-09-01T09:00:00.000Z", "Operations hub"),
+        ("pages", "team"): search_item("team", "2026-09-01T09:00:00.000Z", "Team"),
+        ("pages", "team-child"): search_item("team-child", "2026-09-21T09:00:00.000Z",
+                                             "Team | notes", "page_id", "team"),
         ("pages", "open-page"): search_item("open-page", "2026-09-24T09:00:00.000Z", "Roadmap"),
         ("pages", "deep-covered"): search_item("deep-covered", "2026-09-23T12:00:00.000Z",
                                                "DEEP-PERSON-TITLE", "block_id", "toggle"),
@@ -1498,7 +2417,8 @@ class StubNotionSearch:
     }
 
     def __init__(self, restricted=False, search_status=None, failing_comments=(),
-                 failing_children=(), call_notes=False, lagged=False):
+                 failing_children=(), call_notes=False, lagged=False, unseen=False,
+                 grandchild=False):
         import http.server
         import threading
 
@@ -1517,6 +2437,13 @@ class StubNotionSearch:
         self.commented = []
         self.authorizations = []
         self.first_request_at = None
+
+        if unseen:
+            self.METADATA = {key: value for key, value in self.METADATA.items()
+                             if key != ("pages", "team")}
+
+        if grandchild:
+            self.results.insert(0, self.GRANDCHILD)
 
         if restricted:
             self.results.insert(4, self.RESTRICTED)
@@ -1630,7 +2557,7 @@ class NotionSweepTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)
-        self.output = self.root / "sweep.md"
+        self.output = self.root / "inbox" / "sweep.md"
         self.claude_config = self.root / "claude.json"
         self.claude_config.write_text(json.dumps({"mcpServers": {"notion": {
             "env": {"OPENAPI_MCP_HEADERS": json.dumps({"Authorization": self.TOKEN})},
@@ -1661,6 +2588,21 @@ class NotionSweepTest(unittest.TestCase):
     def list_for_comments(self, *entries):
         self.write_register({"covered_by": "notion-covered", "comment_pages": list(entries)})
 
+    def write_listing(self, covered, opened):
+        """The covered source with both lists, which is where the sweep reads them."""
+        credential = {"claude_config": str(self.claude_config)}
+        listing = {"covered_locations": covered}
+
+        if opened is not None:
+            listing["open_locations"] = opened
+
+        self.config = write_register(self.root, register(
+            notion={"adapter": "notion-sweep", "api_base": self.stub.api_base,
+                    "request_interval_seconds": 0, "credential": credential,
+                    "covered_by": "notion-covered"},
+            **{"notion-covered": {"adapter": "notion", **listing}},
+        ))
+
     def sweep(self, watermark=StubNotionSearch.WATERMARK):
         return support.run_script(
             adapter("notion_sweep.py"),
@@ -1683,7 +2625,7 @@ class NotionSweepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
 
-        for text in ("`open-page`", "Roadmap", "`unshared-child`", "Team \\| notes"):
+        for text in ("`open-page`", "Roadmap", "`team-child`", "Team \\| notes"):
             with self.subTest(text=text):
                 self.assertIn(text, self.manifest())
 
@@ -1739,6 +2681,148 @@ class NotionSweepTest(unittest.TestCase):
         self.assertNotIn("New watermark", result.stdout)
         self.assert_nothing_covered_leaked(result)
 
+    def test_a_page_whose_ancestor_cannot_be_seen_is_unplaced_and_named_by_id(self):
+        """Its parent returns 404 and open locations are listed, so what lies above
+        might be a covered location or an open one."""
+        self.start_stub(unseen=True)
+        self.write_listing([{"name": "Operations hub", "id": "hub"}],
+                           [{"name": "Wiki", "id": "open-page"},
+                            {"name": "Minutes", "id": "same-minute"}])
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("team-child could not be placed", result.stderr)
+        self.assertIn("## Unplaced — not read; each is a gap (1)", self.manifest())
+        self.assertIn("- `team-child`", self.manifest())
+        self.assertNotIn("Team \\| notes", self.manifest())
+        self.assertNotIn(("blocks", "team-child", "children"), self.stub.requested)
+        self.assertIn("1 unplaced", result.stdout)
+        self.assertNotIn("New watermark", result.stdout)
+
+    def test_an_unseen_ancestor_is_the_top_once_every_covered_location_is_fetched(self):
+        """Sharing reaches everything beneath a page, so a covered location this
+        token can fetch cannot sit above a page it cannot see. Confirmed once."""
+        self.start_stub(unseen=True, grandchild=True)
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("`team-child`", self.manifest())
+        self.assertIn("`team-grandchild`", self.manifest())
+        self.assertNotIn("Unplaced", self.manifest())
+        self.assertEqual(self.stub.requested.count(("pages", "hub")), 1)
+
+    def test_an_unseen_ancestor_stays_unplaceable_when_a_covered_location_is_not_fetched(self):
+        self.start_stub(unseen=True)
+        self.write_listing([{"name": "Operations hub", "id": "hub"},
+                            {"name": "Elsewhere", "id": "nowhere"}], None)
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("team-child could not be placed", result.stderr)
+
+    def test_listing_the_shared_page_places_what_is_under_it(self):
+        self.start_stub(unseen=True)
+        self.write_listing([{"name": "Operations hub", "id": "hub"}],
+                           [{"name": "Team", "id": "team-child"}, {"name": "Wiki", "id": "open-page"},
+                            {"name": "Minutes", "id": "same-minute"}])
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("`team-child`", self.manifest())
+        self.assertNotIn("Unplaced", self.manifest())
+
+    def test_an_unseen_ancestor_stalls_nothing_when_no_location_is_listed(self):
+        """With nothing listed there is nothing the hidden ancestor could place the
+        page under, so it is read like any other."""
+        self.start_stub(unseen=True)
+        self.write_register({"covered_locations": []})
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("| Team \\| notes | `team-child` |", self.manifest())
+        self.assertNotIn("Unplaced", self.manifest())
+
+    def test_a_listed_location_below_an_unseen_ancestor_places_the_page(self):
+        """The walk meets the listed location before the 404 above it."""
+        self.start_stub(unseen=True, grandchild=True)
+        self.write_listing([{"name": "Team notes", "id": "team-child"}],
+                           [{"name": "Wiki", "id": "open-page"},
+                            {"name": "Minutes", "id": "same-minute"}])
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("- Team notes: 2", self.manifest())
+        self.assertNotIn("team-grandchild", self.manifest())
+        self.assertNotIn(("pages", "team"), self.stub.requested)
+
+    def test_with_open_locations_a_page_under_neither_list_is_named_by_id_only(self):
+        self.write_listing([{"name": "Operations hub", "id": "hub"}], [{"name": "Team", "id": "team"}])
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("| Team \\| notes | `team-child` |", self.manifest())
+        self.assertIn("## Under no open location — not read, exported by `notion-covered` (2)",
+                      self.manifest())
+
+        for page in ("open-page", "same-minute"):
+            with self.subTest(page=page):
+                self.assertIn(f"- `{page}`", self.manifest())
+                self.assertNotIn(("blocks", page, "children"), self.stub.requested)
+
+        for title in ("Roadmap", "Same minute", "NEW-BULLET"):
+            with self.subTest(title=title):
+                self.assertNotIn(title, self.manifest() + result.stdout + result.stderr)
+
+        self.assertIn("2 under no open location", result.stdout)
+        self.assertIn("- Operations hub: 3", self.manifest())
+
+    def test_an_empty_open_list_reads_nothing(self):
+        self.write_listing([{"name": "Operations hub", "id": "hub"}], [])
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("## Changed (0)", self.manifest())
+        self.assertIn("3 under no open location", result.stdout)
+
+    def test_without_open_locations_there_is_no_unlisted_section(self):
+        result = self.sweep()
+
+        self.assertNotIn("Under no open location", self.manifest())
+        self.assertNotIn("under no open location", result.stdout)
+
+    def test_the_nearest_listed_ancestor_decides(self):
+        """An open location under a covered one opens its subtree, and a covered
+        location under an open one covers its own."""
+        self.write_listing([{"name": "Covered rows", "id": "covered-db"}],
+                           [{"name": "Operations hub", "id": "hub"},
+                            {"name": "Child", "id": "covered-child"},
+                            {"name": "Team", "id": "team"}])
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("`covered-child`", self.manifest())
+        self.assertIn("`deep-covered`", self.manifest())
+        self.assertNotIn("`covered-row`", self.manifest())
+        self.assertIn("- Covered rows: 1", self.manifest())
+
+    def test_an_open_locations_entry_without_a_name_and_an_id_is_refused(self):
+        self.write_listing([{"name": "Operations hub", "id": "hub"}], [{"id": "team"}])
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('every entry in "open_locations" needs a "name" and an "id"', result.stderr)
+        self.assertEqual(self.stub.search_requests, 0)
+
     def test_an_unreadable_search_withholds_the_watermark(self):
         self.start_stub(search_status=401)
 
@@ -1747,6 +2831,29 @@ class NotionSweepTest(unittest.TestCase):
         self.assertEqual(result.returncode, 3)
         self.assertIn("a search page could not be read", result.stderr)
         self.assertNotIn("New watermark", result.stdout)
+
+    def test_a_manifest_outside_the_intake_directory_is_refused_before_any_request(self):
+        self.output = self.root / "sweep.md"
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("outside the intake directory", result.stderr)
+        self.assertEqual(self.stub.search_requests, 0)
+        self.assertFalse(self.output.exists())
+
+    def test_outside_the_required_session_no_request_is_made(self):
+        document = json.loads(self.config.read_text())
+        self.config.write_text(json.dumps({**document,
+                                           "session": {"required_variable": SESSION_VARIABLE}}))
+
+        result = self.sweep()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(SESSION_VARIABLE, result.stderr)
+        self.assertEqual(self.stub.search_requests, 0)
+        self.assertEqual(self.stub.authorizations, [])
+        self.assertFalse(self.output.exists())
 
     def test_a_source_naming_no_exclusions_refuses_to_run(self):
         self.write_register({})
@@ -1904,7 +3011,8 @@ class NotionSweepTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("| Candidate notes | `candidate` |", self.manifest())
         self.assertIn("## Skipped — listed, not read (1)", self.manifest())
-        self.assertIn("- Candidate notes — `candidate`, under Recruiting", self.manifest())
+        self.assertIn("- `candidate`, under Recruiting", self.manifest())
+        self.assertNotIn("- Candidate notes", self.manifest())
         self.assertNotIn("CANDIDATE-MARKER", self.manifest())
         self.assertNotIn(("blocks", "candidate", "children"), self.stub.requested)
         self.assertNotIn("candidate", self.stub.commented)
@@ -2160,7 +3268,7 @@ class NotionAdapterSearchTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name).resolve()
-        self.output = self.root / "export.md"
+        self.output = self.root / "inbox" / "export.md"
         self.raw = self.root / "inbox" / "notion-covered"
         self.claude_config = self.root / "claude.json"
         self.claude_config.write_text(json.dumps({"mcpServers": {"notion": {
@@ -2216,7 +3324,7 @@ class NotionAdapterSearchTest(unittest.TestCase):
         self.export()
 
         self.assertNotIn(("blocks", "hub", "children"), self.stub.requested)
-        self.assertNotIn(("pages", "unshared-child"), self.stub.requested)
+        self.assertNotIn(("pages", "team-child"), self.stub.requested)
 
     def test_content_reaches_only_the_side_files(self):
         result = self.export()
@@ -2338,6 +3446,44 @@ class NotionAdapterSearchTest(unittest.TestCase):
         self.assertIn("### Page `lagged-covered`", self.export_text())
         self.assertNotIn("Traceback", result.stderr)
 
+    def test_with_open_locations_a_page_under_neither_list_is_exported(self):
+        """The sweep names it by id and reads none of it; this is its route to the
+        isolated agent, through the same side file a covered page takes."""
+        self.start_stub(source={"open_locations": [{"name": "Team", "id": "team"}]})
+
+        result = self.export()
+        text = self.export_text()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("## Under no listed location", text)
+
+        for page in ("open-page", "same-minute"):
+            with self.subTest(page=page):
+                self.assertIn(f"### Page `{page}`", text)
+                self.assertTrue((self.raw / f"{page}.md").is_file())
+
+        self.assertNotIn("team-child", text)
+        self.assertNotIn("Roadmap", text + result.stdout + result.stderr)
+        self.assertIn("Roadmap", (self.raw / "open-page.md").read_text(encoding="utf-8"))
+
+    def test_a_walk_finds_the_pages_under_neither_list_by_search(self):
+        self.start_stub(source={"open_locations": [{"name": "Team", "id": "team"}]})
+
+        result = self.export("--walk")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("### Page `open-page`", self.export_text())
+        self.assertTrue((self.raw / "open-page.md").is_file())
+
+    def test_a_source_with_only_open_locations_is_accepted(self):
+        self.start_stub(source={"covered_locations": [],
+                                "open_locations": [{"name": "Team", "id": "team"}]})
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("### Page `covered-child`", self.export_text())
+
     def test_an_index_lag_that_is_not_a_number_of_hours_is_refused(self):
         self.start_stub(source={"index_lag_hours": "three days"})
 
@@ -2371,7 +3517,7 @@ class NotionPageChangesTest(unittest.TestCase):
         self.stub.close()
         self.directory.cleanup()
 
-    def start_stub(self, rules=None, **options):
+    def start_stub(self, rules=None, listing=None, **options):
         if self.stub:
             self.stub.close()
 
@@ -2382,7 +3528,8 @@ class NotionPageChangesTest(unittest.TestCase):
                     "request_interval_seconds": 0, "credential": credential,
                     "covered_by": "notion-covered", **(rules or {})},
             **{"notion-covered": {"adapter": "notion",
-                                  "covered_locations": [{"name": "Operations hub", "id": "hub"}]}},
+                                  "covered_locations": [{"name": "Operations hub", "id": "hub"}],
+                                  **(listing or {})}},
         ))
 
     def list_for_comments(self, **options):
@@ -2442,6 +3589,33 @@ class NotionPageChangesTest(unittest.TestCase):
         self.assertEqual(result.stdout, "")
         self.assertIn("could not be placed", result.stderr)
         self.assertNotIn("RESTRICTED-TITLE", result.stderr)
+
+    def test_a_page_whose_ancestor_cannot_be_seen_is_refused(self):
+        self.start_stub(unseen=True, listing={"open_locations": [{"name": "Wiki",
+                                                                   "id": "open-page"}]})
+
+        result = self.changes("team-child")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("could not be placed", result.stderr)
+
+    def test_with_open_locations_a_page_under_none_is_refused(self):
+        self.start_stub(listing={"open_locations": [{"name": "Team", "id": "team"}]})
+
+        result = self.changes("open-page")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("under no open location", result.stderr)
+
+    def test_with_open_locations_a_page_under_one_is_printed(self):
+        self.start_stub(listing={"open_locations": [{"name": "Roadmap", "id": "open-page"}]})
+
+        result = self.changes("open-page")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("NEW-BULLET", result.stdout)
 
     def test_the_token_is_sent_and_printed_nowhere(self):
         result = self.changes("open-page")
@@ -2670,7 +3844,7 @@ class StubFathom:
 class FathomAdapterTest(unittest.TestCase):
     """The fathom adapter against a stub API. Pinned: a meeting's title, summary,
     action items, invitees and transcript reach only its meeting file, which opens
-    with the UNGATED line; a meeting with an excluded invitee reaches nothing at
+    with its title; a meeting with an excluded invitee reaches nothing at
     all and has no transcript requested; the listing looks back from the watermark
     and the ledger keeps the overlap from being exported twice; a summary not yet
     written is retried rather than recorded; a transcript that is absent is noted
@@ -2689,7 +3863,7 @@ class FathomAdapterTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name).resolve()
-        self.output = self.root / "export.md"
+        self.output = self.root / "inbox" / "export.md"
         self.raw = self.root / "inbox" / "fathom"
         self.ledger = self.root / "notes" / ".fathom-ledger"
         self.key_file = self.root / "api-key"
@@ -2792,7 +3966,6 @@ class FathomAdapterTest(unittest.TestCase):
         self.assertIn("customer.example", side_file)
         self.assertNotIn("MEMBER-EMAIL", side_file)
         self.assertIn(str(self.raw / "fathom-101.md"), export)
-        self.assertIn("scrubs it in place", export)
         self.assertIn("`101`", export)
 
     def test_no_output_stream_carries_a_title_a_summary_an_address_or_the_key(self):
@@ -2895,13 +4068,12 @@ class FathomAdapterTest(unittest.TestCase):
         self.assertIn(("101", ""), self.stub.transcript_requests)
         self.assertIn("Transcripts: 2 fetched, 0 unavailable", result.stdout)
 
-    def test_a_meeting_file_opens_ungated_with_its_sections_in_order(self):
+    def test_a_meeting_file_opens_with_its_title_and_its_sections_in_order(self):
         self.export()
         text = self.meeting_file("101")
         headings = [line for line in text.splitlines() if line.startswith("## ")]
 
-        self.assertTrue(text.startswith(
-            "UNGATED: not to be read until the isolated agent has scrubbed it\n\n# "))
+        self.assertTrue(text.startswith("# "))
         self.assertEqual(headings, ["## Summary", "## Action items", "## Transcript"])
         self.assertNotIn("00:00:07", text)
         self.assertNotIn("SPEAKER-EMAIL", text)
@@ -2989,7 +4161,7 @@ class FathomAdapterTest(unittest.TestCase):
         process.communicate(timeout=60)
 
         self.assertEqual(process.returncode, 128 + signal.SIGTERM)
-        self.assertEqual(list(self.raw.glob("*.md")), [])
+        self.assertEqual(list(self.raw.iterdir()), [])
         self.assertFalse(self.output.exists())
 
     def make_work_tree(self, ignored):
@@ -3024,12 +4196,34 @@ class FathomAdapterTest(unittest.TestCase):
                                            "layout": {"inbox": "intake"}}))
         intake = self.root / "intake"
         intake.mkdir()
-        (intake / ".gitignore").write_text("fathom/\n", encoding="utf-8")
+        (intake / ".gitignore").write_text("fathom/\nexport.md\n", encoding="utf-8")
+        self.output = intake / "export.md"
 
         result = self.export()
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((intake / "fathom" / "fathom-101.md").exists())
+
+    def test_an_output_outside_the_intake_directory_is_refused_before_any_request(self):
+        self.output = self.root / "export.md"
+
+        result = self.export()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("outside the intake directory", result.stderr)
+        self.assertEqual(self.stub.queries, [])
+        self.assertFalse(self.output.exists())
+
+    @unittest.skipIf(os.name == "nt", "Windows has no mode bits")
+    def test_what_it_writes_is_its_owners_alone(self):
+        self.export()
+
+        self.assertEqual(stat.S_IMODE(self.output.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.raw.stat().st_mode), 0o700)
+
+        for path in self.raw.iterdir():
+            with self.subTest(path=path.name):
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
     def test_an_intake_outside_the_knowledge_base_is_refused(self):
         self.config.write_text(json.dumps({**json.loads(self.config.read_text()),
@@ -3060,7 +4254,7 @@ class FathomAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn(str(self.raw), result.stderr)
-        self.assertIn("previous run's working files", result.stderr)
+        self.assertIn("a finished run's files", result.stderr)
         self.assertEqual(self.stub.queries, [])
         self.assertEqual([path.name for path in self.raw.iterdir()], ["fathom-099.md"])
 

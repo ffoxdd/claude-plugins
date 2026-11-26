@@ -48,6 +48,20 @@ A source that cannot be listed by recency carries `"reactive": true` and no
 watermark, so an empty entry reads as "followed by reference" rather than as a
 watermark that has looked stale for months.
 
+## A register can require a session
+
+A knowledge base that may only sync inside one kind of session — one whose
+launcher sets an environment variable — says so at the top level of the
+register:
+
+```json
+"session": {"required_variable": "<the variable that session's launcher sets>"}
+```
+
+Every adapter then refuses, before any request or write, in a session where the
+variable is unset or empty, and session start says in one line that a sync
+cannot run there. Without the key, nothing changes.
+
 ## What a source needs to be reachable at all
 
 A source with `"adapter": null` is still reached through *something* — an MCP
@@ -77,12 +91,41 @@ Name only what the source genuinely cannot work without. A requirement that is
 merely nice to have produces a note on every session that has it, which is how
 a check earns itself a reputation for crying wolf.
 
+The email adapter's `ledger` is committed and keyed by an unsalted SHA-256 of
+each meeting's title and date, which is a commitment to those titles: anyone who
+guesses a title can confirm it with one hash, so keep the ledger in a private
+repository.
+
 Everything else in an entry is the adapter's own vocabulary — sender lists for
-mail, dense-conversation names for chat, excluded invitee domains for Fathom —
+mail, excluded conversations for chat, excluded invitee domains for Fathom —
 and the adapter documents it.
 
+Notion's locations take one key worth knowing before the first sync. A source
+whose `covered_locations` list the record-dense pages may also list
+`open_locations`, in the same shape:
+
+```json
+"open_locations": [{"name": "Engineering wiki", "id": "<page id>"}]
+```
+
+Without the key, every page outside a covered location is swept verbatim. With
+it, the register is default-deny: only a page under an open location is read,
+and a page under neither list is counted, named by id and exported for the
+covered gate like a covered one. The nearest listed ancestor decides, so an
+open page inside a covered location, or the reverse, works as written. A page
+whose ancestry the integration cannot see before it meets a listed location is
+read as at the top of the workspace when no open location is listed and the
+token can fetch every covered one, since a covered location the token can see
+cannot sit above a page it cannot. That assumes a token able to fetch a covered
+location can fetch everything beneath it; a register that cannot rely on that
+lists `open_locations`, which keeps every unresolved ancestor unplaceable. Otherwise it is unplaceable, a gap, until the
+page the integration is shared at is listed.
+
 A value that restricts what may be read at all belongs in the JSON too, where
-the adapter enforces it, rather than only in the prose: the `fathom` adapter's
+the adapter enforces it, rather than only in the prose: the chat adapter's
+`excluded_conversations`, `dense_conversations` and `private_topic_markers`
+(with `marked_conversations` left unset or `"exclude"`) keep a conversation from
+being fetched at all, and the `fathom` adapter's
 `excluded_invitee_domains` is how a client contract forbidding AI use of its
 meetings reaches the script, and the adapter refuses a source that leaves the key
 out, so an unrecorded clause stops a run instead of passing through it. The prose

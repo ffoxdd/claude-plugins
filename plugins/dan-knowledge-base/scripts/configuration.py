@@ -21,6 +21,16 @@ it, so nothing about hiding it costs a newcomer the ability to find it.
         Read this file instead of searching. For the test suite, and for a
         script run from outside the repository it operates on.
 
+**A register may require a session variable**, for a knowledge base that must
+sync only inside one kind of session — one whose launcher sets an environment
+variable the plugin knows nothing else about:
+
+    "session": {"required_variable": "<NAME>"}
+
+`source` is the call every adapter makes before anything else, so it is where
+that requirement is enforced: when the variable is unset or empty, it raises
+before any request or write. Without the key, nothing changes.
+
 A malformed or missing config raises rather than returning empty. The
 dan-work-routing loader deliberately does the opposite, because there a missing file
 must never stop a session from starting or widen what a guard permits. Here the
@@ -74,6 +84,17 @@ def load(start=None):
     except json.JSONDecodeError as error:
         raise ConfigurationError(f"{path} is not valid JSON: {error}") from error
 
+    if not isinstance(document, dict):
+        raise ConfigurationError(f"{path} is not a JSON object.")
+
+    layout_refusal = layout_problem(document.get("layout"))
+
+    if layout_refusal:
+        raise ConfigurationError(f"{path} {layout_refusal}.")
+
+    if "session" in document:
+        required_session_variable(document)
+
     if not isinstance(document.get("sources"), dict):
         raise ConfigurationError(
             f'{path} declares no "sources" object. A config with no sources '
@@ -83,16 +104,77 @@ def load(start=None):
     return document, Path(path).parent
 
 
+LAYOUT_PATHS = ("inbox", "processed", "notes", "watermarks")
+
+
+def layout_problem(layout):
+    """What is wrong with the register's `layout`, or None. Absent or null is no
+    layout; every member the scripts read must be the type they read it as."""
+    if layout is None:
+        return None
+
+    if not isinstance(layout, dict):
+        return 'declares a "layout" that is not an object'
+
+    for key in LAYOUT_PATHS:
+        if key in layout and layout[key] is not None and \
+                (not isinstance(layout[key], str) or not layout[key]):
+            return f'declares a "layout.{key}" that is not a path'
+
+    days = layout.get("retention_days")
+
+    if days is not None and (isinstance(days, bool) or not isinstance(days, (int, float))
+                             or days <= 0):
+        return 'declares a "layout.retention_days" that is not a number of days above zero'
+
+    return None
+
+
 def sources(start=None):
     document, _ = load(start)
 
     return document["sources"]
 
 
+def required_session_variable(document):
+    """The environment variable the register requires a session to set, or None
+    when the register has no "session" key. A key that is present, null included,
+    must name one."""
+    if "session" not in document:
+        return None
+
+    session = document["session"]
+    variable = session.get("required_variable") if isinstance(session, dict) else None
+
+    if not isinstance(variable, str) or not variable:
+        raise ConfigurationError('"session" must name a "required_variable"')
+
+    return variable
+
+
+def session_refusal(document, environ=None):
+    """Why this session may not sync this knowledge base, or None when it may."""
+    variable = required_session_variable(document)
+
+    if variable is None or (environ if environ is not None else os.environ).get(variable):
+        return None
+
+    return (f"this knowledge base syncs only in a session that sets {variable}, and it is "
+            "unset here; nothing was fetched")
+
+
 def source(name, start=None):
     """One source's entry. Raises rather than defaulting — a sweep run against a
-    source the register doesn't describe is a mistake, not a case to handle."""
-    found = sources(start)
+    source the register doesn't describe is a mistake, not a case to handle.
+    Raises too, before anything is fetched, outside the session the register
+    requires."""
+    document, _ = load(start)
+    refusal = session_refusal(document)
+
+    if refusal:
+        raise ConfigurationError(refusal)
+
+    found = document["sources"]
 
     if name not in found:
         known = ", ".join(sorted(found)) or "none"

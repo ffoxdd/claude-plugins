@@ -82,11 +82,12 @@ comment moves no edit time, not even the page's, so no search returns the page
 and nothing runs this on it, listed or not. Only a full walk of the workspace
 would find it.
 
-**It refuses a page under a covered location**, or one it cannot place, and
-prints nothing of it. The `notion` adapter is the route for those, through the
-isolated agent. A page is placed the way the sweep places it, by parent chain
-against the register's covered locations (`notion_search.py`), so a page the
-sweep listed by title is one this will print. That is what keeps this tool from
+**It refuses a page under a covered location**, one it cannot place, and, when
+the register names `open_locations`, one under no open location, and prints
+nothing of it. The `notion` adapter is the route for those, through a covered
+gate. A page is placed the way the sweep places it, by parent chain against the
+register's listed locations (`notion_search.py`), so a page the sweep listed by
+title is one this will print. That is what keeps this tool from
 becoming a way around the covered route: it reads the same register and draws
 the same line.
 
@@ -243,17 +244,25 @@ def count_comments(nodes):
     return sum(len(node.comments) + count_comments(node.children) for node in nodes)
 
 
-def place(notion, locations, page, ancestry=None):
+def place(notion, listing, page, ancestry=None):
+    """Raise Refused unless the page is readable: under an open location, or, in a
+    register naming none, outside every covered one."""
+    placement = notion_search.Placement(notion, listing.covered, ancestry, listing.open)
+
     try:
-        location = notion_search.Placement(notion, locations, ancestry).location_of(page)
+        location = placement.location_of(page)
 
     except notion_search.Unplaceable as error:
         raise Refused(f"page {page['id']} could not be placed ({error}); it might sit under a "
                       "covered location, so nothing of it is printed") from None
 
-    if location is not None:
-        raise Refused(f"page {page['id']} is under the covered location {location!r}; the notion "
-                      "adapter reads it, through the isolated agent")
+    if location is not None and location.covered:
+        raise Refused(f"page {page['id']} is under the covered location {location.name!r}; the "
+                      "notion adapter reads it, through a covered gate")
+
+    if location is None and listing.open is not None:
+        raise Refused(f"page {page['id']} is under no open location; the notion adapter reads "
+                      "it, through a covered gate")
 
 
 def fetch_page(notion, page_id):
@@ -495,7 +504,7 @@ def main(argv=None):
 
     try:
         source = configuration.source(arguments.source)
-        locations, _ = notion_search.covered_locations(source)
+        listing = notion_search.listed_locations(source)
         rules = ReadingRules.from_source(source)
         since = read_watermark(arguments.watermark)
         notion = Notion.from_source(source, notion_credential.authorization(source))
@@ -511,7 +520,7 @@ def main(argv=None):
     try:
         page = fetch_page(notion, arguments.page_id)
         ancestry = notion_search.Ancestry(notion)
-        place(notion, locations, page, ancestry)
+        place(notion, listing, page, ancestry)
         text = page_report(notion, page, since, gaps,
                            scope=rules.scope_for(page, ancestry),
                            comments=rules.reads_comments(page, ancestry)).text

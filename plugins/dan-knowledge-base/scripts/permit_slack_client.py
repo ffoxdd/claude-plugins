@@ -1,25 +1,43 @@
 #!/usr/bin/env python3
-"""Approves the reads `slack-client` exists to do, so a sync needs no allowlist entry.
+"""Approves the `slack-client` listings a session runs, so setup needs no allowlist entry.
 
-Every intake run reaches Slack through this command, and until now each call was a
-permission prompt — which made a plugin whose whole purpose is an unattended sweep
-depend on someone sitting there approving it. Installing the plugin is the grant.
+Installing the plugin is the grant, and it covers the metadata subcommands only:
+`channels`, `starred` and `memberships`, which print conversation ids, names,
+lock flags and topics. Those are what a person checks while setting a source up,
+and none of them prints a message.
 
-`login` is deliberately not approved. It opens a real browser and waits up to five
+`history` and `replies` are not approved. They print message text to whoever ran
+them, and a session that runs one reads raw chat with no gate in between. The
+chat adapter calls the client as a subprocess and writes what it reads under the
+intake directory, so it needs neither approved; a person who wants raw history
+in a session answers the ordinary prompt.
+
+`login` is not approved either. It opens a real browser and waits up to five
 minutes for a person to sign in, so it is the one subcommand a person runs rather
 than Claude; approving it would let an unattended sync launch a browser and hang on
-it. Everything approved here reads and prints: channels, starred, memberships,
-history, replies. `file` is not approved either: it reads Slack but writes a local
-path of the caller's choosing, and where bytes land is a decision a person keeps.
+it. Nor is `file`: it writes a local path of the caller's choosing, and where bytes
+land is a decision a person keeps.
 
-That split is not a safety compromise — the reads are the entire adapter, and the
-captured session they use is as sensitive as a Slack login either way. Approving
-them changes who has to be present, not what the command can see.
+**It approves only what it can read exactly as the shell will.** A list of
+forbidden characters is the wrong shape for a grant: whatever it forgets, the
+shell still runs. `shlex`, for one, drops everything after a `#` inside a word,
+where bash and zsh read `x#` as a literal, so `slack-client channels x# ; id`
+looked like one harmless command. So the rule is inverted:
 
-Bounded the same way the sibling grants in this marketplace are: shlex tokenizes
-the command, and any shell operator disqualifies it, so an approved first word
-cannot carry a second command. A settings `deny` still overrides this — measured,
-not assumed — as does a `deny` from any other hook.
+  * every character of the command is one of ASCII letters, digits, the space,
+    `_`, `,`, `=` and `-` — enough for every option the listings take, and none
+    of the characters any bash or zsh expansion starts from (brace, tilde,
+    parameter, command, arithmetic, process substitution, filename generation and
+    its zsh qualifiers, history, and `=` expansion, which only a word's first
+    character can trigger, and no word may start with `=`). With no expansion,
+    there is no word splitting either, and with no quote, no tab and no newline,
+    splitting at spaces gives the shell's own words;
+  * every word after `slack-client` is a lower-case word or a flag
+    (`--types`, `--types=all`, `-h`), and no word starts with `=`;
+  * the first word that is not a flag, argparse's subcommand, is a listing.
+
+Anything else is left to the ordinary prompt. A settings `deny` still overrides
+this — measured, not assumed — as does a `deny` from any other hook.
 
 Exit status is always 0; the decision travels in the JSON on stdout. Silence means
 the ordinary prompt, and so does a crash: there is no blanket except here, because
@@ -27,27 +45,27 @@ writing nothing is the safe answer for a grant.
 """
 
 import json
-import shlex
+import re
+import string
 import sys
 
 COMMAND = "slack-client"
 
-APPROVED_SUBCOMMANDS = ("channels", "starred", "memberships", "history", "replies")
+APPROVED_SUBCOMMANDS = ("channels", "starred", "memberships")
 
-# Shell operators shlex hands back as their own tokens.
-OPERATORS = (";", "|", "||", "&", "&&", ">", ">>", "<", "(", ")")
+# Every character a listing needs, and none a shell expands or splits on.
+ALLOWED_CHARACTERS = frozenset(string.ascii_letters + string.digits + " _,=-")
 
-# The two shlex does not surface as operators: a backtick is an ordinary word
-# character to it, and a bare newline is whitespace, so a second command carried
-# by either survives the operator check — a newline even smuggles a second
-# `slack-client login` past the exclusion below, since only the first subcommand
-# is inspected. Refuse both.
-SUBSTITUTION_OR_NEWLINE = ("`", "\n", "\r")
+# A subcommand or an option's value: `channels`, `public_channel,im`.
+WORD = re.compile(r"[a-z_,]+")
+
+# An option, with its value attached or not: `-h`, `--types`, `--types=all`.
+FLAG = re.compile(r"--?[a-z][a-z-]*(=[a-z_,]+)?")
 
 REASON = (
-    "A read-only slack-client call, with no way to reach a second command. "
-    "Approved by the dan-knowledge-base plugin, whose installation is the grant. "
-    "`slack-client login` is not approved: a person runs that one."
+    "A slack-client listing that prints no message, with no way to reach a second "
+    "command. Approved by the dan-knowledge-base plugin, whose installation is the "
+    "grant. `history`, `replies`, `file` and `login` are not approved."
 )
 
 
@@ -61,36 +79,25 @@ def main():
 
 
 def approves(command):
-    if any(character in command for character in SUBSTITUTION_OR_NEWLINE):
+    if not set(command) <= ALLOWED_CHARACTERS:
         return False
 
-    tokens = tokenize(command)
+    # Within those characters the shell's words are exactly the space-separated
+    # runs: no quote, no escape, no expansion, nothing that starts a comment.
+    tokens = [token for token in command.split(" ") if token]
 
     if len(tokens) < 2 or tokens[0] != COMMAND:
         return False
 
-    if any(token in OPERATORS for token in tokens):
+    if not all(WORD.fullmatch(token) or FLAG.fullmatch(token) for token in tokens[1:]):
         return False
 
     # The subcommand is argparse's first positional, so it is the first token that
     # is not a flag — matching on position alone would miss `slack-client --help
-    # history` and approve nothing that argparse would accept.
+    # memberships` and approve nothing that argparse would accept.
     return next((token for token in tokens[1:] if not token.startswith("-")), "") in (
         APPROVED_SUBCOMMANDS
     )
-
-
-def tokenize(command):
-    """A command shlex cannot parse — an unclosed quote — is one for a person to
-    read, not one to approve on a guess about where it ends."""
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-
-        return list(lexer)
-
-    except ValueError:
-        return []
 
 
 def read_command():

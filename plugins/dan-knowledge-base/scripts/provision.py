@@ -14,6 +14,12 @@ adapters, needs nothing installed, and is told nothing. Verifying a stated
 requirement is the job; inventing one is how a plugin becomes something people
 disable.
 
+When the register requires a session variable this session lacks, it says in
+one line that a sync cannot run here. It also applies the register's
+`layout.retention_days`, when it sets one, by
+running `retention.py`, and reports a deletion or a refusal in one line. A run
+that deleted nothing says nothing.
+
 It installs nothing. `slack-client` ships in the plugin's own bin/, which Claude
 Code puts on PATH for every installed plugin, so it resolves by name in the
 session that runs `slack-client login` — with nothing written into $HOME and
@@ -34,6 +40,7 @@ import configuration
 import fathom_credential
 import mail_cache
 import notion_credential
+import retention
 
 # What each adapter needs beyond what this plugin ships: the shipped commands it
 # runs, so a shadowed one is caught, and the tools the plugin cannot supply at all.
@@ -81,7 +88,13 @@ def main():
         return
 
     adapters = declared_adapters(document)
+    refusal = session_note(document)
     cleanups = clear_superseded_links() if adapters else []
+    cleanups.extend(retention_report(document, root))
+
+    if refusal:
+        report(cleanups + [refusal])
+        return
 
     # Every check below is driven by what the register declares, so a knowledge
     # base declaring nothing produces no notes and says nothing. There is no
@@ -98,6 +111,39 @@ def main():
 
     if cleanups or notes:
         report(cleanups + notes)
+
+
+def session_note(document):
+    """One line when the register requires a session variable this session lacks.
+    The prerequisite checks are left out then: no sync runs here either way."""
+    try:
+        refused = configuration.session_refusal(document)
+
+    except configuration.ConfigurationError as error:
+        return str(error)
+
+    if not refused:
+        return None
+
+    variable = configuration.required_session_variable(document)
+
+    return (f"a sync cannot run in this session: this knowledge base syncs only in a "
+            f"session that sets {variable}; start it there.")
+
+
+def retention_report(document, root):
+    """The retention run's line, when it deleted something or refused. A failure of
+    its own costs its line, never the session's other notes."""
+    try:
+        outcome = retention.enforce(document, root)
+
+    except Exception:  # noqa: BLE001 — a traceback could name an intake file
+        return []
+
+    if outcome is None or outcome.deleted == 0:
+        return []
+
+    return [outcome.line]
 
 
 def report_broken_register(error):

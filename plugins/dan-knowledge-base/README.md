@@ -75,15 +75,20 @@ server's token cache, so it adds no credential and never prints the one it reads
 It exists for **record-dense Notion locations**: pages a session must not read
 directly. It finds the changed pages over the REST API, by search, or by walking
 every page with `--walk` as the periodic check, and writes their text only to
-side files in a git-ignored folder under the intake directory, for an isolated
-agent. The `notion-sweep` adapter covers the rest of
+side files in a git-ignored folder under the intake directory, for a covered
+gate to digest. The `notion-sweep` adapter covers the rest of
 the workspace on the same token: a search for what changed that counts, rather
 than lists, anything under those locations, and then reads each page it lists
 as only its blocks edited since an edit to it could last have gone unreported
 (the minute after its ledger record, or the start of the index-lag lookback),
 with the comments left since on the pages the register lists for them. The
 page-changes tool is that walk for one page by hand, and refuses any page under
-those locations.
+those locations. A register that also lists `open_locations` is default-deny:
+only pages under those are read, and the rest go the record-dense route.
+
+Every adapter writes only under the intake directory, owner-only, and prints ids
+and counts, never a title or a name. `layout.retention_days`, when set, deletes
+processed intake older than that at session start.
 
 The `fathom` adapter is standard library only too, and holds the one credential
 this plugin asks for: a Fathom API key, read from `FATHOM_API_KEY` or from a key
@@ -91,17 +96,19 @@ file that `scripts/fathom_credential.py` writes, readable by its owner alone,
 after asking for the key without echo. It lists the meetings the key can see and
 writes each one's summary, action items and, when the register asks for them,
 verbatim transcript to a meeting file in a git-ignored folder under the intake
-directory, where an isolated agent scrubs personal data in place and changes
-nothing else. A meeting with an invitee from a domain the register excludes,
+directory, one file per meeting, which a covered gate digests where there is one. A meeting with an invitee from a domain the register excludes,
 such as a client whose contract forbids AI use of its meetings, is counted,
 written nowhere, and has no transcript requested.
 
-**Permissions.** A PreToolUse hook approves the read-only `slack-client` calls a
-sync runs, so installing the plugin is the grant and `permissions.allow` stays
-untouched. `slack-client login` still prompts — it opens a browser and waits for
-a person — as does `slack-client file`, which saves a message's attachment to a
-path of the caller's choosing, and any invocation chaining a second command. Your
-own `permissions.deny` overrides all of it.
+**Permissions.** A PreToolUse hook approves the `slack-client` listings
+(`channels`, `starred`, `memberships`), which print no message, so installing the
+plugin is the grant and `permissions.allow` stays untouched. `history` and
+`replies` still prompt, because they print message text into the session; the
+adapter runs them as a subprocess and needs no grant. `slack-client login` prompts
+too — it opens a browser and waits for a person — as does `slack-client file`,
+which saves a message's attachment to a path of the caller's choosing, and any
+invocation chaining a second command. Your own `permissions.deny` overrides all
+of it.
 
 ## The bundled Slack client, stated plainly
 

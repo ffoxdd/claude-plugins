@@ -1,7 +1,10 @@
 {
+  "session_example_not_enabled": {"required_variable": "<set by your covered session's launcher; rename this key to \"session\" to require it>"},
+
   "layout": {
     "inbox": "inbox",
     "processed": "inbox/processed",
+    "retention_days": 90,
     "notes": "notes",
     "watermarks": "notes/.sync-state"
   },
@@ -46,8 +49,9 @@
       "adapter": "chat",
       "feeds": ["notes/"],
       "watermark": {"format": "epoch-seconds", "boundary": "inclusive"},
-      "dense_conversations": ["#billing-ops", "#eligibility"],
+      "excluded_conversations": ["<a channel id, which survives a rename>", "#legal-*"],
       "private_topic_markers": ["may contain personal data"],
+      "marked_conversations": "exclude",
       "history_limit": 1000,
       "replies_limit": 200
     },
@@ -68,6 +72,9 @@
       "covered_locations": [
         {"name": "<an operations hub whose pages list individuals>", "id": "<page id>"},
         {"name": "<a database with one row per person>", "id": "<database id>", "kind": "database"}
+      ],
+      "open_locations": [
+        {"name": "<an engineering wiki that names no individual>", "id": "<page id>"}
       ],
       "max_depth": 4,
       "ledger": "notes/.notion-records-ledger",

@@ -36,6 +36,8 @@ import stat
 import sys
 from pathlib import Path
 
+import file_modes
+
 ENVIRONMENT_VARIABLE = "FATHOM_API_KEY"
 DEFAULT_KEY_FILE = "~/.config/fathom/api-key"
 
@@ -166,4 +168,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    file_modes.owner_only()
     sys.exit(main())

@@ -17,10 +17,11 @@ Nothing sensitive reaches a session merely from running this:
     type, never a response body or a header;
   * **the output file** carries one placeholder per changed page, naming the page
     by id and edit time only. Titles stay out, because a title can be a person's
-    name;
+    name. It must lie under the register's intake directory, git-ignored, like
+    every adapter's output (`raw_directory.output_checked`);
   * **page text**, titles and properties included, goes only to side files under
-    `<intake>/<source name>/`, for the isolated agent that replaces each
-    placeholder with a structural-facts-only summary. The run is refused before
+    `<intake>/<source name>/`, one per page, for a covered gate to digest. The
+    run is refused before
     any request unless git ignores that folder and it is absent or empty (see
     `raw_directory.py`). With `--count-only`, pages are listed and nothing of
     theirs is written anywhere. A run that fails part-way deletes the side files
@@ -30,6 +31,12 @@ The register lists the locations under the source's `covered_locations`:
 
     {"name": "Payments hub", "id": "<page id>"}                       a page tree
     {"name": "Practice playbooks", "id": "<db id>", "kind": "database"}
+
+**A source that also names `open_locations` is default-deny** (see
+`notion_search.py`): a page under no listed location is exported here too, in a
+section of its own, with the same placeholder and side file as a covered page.
+Those pages are found by the search however discovery runs, since a walk has no
+location to start from for a page that is under nothing listed.
 
 **Changed pages are found by search by default, and by a tree walk on request.**
 The search asks Notion for everything edited since the lookback floor (below),
@@ -95,6 +102,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import configuration
+import file_modes
 import notion_credential
 import notion_search
 import raw_directory
@@ -103,7 +111,7 @@ from notion_api import EXIT_GAPS, EXIT_REFUSED, ExportError, Gaps, Notion, edite
     format_time, read_watermark
 
 DEFAULT_MAX_DEPTH = 4
-# Progress logs nest bullets deeply; Aligned's Provider Growth pages exceed 8.
+# Progress logs nest bullets deeply; real ones exceed 8.
 # Exceeding the limit is a gap, so it is set well above what real pages reach,
 # and a register can raise it further with `max_block_nesting`.
 DEFAULT_MAX_BLOCK_NESTING = 24
@@ -252,15 +260,21 @@ class TreeWalkDiscovery:
         return [page for page in walk.pages.values() if edited_since(page, self.since)], len(walk.pages)
 
 
+# The section for pages under no listed location, in a register naming open
+# locations. Not a location anyone walks: only the search finds its pages.
+UNLISTED = {"name": "Under no listed location", "id": None}
+
+
 class SearchDiscovery:
     """The changed pages under a location, as Notion's search lists them and the
     parent chain places them. One search serves every location, from the
     lookback floor rather than the watermark, so an edit the index showed late
-    is still found."""
+    is still found. With `open_locations` it also serves UNLISTED."""
 
-    def __init__(self, notion, locations, floor, gaps):
+    def __init__(self, notion, locations, floor, gaps, open_locations=None):
         self.notion = notion
         self.locations = locations
+        self.open_locations = open_locations
         self.floor = floor
         self.gaps = gaps
         self.changes = None
@@ -270,12 +284,29 @@ class SearchDiscovery:
         workspace, not a location."""
         if self.changes is None:
             self.changes = notion_search.changes_since(self.notion, self.locations, self.floor,
-                                                       self.gaps)
+                                                       self.gaps, open_locations=self.open_locations)
 
-        pages = [item for item in self.changes.under.get(location["name"], [])
-                 if item.get("object") == "page"]
+        if location is UNLISTED:
+            found = self.changes.unlisted
 
-        return pages, None
+        else:
+            found = self.changes.under.get(location["name"], [])
+
+        return [item for item in found if item.get("object") == "page"], None
+
+
+class WithUnlisted:
+    """A walk for the listed locations, and the search for UNLISTED."""
+
+    def __init__(self, walk, search):
+        self.walk = walk
+        self.search = search
+
+    def changed(self, location):
+        if location is UNLISTED:
+            return self.search.changed(location)
+
+        return self.walk.changed(location)
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +452,7 @@ def page_text(notion, location_name, page):
         f"# {page_title(page)}",
         "",
         f"*Location: {location_name} · page {page['id']} · edited {page['last_edited_time']} "
-        "· raw text for the isolated agent*",
+        "· raw text*",
         "",
     ]
     lines += render_properties(page)
@@ -442,29 +473,31 @@ class SideFiles:
         self.written = []
 
     def write(self, page_id, text):
+        """Recorded before the write, so a write that fails once the file exists is
+        still taken back; a lone surrogate in page text is replaced, not fatal."""
         path = self.directory / f"{re.sub(r'[^A-Za-z0-9-]+', '_', page_id)}.md"
-        path.write_text(text, encoding="utf-8")
         self.written.append(path)
+        path.write_text(text, encoding="utf-8", errors="replace")
 
         return path
 
     def remove_all(self):
-        for path in self.written:
-            path.unlink(missing_ok=True)
+        """The count of files that could not be removed."""
+        if not self.directory:
+            return 0
+
+        return raw_directory.take_back(self.written, self.directory)
 
 
 def placeholder(page, side_file):
     lines = [
         f"### Page `{page['id']}`, edited {page['last_edited_time']}",
         "",
-        "**Record-dense location — NOT pulled verbatim.** Replace this with a",
-        "structural-facts-only summary: standing policy, mechanics, backlog items, defect",
-        "patterns with counts, named business entities. No personal names, identifiers, or",
-        "per-person amounts, and no title that is a person's name.",
+        "**Record-dense location — NOT pulled verbatim.**",
     ]
 
     if side_file:
-        lines.append(f"Raw text: `{side_file}` — working space, deleted once the summary is written.")
+        lines.append(f"Raw text: `{side_file}`.")
 
     return lines + [""]
 
@@ -526,7 +559,7 @@ def build_export(notion, locations, discovery, side_files, gaps, ledger):
         "",
         f"Pages edited at or after `{format_time(ledger.since)}` (the watermark, floored to",
         "Notion's minute granularity). Assembled mechanically by the knowledge-base notion",
-        "adapter; the summaries are not written yet.",
+        "adapter.",
         *lookback_lines(ledger),
         "",
     ]
@@ -544,10 +577,25 @@ def build_export(notion, locations, discovery, side_files, gaps, ledger):
     return "\n".join(header + body), checked_total, exported
 
 
+def discovery_for(arguments, source, notion, locations, opened, since, ledger, gaps):
+    """How the run finds changed pages, and the sections it renders."""
+    search = SearchDiscovery(notion, locations, ledger.floor, gaps, opened)
+    sections = locations + ([UNLISTED] if opened is not None else [])
+
+    if not arguments.walk:
+        return search, sections
+
+    walk = TreeWalkDiscovery(notion, since, int(source.get("max_depth", DEFAULT_MAX_DEPTH)),
+                             gaps, WalkProgress(len(locations)))
+
+    return WithUnlisted(walk, search), sections
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("watermark", help="ISO-8601 UTC time; pages edited at or after its minute")
-    parser.add_argument("output", help="path to write the intake file to")
+    parser.add_argument("output", help="path to write the intake file to, under the intake "
+                                       "directory")
     parser.add_argument("--source", default="notion", help="register entry to read (default: notion)")
     parser.add_argument(
         "--count-only", action="store_true",
@@ -568,6 +616,7 @@ def main(argv=None):
     try:
         source = configuration.source(arguments.source)
         locations = notion_search.read_locations(source)
+        opened = notion_search.open_locations(source)
         since = read_watermark(arguments.watermark)
         # The walk searches from the watermark, but the ledger is pruned against
         # the lookback floor either way, so a walk keeps what the next search skips.
@@ -575,40 +624,56 @@ def main(argv=None):
                                     "notion_export", lookback=not arguments.walk)
         notion = Notion.from_source(source, notion_credential.authorization(source))
         directory = None if arguments.count_only else raw_directory.checked(arguments.source)
+        output = raw_directory.output_checked(arguments.output)
 
     except (configuration.ConfigurationError, notion_credential.CredentialError) as error:
         print(f"notion_export: {error}", file=sys.stderr)
 
         return EXIT_REFUSED
 
-    if directory:
-        directory.mkdir(parents=True, exist_ok=True)
-
+    raw_directory.stop_on_signals()
     side_files = SideFiles(directory)
     gaps = Gaps()
+    completed = False
 
-    if arguments.walk:
-        discovery = TreeWalkDiscovery(notion, since, int(source.get("max_depth", DEFAULT_MAX_DEPTH)),
-                                      gaps, WalkProgress(len(locations)))
+    try:
+        discovery, sections = discovery_for(arguments, source, notion, locations, opened, since,
+                                            ledger, gaps)
 
-    else:
-        discovery = SearchDiscovery(notion, locations, ledger.floor, gaps)
+    except (TypeError, ValueError):
+        print('notion_export: "max_depth" must be a whole number', file=sys.stderr)
+
+        return EXIT_REFUSED
+
+    # The folder is marked incomplete immediately before the try that takes its
+    # files back, so nothing can fail in between and strand the marker.
+    if directory:
+        raw_directory.begin(directory)
 
     # Past this point a failure is reported by type alone. An exception's message
     # can carry what it was handed — a header, a body — and a traceback prints it.
     try:
-        content, checked, exported = build_export(notion, locations, discovery, side_files, gaps,
+        content, checked, exported = build_export(notion, sections, discovery, side_files, gaps,
                                                   ledger)
-        Path(arguments.output).write_text(content, encoding="utf-8")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(content, encoding="utf-8", errors="replace")
+        completed = True
 
     except Exception as error:  # noqa: BLE001 — the point is that nothing escapes unreduced
-        side_files.remove_all()
-        print(f"notion_export: failed part-way ({type(error).__name__}); side files removed, "
-              "no export written", file=sys.stderr)
+        print(f"notion_export: failed part-way ({type(error).__name__}); no export written",
+              file=sys.stderr)
 
         return EXIT_REFUSED
 
-    print(arguments.output)
+    finally:
+        if not completed and directory:
+            print(f"notion_export: {raw_directory.taken_back_line(side_files.remove_all())}",
+                  file=sys.stderr)
+
+    if directory:
+        raw_directory.finish(directory)
+
+    print(output)
     changed = len(exported)
 
     if arguments.walk:
@@ -618,7 +683,7 @@ def main(argv=None):
         print(f"{len(locations)} location(s), {changed} changed, found by search")
 
     if not changed:
-        print("Nothing to summarize: skip the isolated agent.")
+        print("Nothing to digest: skip the gate.")
 
     elif arguments.count_only:
         print("Changed pages were listed only; run without --count-only to have them "
@@ -652,4 +717,5 @@ def utf8_streams():
 
 if __name__ == "__main__":
     utf8_streams()
+    file_modes.owner_only()
     sys.exit(main())

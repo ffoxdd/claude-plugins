@@ -26,6 +26,7 @@ If the repo doesn't exist yet, `/dan-knowledge-base:init` scaffolds one.
 
 ```
 inbox/             raw intake — gitignored
+inbox/digests/     what a covered gate wrote from raw intake — gitignored
 inbox/processed/   intake already distilled — gitignored
 notes/             distilled knowledge — committed
 notes/.sync-state  per-source watermarks — committed
@@ -41,22 +42,33 @@ unprocessed queue, which is the one thing you need to see whole.
 there is no status field to drift.
 
 **A subdirectory of `inbox/` other than `processed/` is working space, not
-intake.** Raw text for the isolated agent always lands in `<intake>/<source>/`:
-the intake directory the register's `layout` names, joined with the source's
-name, as in `inbox/chat/`, `inbox/notion-covered/` or `inbox/fathom/`. The adapter
-derives the folder itself. It is git-ignored with the rest of the intake tree,
-and it is inside the repository, so the agent reaches its files however its
-tools are scoped, whether the gate only reads them or edits them in place. An adapter refuses to run, before any request, when the folder is in
-a work tree git does not ignore, when git cannot judge it, or when it already
-holds files: those are a previous run's, so finish that run's gate or delete the
-folder. Those files never join the queue or `inbox/processed/`; the sync deletes
-the folder once it is done with it.
+intake.** An adapter writes raw text to `<intake>/<source>/`, one file per
+batch: the intake directory the register's `layout` names, joined with the
+source's name, as in `inbox/chat/`, `inbox/notion-covered/` or `inbox/fathom/`.
+A covered gate writes each batch's digest to `<intake>/digests/<source>/<batch>.md`.
+Both are git-ignored with the rest of the intake tree and inside the
+repository, so a gate reaches them however its tools are scoped. An adapter
+refuses to run, before any request, when its folder is in a work tree git does
+not ignore, when git cannot judge it, or when it already holds files: those are
+a previous run's, so finish its digests or move them to processed. These files
+never join the queue; they move to `inbox/processed/` once integrated.
 
 **Raw intake is never committed.** It is an order of magnitude larger than what
 it yields, it rots, and it is the material most likely to carry what must never
 enter a repo — personal data, a pasted credential, a third party's numbers.
 Gitignoring the whole intake tree is what makes pulling *anything* in safe,
 because the pull stops being a publication decision.
+
+**Everything an adapter fetches lands under the intake directory, and nowhere
+else.** An adapter refuses an output path outside it, or one git does not
+ignore, and creates what it writes readable by its owner alone. Where a covered
+gate is in force the session reads only the digests it releases (below), so
+never choose an output path outside intake to get around that.
+
+**`layout.retention_days`**, when the register sets it, deletes processed intake
+older than that many days at session start, and reports the count in one line.
+It deletes nothing unless the processed directory is inside the intake
+directory, git-ignored, and reached through no symbolic link.
 
 ## Self-authored capture is an input, not a section
 
@@ -121,7 +133,8 @@ notes, advances the watermarks, commits, and leaves the push.
 4. **Record the wall clock now, per source, before querying it** (rule 1).
 5. **Sweep for what changed, cheaply** — `references/sweep-economics.md`. Then
    fetch in full only the items the sweep says are substantive.
-6. **Distill each item into the right note(s)**, per each note's type: insert a
+6. **Distill each item into the right note(s)** — where a covered gate exists,
+   each item is a released digest, never the raw file — per each note's type: insert a
    dated entry at the top of a log without reading the rest; rewrite a snapshot
    whole, deleting what the new information retires; add to or correct the
    relevant section of an accumulator.
@@ -132,6 +145,15 @@ notes, advances the watermarks, commits, and leaves the push.
    whole output is a reviewable diff, so a wrong commit costs an amend, while a
    confirmation prompt on every sync costs more than the mistakes it prevents.
    Pushing is what makes a mistake expensive to undo, so that stays a request.
+
+## Notes name no individual whose case they record
+
+A note records what the organization knows, not about whom: aggregates, counts,
+mechanics, and people in their business roles. No note carries the name of, an
+identifier for, or the particulars of one person's case — dates finer than the
+year, an age, family make-up, life events — for anyone whose own situation is
+the subject. A described case is identifying without a name, so write the
+pattern ("two members whose dependents were missing"), never the case.
 
 ## Provenance is per-fact, and not optional
 
@@ -171,26 +193,41 @@ surrounded by the cases that revealed it. Reading one directly pulls those
 records into the session for content that was only ever going to be committed
 as aggregates.
 
-The shape that resolves it splits the work in two:
+**A register may require a session variable** (`session.required_variable`).
+Then the whole sync — adapters, reading raw intake, distilling, committing —
+happens in the session that sets it, which reads raw intake directly because it
+is itself the covered side; the gate procedure below does not apply. In any
+other session the adapters refuse and session start says so: stop and say that
+the sync must run there, rather than look for another route. What such a session
+writes into notes is what leaves the covered side, so the rule above on
+individuals is the boundary.
 
-- **A deterministic script does the mechanical half** — fetch, dedupe, group —
-  writing raw content only to gitignored paths, with a stdout that carries no
-  content. The main session can run it itself.
-- **A model does the judgment half**, under whatever isolation your
-  organization requires, reading those files and returning **structural facts
-  only**: policies, mechanics, defect patterns with counts, named business
-  entities. Never the records themselves.
+**A covered gate exists where your organization's covered-endpoint plugin is
+installed**, and its own instructions say so in the session. Without one, the
+session reads raw intake directly and distils it like any other. With one, raw
+intake never crosses the gate:
 
-The judgment half is the only half reading raw content, so it is the only half
-needing isolation — which makes the isolated agent's tool surface small enough
-to constrain (reading and editing files, running nothing). The raw files are
-working files: deleting them once the summaries are written is part of the
-procedure.
+1. **A script does the mechanical half** — fetch, dedupe, group — writing raw
+   text under the intake directory, one file per batch, and printing ids and
+   counts only. The session runs it itself.
+2. **The session never opens a raw intake file.** For each batch it hands the
+   gate the raw file paths, the digest path, and `references/digest-brief.md`,
+   the knowledge-base half of the gate's brief (with
+   `references/transcripts.md` for a meeting). The gate's own instructions carry
+   what a digest must leave out, and state the size of batch it accepts.
+3. **A batch is one conversation, one meeting, or one group of pages** where it
+   fits within the gate's limits; a larger one is split.
+4. **The session reads a digest only once the gate releases it.** A digest the
+   gate refuses is produced again by a fresh gate run from the raw files; the
+   session never edits a digest toward release.
+5. **Readers read digests only**, the session and any sub-agent alike. A reader
+   that meets content about an individual in a digest stops reading it, carries
+   nothing from it, and reports it, by filename, as an exposure. Nothing else
+   depends on this tripwire; it exists to catch what the gate let through.
+6. **Once a digest is integrated into notes**, its raw files, the digest and the
+   run's export move to `inbox/processed/`, where retention deletes them.
 
-Chat is the hardest instance and the one worked out in most detail:
-`references/chat-sources.md`. Where your organization has a covered or
-zero-retention endpoint, the plugin that governs it defines the isolation the
-judgment half runs under.
+`references/chat-sources.md` covers chat, the hardest instance.
 
 ## Running the shipped adapters
 
@@ -200,17 +237,25 @@ below as `<SKILL_DIR>`. Never hardcode or remember that path: it carries a
 version that changes on every plugin update.
 
 An adapter reads the register itself, from the working directory, so the only
-arguments are the watermark and where to write. The chat, Notion and Fathom
-adapters write raw text to the source's folder under the intake directory (see
-Layout); `--count-only` writes none, and says what that leaves undone.
+arguments are the watermark and where to write, a path under the intake
+directory. The chat, Notion and Fathom adapters also write raw text to the
+source's folder there (see Layout); `--count-only` writes none, and says what
+that leaves undone.
 
-**Email** — digest mail from the senders the register whitelists:
+**Everything an adapter writes is raw intake, its output file included** — the
+email recaps, the sweep's manifest and page changes, the chat index. Where a
+covered gate exists, each is a batch for the gate like any other raw intake;
+where the register requires a session variable, that session reads it
+directly; where neither, the session reads it as it reads any intake.
+
+**Email** — recap mail from the senders the register whitelists:
 
 ```
 uv run <SKILL_DIR>/scripts/email_sweep.py <watermark> <output>
 ```
 
-**Chat** — every conversation you are a member of, tiered by privacy:
+**Chat** — every conversation you are a member of, one raw file per
+conversation with new messages, listed on stdout by id:
 
 ```
 python3 <SKILL_DIR>/scripts/chat_export.py <watermark> <output>
@@ -225,8 +270,7 @@ meeting:
 python3 <SKILL_DIR>/scripts/fathom_export.py <watermark> <output>
 ```
 
-The meeting files go to `inbox/fathom/`, where an isolated agent scrubs them in
-place.
+The meeting files go to `inbox/fathom/`, one per meeting.
 It lists from the watermark less the source's `lookback_hours` (72 by default),
 because Fathom writes a summary some time after it creates the meeting, and the
 source's `ledger` of recording ids keeps the overlap from being exported twice.
@@ -252,7 +296,8 @@ in a terminal.
 ```
 
 **Notion** — the pages under record-dense locations the register lists as
-`covered_locations`, changed since the watermark:
+`covered_locations`, changed since the watermark, and, when the same source lists
+`open_locations`, every changed page under neither list:
 
 ```
 python3 <SKILL_DIR>/scripts/notion_export.py <watermark> <output>
@@ -298,7 +343,7 @@ python3 <SKILL_DIR>/scripts/notion_sweep.py <watermark> <output>
 It reads every block of every changed page, because Notion moves no edit time on
 a block for an edit nested inside it, so no branch can be skipped. That takes
 minutes when the changed pages are long. **Run it in the background, never under
-a time limit**, and read the one file it writes. It names each page on stderr by
+a time limit**; the one file it writes is raw intake (above). It names each page on stderr by
 position, id and reading mode as it starts, and its block count and seconds as it
 ends, never by title. A page it could not read fully is a gap, like any other.
 Each page's blocks are read from the earliest moment an edit to it could have
@@ -354,11 +399,20 @@ A skip beats all three others: a skipped page is not read, comments included. A
 page's own `newest_first_pages` entry beats a shallow location above it.
 `comment_pages` combines with either: it decides whether comments are asked
 for, and they are asked of the blocks those rules walk.
-Covered locations are excluded before any of this.
+Only readable pages are shaped by any of this.
+
+**A register can make the sweep default-deny.** Beside `covered_locations`, the
+covered source may list `open_locations` in the same shape. Then only a page
+under an open location is read; a page under neither list is named by id, never
+read, and exported by the `notion` adapter for the gate. The nearest
+listed ancestor decides. A page whose ancestry the integration cannot see is
+unplaceable, a gap named by id, when open locations are listed or a covered one
+cannot be fetched, until the page the integration is shared at is listed.
 
 All five print the output path, then counts, then the new watermark, and send gaps
-to stderr. No message content passes through stdout, which is what makes them
-safe to run from this session directly.
+to stderr. Neither stream carries content, a title, a subject or a person's name:
+ids and counts only, with anything worth naming written into the output file.
+That is what makes them safe to run from this session directly.
 
 Add `--source <name>` when the register calls a source something other than
 `email`, `chat`, `fathom` or `notion`.
@@ -375,8 +429,9 @@ marked line of context, and, on a page `comment_pages` covers, any comment left
 since the watermark under the block it sits on, with images and files named rather than linked. A page that
 has been appended to weekly for a year comes back as its newest section. Unlike
 the adapters its stdout is content, so it reads the register and **refuses a
-page under a covered location**, or one it cannot place, before printing
-anything; those stay the `notion` adapter's. Prefer it to fetching a page
+page under a covered location**, one under no open location when the register
+lists them, or one it cannot place, before printing anything; those stay the
+`notion` adapter's. Prefer it to fetching a page
 through the MCP server, whose markdown carries every block the page has ever
 held and a few hundred characters of signed URL per image. It exits 3 when a
 comment request failed or blocks nested too deep to read, and names them on
@@ -402,47 +457,24 @@ edit time, so no search returns the page, listed or not. List a page under
 whose decisions are made in the margin — and say when a sync's completeness
 rests on comments elsewhere; only Notion's webhooks report those.
 
-### The chat sequence, which is not one step
+### What each adapter's run leaves for the gate
 
-1. **This session runs the script.**
-2. **An isolated agent edits the file** — replacing each record-dense section's
-   placeholder with a structural-facts-only summary read from the side file that
-   placeholder names, and gating the rest for stray personal data. A described
-   case counts as personal data even without a name in it (the rule is written
-   out in the Fathom sequence's step 2), and that holds for every gate,
-   Notion's included. Give it file
-   reading and editing only; it must run no commands, and confirm that its
-   launcher *enforces* that rather than merely recording it —
-   `references/chat-sources.md` explains why the constraint is what makes the
-   arrangement work, and why an allow list is usually not the control that
-   imposes it.
-3. **This session deletes the source's folder under the intake directory**
-   (`inbox/chat/` under the default layout), side files and all, then treats the
-   export as ordinary intake.
+**Chat** writes one raw file per conversation, each one batch. When it reports
+`0 conversation(s) with new messages` it prints `skip the gate`.
 
-When the script reports `0 conversation(s) with new messages`, it also prints
-`skip the isolated agent`. The export then holds no message text, so step 2 has
-nothing to gate and does not run.
-
-The Notion export runs the same three steps, **except when nothing changed**.
-Then the script prints `Nothing to summarize: skip the isolated agent.`, writes
-nothing to its folder under the intake directory, and step 2 does not run. A
-quiet window costs Notion API calls and no model tokens, covered or otherwise. Finding what changed is a script,
-and only a changed page's text ever reaches a model.
-
-Otherwise the steps are the same. The one difference is the export:
-it holds nothing but placeholders, one per changed page, naming the page by id
-and edit time. A title can be a person's name, so every word of a page reaches
-only its side file. Its watermark is **inclusive at the minute**, because Notion
-stamps edits to the minute, and a strict comparison against a seconds-precision
-clock would lose an edit made in the same minute as the query (rule 2's
+**Notion** writes one side file per changed page, and its export holds only a
+placeholder per page naming it by id and edit time, since a title can be a
+person's name. A batch is the pages of one location. When nothing changed it
+prints `Nothing to digest: skip the gate.`, writes nothing to its folder, and a
+quiet window costs Notion API calls and no model tokens. Its watermark is
+**inclusive at the minute**, because Notion stamps edits to the minute (rule 2's
 exception). **A gap withholds the watermark.** An unreadable location, a
 database that couldn't be queried, a page that couldn't be rendered, a search
 result that couldn't be placed, or a walked tree deeper than `max_depth` makes
-the run exit 3 without printing a new watermark.
-Keep the old watermark, record the gap in the watermark note, and let the next
-run re-cover the window. This is rule 3 applied correctly: the watermark advances
-when nothing *changed*, not when something went unread.
+the run exit 3 without printing a new watermark. Keep the old watermark, record
+the gap in the watermark note, and let the next run re-cover the window. This is
+rule 3 applied correctly: the watermark advances when nothing *changed*, not
+when something went unread.
 
 The adapter covers only the listed locations. **The rest of the workspace is the
 sweep adapter's**, and it runs as a script for the same reason. A sweep paged
@@ -450,90 +482,25 @@ through the MCP server shares one result stream with the record-dense locations,
 so a guard withholding their results also stalls the pagination running through
 them, and a retry after the refusal reads as a workaround. The sweep searches
 over the REST API instead and places each result by its parent chain. A result
-under a covered location is only counted, since the export adapter reads it, and
+under a covered location is only counted, and one under no open location in a
+default-deny register only named by id, since the export adapter reads both;
 everything else lands in the manifest and is read into the same file. It takes its
 exclusions from the covered source it names with `covered_by`, so the register
 lists them once. It shares the export's minute-inclusive watermark, and a result
 it cannot place withholds the watermark, since it might be record-dense.
 
-### The Fathom sequence
-
-A transcript is passed **verbatim**, with the recap beside it, because the only
-safe edit to one is removing personal data; `references/transcripts.md` has the
-measurements and how to read one. The meeting files are working files, not
-intake: the export, which holds only a placeholder per meeting naming its file,
-recording id and recorded date, is the intake record. Each meeting file opens
-with the line `UNGATED: not to be read until the isolated agent has scrubbed
-it`.
-
-1. **This session runs the script**, which writes the meeting files to the
-   source's folder under the intake directory (`inbox/fathom/` under the default
-   layout), where the isolated agent edits them in place.
-2. **The isolated agent gates each meeting file in place, one run per meeting
-   file**, with file reading and editing only. It first decides what kind of
-   meeting it is:
-   - **Case-dense**, where the meeting mostly walks through individual people's
-     situations one by one (a clinic's monthly ops review, a support escalation
-     call). The agent replaces the whole transcript with a summary of structural
-     facts only: policies, mechanics, decisions and owners, and defect patterns
-     with counts. The summary's first line names it as one. A scrub cannot make
-     such a meeting safe, because the cases are the content.
-   - **Any other meeting** is scrubbed. The agent replaces every mention that
-     identifies an individual who is not speaking as a colleague, and any named
-     person's own care, health detail or membership whatever their role,
-     colleagues and business contacts included, with a neutral phrase such as "a
-     member". **A case is identifying without a name.** A passage that describes
-     one person's situation is rewritten as a generic case ("one member whose
-     dependent was missing"): dates finer than the year tied to that person, an
-     age, family make-up, the person's employer or group tied to the case, and
-     life events (a name change, a move, a death). Taking out the name and
-     identifiers while leaving that story does not de-identify it. The agent
-     changes nothing else: no rewording, no summarizing, no correcting a garbled
-     passage, and every other word, number, speaker label and business name
-     stays as written.
-
-   Its last edit replaces the `UNGATED:` first line with `Gated.` Run it on the
-   strongest model the covered launcher offers: this is the step that keeps
-   personal data out of the session, and it is not where a sync saves money.
-3. **A second isolated run checks each gated file**, under the same isolation,
-   with fresh context and file reading and editing only. It reads the file and
-   looks only for what the gate missed: any passage that still identifies or
-   describes an individual by the rule above. If it finds none, its one edit
-   replaces the `Gated.` first line with `Verified.` If it finds any, it edits
-   nothing and reports each finding by line number and category, never the
-   content. That file goes back to step 2 with the findings named, then to this
-   check again. A checker is reliable where a self-check is not because it never
-   saw the gate's reasoning. Its cost is about the gate's again, and it is not
-   where a sync saves money either.
-4. **This session confirms every meeting file starts with `Verified.`**, with a
-   search that prints filenames only (`grep -L '^Verified\.'`, never content),
-   re-runs steps 2 and 3 on any that don't, and only then hands the files on.
-5. **This session does not read the transcripts itself.** It hands each day's
-   meeting files to a sub-agent on the session's own model, which reads each
-   file once and returns only the durable knowledge, following
-   `references/transcripts.md`. A transcript held in the main context is re-sent
-   on every later turn of the sync. And the sub-agent is not a cheaper model:
-   it writes the notes, and a weaker reader reintroduces the attribution errors
-   the verbatim transcript exists to avoid. **Its brief includes a stop rule.**
-   If a file still describes an individual's case, the reader stops reading
-   that file, carries nothing from it, and reports only the filename and the
-   category. That meeting goes back through steps 2 and 3, and whoever is
-   responsible for the data hears about it, because this reader runs outside the
-   isolation and has already seen what it read.
-6. **Once the sub-agents have returned their notes, this session deletes the
-   source's folder with the meeting files in it**, and moves the export to
-   `inbox/processed/` like any other intake. A scrubbed transcript still holds whatever the scrub missed, and
-   Fathom keeps the original, so a later question re-fetches one meeting by
-   recording id rather than relying on a pile at rest.
-
-When nothing is ready the script prints `Nothing to summarize: skip the isolated
-agent.`, writes no meeting files, and steps 2 to 6 do not run. With
-`--count-only` the meetings are only counted, no transcript is
-requested, and neither the ledger nor the watermark advances. A listing page
-that could not be read withholds the watermark and the ledger, like a Notion
-gap. A transcript that could not be read, other than one not found, is a gap
-that takes the run back: the meeting files it wrote are removed, no export is
-written, and the next run re-covers the window.
+**Fathom** writes one meeting file per meeting, each one batch, with the
+transcript **verbatim** beside the recap; `references/transcripts.md` has the
+measurements and how to read one. The export holds a placeholder per meeting
+naming its file, recording id and recorded date. When nothing is ready it prints
+`Nothing to digest: skip the gate.` and writes no meeting files. With
+`--count-only` the meetings are only counted, no transcript is requested, and
+neither the ledger nor the watermark advances. A listing page that could not be
+read withholds the watermark and the ledger, like a Notion gap. A transcript that
+could not be read, other than one not found, is a gap that takes the run back:
+the meeting files it wrote are removed, no export is written, and the next run
+re-covers the window. Fathom keeps the original, so a later question re-fetches
+one meeting by recording id rather than relying on a pile at rest.
 
 ### When an adapter cannot run
 
@@ -551,4 +518,5 @@ means it expired and needs a fresh sign-in.
 - `references/adding-a-source.md` — interrogating a new source before trusting it
 - `references/configuring-sources.md` — where per-repo configuration lives
 - `references/chat-sources.md` — chat, and the split that makes it safe
+- `references/digest-brief.md` — what a digest keeps, passed to the covered gate
 - `references/transcripts.md` — reading a meeting transcript when distilling

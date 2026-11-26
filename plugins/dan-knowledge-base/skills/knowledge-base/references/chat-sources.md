@@ -18,34 +18,37 @@ all public channels regardless of membership. Joining a conversation, or being
 added to one, includes it in the next sync: no starring, no hand-kept list, no
 channel silently missing because nobody updated a config.
 
-## Let the platform's privacy metadata drive the handling tier
+## Every conversation reaches its digest the same way
 
-Most workspaces have a convention about where personal data is allowed —
-commonly, private channels only. Every channel carries a private flag, readable
-live, so the tiering needs no per-channel configuration and a newly created
+Each conversation with new messages is one raw file and one batch. Where there
+is a covered gate, the gate writes that batch's digest under its own rules for
+what to leave out, so how private a conversation is changes nothing about the
+procedure: a conversation that is mostly per-person records yields a digest of
+structural facts, an engineering channel a fuller one, and the gate decides
+which. There is no per-conversation tier to configure, so a newly created
 private channel is handled safely with zero config.
 
-Two independent questions decide what the isolated agent does with each
-conversation, and neither is inferred from the other:
+## A conversation can be kept out entirely
 
-- **Dense?** Is its ordinary traffic per-person records? Named by hand, in the
-  register's `dense_conversations`, because nothing on the platform says so.
-- **Private?** Is personal data permitted there? Read live: the platform's
-  private flag, or a topic banner listed in `private_topic_markers` (matched
-  case-insensitively). A new private or bannered channel needs no config.
+Some conversations should not reach even a digest — a legal or HR channel, a
+case-review channel. An excluded conversation is never fetched: no history call,
+nothing written, only a count on stdout. The register excludes by name, by
+banner, or both:
 
-|  | **Not private** (public, DM) | **Private** (locked or bannered) |
-|---|---|---|
-| **Not dense** | **Backstop:** pulled verbatim; the agent scans for stray personal data | **Scrubbed:** pulled verbatim; the agent removes personal data, summarizing a section only if it is dominated by it |
-| **Dense** | **Summarized:** raw text never enters the export; the agent writes a structural-facts-only summary | **Summarized**, the same way |
+```json
+"excluded_conversations": ["C0123ABCD", "#legal-*"],
+"private_topic_markers": ["may contain personal data"],
+"marked_conversations": "exclude"
+```
 
-- **Dense means summarized** because scrubbing a message that is nine-tenths
-  personal detail redacts it to nothing, so a summary loses no durable content.
-- **A banner says what the lock says**, and catches a bannered channel left
-  public. It says nothing about density.
-- **The backstop stays on** where the convention says there is nothing to
-  find: it has caught real personal data in a group DM. A convention describes
-  what people intend, not what they did.
+Each entry is a shell-style pattern matched case-insensitively against the
+conversation's id and its name, a leading `#` optional; an id is the durable
+form, since a renamed channel keeps it. Every name in `dense_conversations` is
+excluded too. `marked_conversations` decides what a topic or purpose carrying
+one of `private_topic_markers` does, so a newly bannered channel is handled with
+no config change: `"exclude"`, which it is whenever markers are listed and the
+key is not, or `"digest"`, which handles it like any other (`"scrub"` reads as
+`"digest"`).
 
 ## Slack-specific facts
 
@@ -64,7 +67,7 @@ computing the new watermark are all deterministic; `sweep-economics.md` covers
 why a script owns that half and the stdout contract that makes it safe to run
 here.
 
-**Run it from the main session, not from inside the isolated agent.** This is
+**Run it from the main session, not from inside the gate.** This is
 the counterintuitive part, arrived at by the other arrangement failing
 repeatedly:
 
@@ -90,33 +93,28 @@ denial by asking the agent to do something outside its list and watching it
 fail. An agent that quietly did the extra thing is how this gets discovered
 otherwise.
 
-## The isolated agent does the judgment half
+## The gate does the judgment half
 
-It reads and edits files, runs no commands, and returns only a confirmation —
-never raw content echoed back. Its job is a **faithful gate, not a summary**,
-with the designated-channel summaries as the deliberate exception:
+It reads a conversation's raw file and writes its digest, keeping what
+`digest-brief.md` asks for; it never edits the raw text and never echoes it. The
+raw text sits in the source's git-ignored folder under the intake directory
+(`inbox/chat/` by default) until its digest is integrated, then moves to
+`inbox/processed/` with it, where retention deletes it. That is sensitive data
+at rest on local disk — a real trade-off, so write the decision, and the
+register's `retention_days`, into the register.
 
-- Replace each designated channel's placeholder with a structural-facts-only
-  summary, read from the raw side file that placeholder names.
-- Scan everything else for stray personal data, omit what it finds, and note
-  the omission at the top of the file so it is visible.
-
-**Raw text for the designated channels goes to side files in the source's
-git-ignored folder under the intake directory** (`inbox/chat/` by default),
-which the isolated agent reads and the main session deletes once the summaries
-are written. That is sensitive data at rest, briefly, on local disk — a real
-trade-off, so write the decision and its date into the register.
-
-Then the export is normal intake: distil it, move it to `inbox/processed/`,
-advance the watermark. A conversation that fails to fetch is passed through to
-the sync notes, not chased (`sweep-economics.md`).
+The run's index is intake like the raw files: it names each conversation, and a
+DM is named for its people. Nothing else does — the script's streams name
+conversations by id, and the chat adapter keeps no ledger. A
+conversation that fails to fetch is passed through to the sync notes, not chased
+(`sweep-economics.md`).
 
 ## What authentication costs, and who decides
 
 Reading history as a person rather than as an installed app generally means a
 **user token**, which carries that person's entire read access to the
 workspace. Nothing about the export narrows it; the narrowing comes from the
-tool's read-only mode and the tiering above. The bundled `slack-client` rides
+tool's read-only mode and the gate. The bundled `slack-client` rides
 Slack's undocumented internal API, so a breaking change arrives silently; and
 its launcher names `uv run --script` rather than trusting the shebang, since
 `#!/usr/bin/env -S` is not portable to Git Bash on Windows.

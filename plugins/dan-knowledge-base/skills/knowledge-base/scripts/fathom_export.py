@@ -6,15 +6,14 @@ The `fathom` adapter, and the **mechanical half only**, the way
 its attendees, and a meeting with a customer can name that customer's members or
 patients in passing: the decision worth keeping sits next to the case that
 prompted it. So each meeting is fetched over Fathom's public API and written to a
-file the session does not read until an isolated agent has scrubbed it.
-Fetching costs no model tokens at all.
+raw file under the intake directory, one meeting per file, which is one batch for
+a covered gate to digest. Fetching costs no model tokens at all.
 
 **The transcript is passed verbatim, with the recap beside it.** Measured on 15
 meetings (2026-11), Fathom's recap carries about 56% of a transcript's
 substantive facts, and a model-written compaction of the transcript misattributes
-speakers, reverses who asks whom and firms up hedges several times a meeting. A
-verbatim transcript scrubbed in place keeps every fact, so the only model that
-edits it removes personal data and changes nothing else.
+speakers, reverses who asks whom and firms up hedges several times a meeting. So
+whatever reads the meeting, the gate or the session, reads every word of it.
 
 Nothing sensitive reaches a session merely from running this:
 
@@ -25,20 +24,20 @@ Nothing sensitive reaches a session merely from running this:
     response body or a header;
   * **the output file** carries one placeholder per exported meeting, naming it
     by recording id and recorded date and pointing at its meeting file. Titles
-    stay out, because a title can be a person's name;
+    stay out, because a title can be a person's name. It must lie under the
+    register's intake directory, git-ignored, like every adapter's output
+    (`raw_directory.output_checked`);
   * **the meeting itself** goes only to its meeting file under
-    `<intake>/<source name>/`: first the line `UNGATED: not to be read until
-    the isolated agent has scrubbed it`, then the title, invitee domains (never
-    addresses), `## Summary`, `## Action items` and, when the source asks for
-    transcripts, `## Transcript`. The isolated agent scrubs each file in place
-    and replaces that first line as its last edit. With `--count-only`, meetings
+    `<intake>/<source name>/`: the title, invitee domains (never addresses),
+    `## Summary`, `## Action items` and, when the source asks for transcripts,
+    `## Transcript`. With `--count-only`, meetings
     are listed and counted, nothing of theirs is written, and neither the ledger
     nor the watermark advances. A run that fails part-way, or is interrupted
     or terminated, deletes the meeting files it wrote, since no export would
     point at them.
 
-**The meeting files live in the repository, git-ignored**, where the isolated
-agent edits them in place.
+**The meeting files live in the repository, git-ignored**, where a gate's
+isolated run reaches them however its tools are scoped.
 The folder is the register's intake folder joined with `--source`, and the run is
 refused before any request unless git ignores it and it is absent or empty (see
 `raw_directory.py`).
@@ -118,7 +117,6 @@ import argparse
 import http.client
 import json
 import re
-import signal
 import sys
 import time
 import urllib.error
@@ -132,6 +130,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import configuration
 import fathom_credential
+import file_modes
 import raw_directory
 from notion_api import EXIT_GAPS, EXIT_REFUSED, RETRIES, RETRYABLE_STATUSES, ExportError, Gaps, \
     Retryable, floor_to_minute, format_time, parse_time, read_watermark, retry_after_seconds
@@ -145,7 +144,6 @@ DEFAULT_MAX_LOOKBACK_DAYS = 90
 # `Retry-After` for the rest, including the lower limit Fathom applies under load.
 DEFAULT_REQUEST_INTERVAL_SECONDS = 2.1
 
-UNGATED_LINE = "UNGATED: not to be read until the isolated agent has scrubbed it"
 TRANSCRIPT_UNAVAILABLE = "Transcript unavailable."
 
 
@@ -608,12 +606,9 @@ def action_item_line(item):
 
 def meeting_text(meeting, transcript_section):
     lines = [
-        UNGATED_LINE,
-        "",
         f"# {meeting.get('title') or meeting.get('meeting_title') or '(untitled)'}",
         "",
-        f"*Recording {recording_id(meeting)} · recorded {recorded_date(meeting)} · raw text for "
-        "the isolated agent*",
+        f"*Recording {recording_id(meeting)} · recorded {recorded_date(meeting)} · raw text*",
         "",
         f"Invitee domains: {', '.join(sorted(invitee_domains(meeting))) or 'none listed'}",
         "",
@@ -653,8 +648,11 @@ class MeetingFiles:
         return path
 
     def remove_all(self):
-        for path in self.written:
-            path.unlink(missing_ok=True)
+        """The count of files that could not be removed."""
+        if not self.directory:
+            return 0
+
+        return raw_directory.take_back(self.written, self.directory)
 
 
 # ---------------------------------------------------------------------------
@@ -667,12 +665,7 @@ def placeholder(meeting, meeting_file):
     if not meeting_file:
         return lines + ["Listed only: no meeting file was written.", ""]
 
-    return lines + [
-        f"Meeting file: `{meeting_file}`. The isolated agent scrubs it in place, removing",
-        "personal data and changing nothing else; read it only once its first line no",
-        "longer starts `UNGATED:`.",
-        "",
-    ]
+    return lines + [f"Meeting file: `{meeting_file}`.", ""]
 
 
 def build_export(sorting, floor, lookback_hours, meeting_files):
@@ -681,7 +674,7 @@ def build_export(sorting, floor, lookback_hours, meeting_files):
         "",
         f"Meetings created after `{format_time(floor)}`, the watermark less a {lookback_hours:g}-hour",
         "lookback for summaries that finish late, less those already exported. Assembled",
-        "mechanically by the knowledge-base fathom adapter; the sections are not written yet.",
+        "mechanically by the knowledge-base fathom adapter.",
         "",
     ]
 
@@ -737,7 +730,7 @@ def report(arguments, sorting, transcripts, gaps, ledger, clock, lookback_hours)
               f"lookback: {', '.join(sorting.not_ready)}")
 
     if not sorting.ready:
-        print("Nothing to summarize: skip the isolated agent.")
+        print("Nothing to digest: skip the gate.")
 
     if gaps:
         return report_gaps(gaps)
@@ -770,17 +763,19 @@ def read_settings(arguments):
 
     requested = transcripts_setting(source)
     directory = None if arguments.count_only else raw_directory.checked(arguments.source)
+    output = raw_directory.output_checked(arguments.output)
     ledger = Ledger.from_source(source, arguments.source, since, floor)
     fathom = Fathom.from_source(source, fathom_credential.api_key(source))
 
     return (fathom, ledger, floor, excluded, lookback_hours, Transcripts(fathom, requested),
-            directory)
+            directory, output)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("watermark", help="ISO-8601 UTC time; meetings created after it")
-    parser.add_argument("output", help="path to write the intake file to")
+    parser.add_argument("output", help="path to write the intake file to, under the intake "
+                                       "directory")
     parser.add_argument("--source", default="fathom", help="register entry to read (default: fathom)")
     parser.add_argument("--count-only", action="store_true",
                         help="list and count meetings without writing any meeting file; the "
@@ -794,7 +789,7 @@ def main(argv=None):
     clock = datetime.now(timezone.utc)
 
     try:
-        fathom, ledger, floor, excluded, lookback_hours, transcripts, directory = \
+        fathom, ledger, floor, excluded, lookback_hours, transcripts, directory, output = \
             read_settings(arguments)
 
     except (configuration.ConfigurationError, fathom_credential.CredentialError) as error:
@@ -802,45 +797,48 @@ def main(argv=None):
 
         return EXIT_REFUSED
 
-    if directory:
-        directory.mkdir(parents=True, exist_ok=True)
-
+    raw_directory.stop_on_signals()
     meeting_files = MeetingFiles(directory, transcripts)
     gaps = Gaps()
     sorting = Sorting()
-    signal.signal(signal.SIGTERM, terminate)
     completed = False
+
+    if directory:
+        raw_directory.begin(directory)
 
     # Past this point a failure is reported by type alone. An exception's message
     # can carry what it was handed — a header, a body — and a traceback prints it.
     # Any exit before the export is written, an interruption included, takes back
     # the meeting files, since no export would point at them.
     try:
-        write_export(arguments, fathom, sorting, excluded, ledger, gaps, floor, lookback_hours,
+        write_export(output, fathom, sorting, excluded, ledger, gaps, floor, lookback_hours,
                      meeting_files)
         completed = True
 
     except TranscriptGap as error:
         gaps.add(f"a transcript could not be read: {error}")
-        print("No export written: a transcript could not be read, and the meeting files this "
-              "run wrote were removed.")
+        print("No export written: a transcript could not be read.")
 
         return report_gaps(gaps)
 
     except Exception as error:  # noqa: BLE001 — the point is that nothing escapes unreduced
-        print(f"fathom_export: failed part-way ({type(error).__name__}); meeting files "
-              "removed, no export written", file=sys.stderr)
+        print(f"fathom_export: failed part-way ({type(error).__name__}); no export written",
+              file=sys.stderr)
 
         return EXIT_REFUSED
 
     finally:
-        if not completed:
-            meeting_files.remove_all()
+        if not completed and directory:
+            print(f"fathom_export: {raw_directory.taken_back_line(meeting_files.remove_all())}",
+                  file=sys.stderr)
+
+    if directory:
+        raw_directory.finish(directory)
 
     return report(arguments, sorting, transcripts, gaps, ledger, clock, lookback_hours)
 
 
-def write_export(arguments, fathom, sorting, excluded, ledger, gaps, floor, lookback_hours,
+def write_export(output, fathom, sorting, excluded, ledger, gaps, floor, lookback_hours,
                  meeting_files):
     try:
         sorting.sort(fathom.meetings_created_after(floor), excluded, ledger, gaps)
@@ -849,13 +847,8 @@ def write_export(arguments, fathom, sorting, excluded, ledger, gaps, floor, look
         gaps.add(f"the meeting listing stopped part-way: {error}")
 
     content = build_export(sorting, floor, lookback_hours, meeting_files)
-    Path(arguments.output).write_text(content, encoding="utf-8")
-
-
-def terminate(signal_number, frame):
-    """A termination, such as a tool's time limit, unwinds like an interruption, so
-    the cleanup runs."""
-    raise SystemExit(128 + signal_number)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(content, encoding="utf-8", errors="replace")
 
 
 def utf8_streams():
@@ -869,4 +862,5 @@ def utf8_streams():
 
 if __name__ == "__main__":
     utf8_streams()
+    file_modes.owner_only()
     sys.exit(main())
