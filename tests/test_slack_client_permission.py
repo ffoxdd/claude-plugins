@@ -63,6 +63,55 @@ class DecisionTest(unittest.TestCase):
         self.assertLeftToTheUser("slack-client memberships\nrm -rf ~")
         self.assertLeftToTheUser("slack-client starred\nslack-client login")
 
+    def test_approves_the_listings_with_their_real_options(self):
+        for call in (
+            "slack-client channels --types public_channel,private_channel,mpim,im",
+            "slack-client channels --types=all",
+            "slack-client  memberships",
+            "slack-client starred --help",
+        ):
+            with self.subTest(call=call):
+                self.assertApproved(call)
+
+        # A flag with no listing after it names no subcommand to judge.
+        self.assertLeftToTheUser("slack-client -h")
+
+    def test_leaves_a_comment_shlex_would_have_hidden_to_the_user(self):
+        """shlex drops everything after a `#` inside a word; the shell reads `x#` as
+        a literal and runs what follows."""
+        for call in (
+            "slack-client channels x# ; touch /tmp/leak",
+            "slack-client memberships x# <(id)",
+            "slack-client starred x#;id",
+            "slack-client channels #all",
+        ):
+            with self.subTest(call=call):
+                self.assertLeftToTheUser(call)
+
+    def test_leaves_every_kind_of_shell_expansion_to_the_user(self):
+        """One per expansion bash or zsh performs on an unquoted word."""
+        for kind, call in (
+            ("brace", "slack-client channels --types {all,im}"),
+            ("tilde", "slack-client channels ~/x"),
+            ("parameter", "slack-client channels $HOME"),
+            ("command", "slack-client channels $(id)"),
+            ("arithmetic", "slack-client channels $((1+1))"),
+            ("process substitution", "slack-client channels <(id)"),
+            ("word splitting", "slack-client channels\t--types all"),
+            ("filename generation", "slack-client channels *"),
+            ("character class", "slack-client channels [a-z]"),
+            ("history", "slack-client channels !!"),
+            ("zsh equals", "slack-client channels =ls"),
+            ("zsh equals after a flag", "slack-client --types =ls channels"),
+            ("zsh glob qualifier", "slack-client channels (.)"),
+            ("zsh extended glob", "slack-client channels ^x"),
+            ("escape", "slack-client chan\\nels"),
+            ("quote", "slack-client 'channels'"),
+            ("non-ASCII", "slack-client channels \u2014types all"),
+        ):
+            with self.subTest(kind=kind):
+                self.assertLeftToTheUser(call)
+
     def test_leaves_a_bare_invocation_to_the_user(self):
         self.assertLeftToTheUser("slack-client")
 
